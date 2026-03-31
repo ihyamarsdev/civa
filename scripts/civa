@@ -333,13 +333,13 @@ component_menu() {
   cat <<'EOF' >&2
 Choose which components to run.
 Type 'all' or a comma-separated list of numbers/names.
-  1) system_update        - update apt cache and upgrade packages
+  1) system_update        - update package metadata and upgrade packages on Debian or RHEL family targets
   2) user_management      - create deployer user, sudoers, SSH key
   3) ssh_hardening        - disable root login and password auth
-  4) security_firewall    - ufw and fail2ban setup
+  4) security_firewall    - UFW or firewalld plus Fail2Ban setup
   5) system_config        - timezone and swap
   6) dependencies         - git, curl, wget, htop, vim, unzip, jq, net-tools
-  7) containerization     - Docker Engine and Compose plugin
+  7) containerization     - Docker Engine and Compose plugin via official Debian/RHEL repositories
   8) traefik              - /opt/traefik, docker network, compose and ACME env
 EOF
 }

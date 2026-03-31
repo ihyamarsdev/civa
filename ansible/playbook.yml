@@ -5,7 +5,7 @@
   gather_facts: true
 
   vars:
-    civa_dependency_packages:
+    civa_common_dependency_packages:
       - git
       - curl
       - wget
@@ -14,17 +14,24 @@
       - unzip
       - jq
       - net-tools
-    civa_security_packages:
+    civa_debian_security_packages:
       - ufw
+      - fail2ban
+    civa_rhel_security_packages:
+      - firewalld
       - fail2ban
     civa_firewall_ports:
       - 22
       - 80
       - 443
-    civa_docker_prerequisites:
+    civa_debian_docker_prerequisites:
       - ca-certificates
       - curl
       - gnupg
+    civa_rhel_docker_prerequisites:
+      - dnf-plugins-core
+      - ca-certificates
+      - curl
     civa_docker_packages:
       - docker-ce
       - docker-ce-cli
@@ -35,7 +42,15 @@
       x86_64: amd64
       aarch64: arm64
       armv7l: armhf
+    civa_supported_rhel_distributions:
+      - RedHat
+      - Rocky
+      - AlmaLinux
+      - CentOS
+      - OracleLinux
     civa_ssh_service_name: ssh
+    civa_admin_group: sudo
+    civa_firewall_backend: ufw
 
   handlers:
     - name: restart ssh
@@ -47,21 +62,48 @@
     - name: Ensure the target distribution is supported
       ansible.builtin.assert:
         that:
-          - ansible_facts.os_family == 'Debian'
-        fail_msg: civa Ansible bootstrap currently supports Debian and Ubuntu targets only.
+          - ansible_facts.os_family == 'Debian' or ansible_facts.distribution in civa_supported_rhel_distributions
+        fail_msg: civa Ansible bootstrap currently supports Debian/Ubuntu and RHEL-compatible targets such as RHEL, Rocky, AlmaLinux, CentOS, and Oracle Linux.
 
     - name: Resolve the Docker apt architecture
       ansible.builtin.set_fact:
         civa_docker_arch: "{{ civa_docker_arch_map.get(ansible_facts.architecture, 'amd64') }}"
 
+    - name: Resolve family-specific defaults
+      ansible.builtin.set_fact:
+        civa_is_debian: "{{ ansible_facts.os_family == 'Debian' }}"
+        civa_is_rhel: "{{ ansible_facts.os_family == 'RedHat' }}"
+        civa_admin_group: "{{ 'sudo' if ansible_facts.os_family == 'Debian' else 'wheel' }}"
+        civa_ssh_service_name: "{{ 'ssh' if ansible_facts.os_family == 'Debian' else 'sshd' }}"
+        civa_firewall_backend: "{{ 'ufw' if ansible_facts.os_family == 'Debian' else 'firewalld' }}"
+        civa_dependency_packages: "{{ civa_common_dependency_packages }}"
+        civa_security_packages: "{{ civa_debian_security_packages if ansible_facts.os_family == 'Debian' else civa_rhel_security_packages }}"
+        civa_docker_prerequisites: "{{ civa_debian_docker_prerequisites if ansible_facts.os_family == 'Debian' else civa_rhel_docker_prerequisites }}"
+        civa_docker_repo_os: "{{ 'rhel' if ansible_facts.distribution == 'RedHat' else 'centos' }}"
+
+    - name: Ensure sudo is installed before user management
+      ansible.builtin.package:
+        name: sudo
+        state: present
+
   tasks:
     - name: System Update & Upgrade
       tags:
         - system_update
-      ansible.builtin.apt:
-        update_cache: true
-        cache_valid_time: 3600
-        upgrade: dist
+      block:
+        - name: Update and upgrade Debian-family packages
+          when: civa_is_debian
+          ansible.builtin.apt:
+            update_cache: true
+            cache_valid_time: 3600
+            upgrade: dist
+
+        - name: Update and upgrade RHEL-family packages
+          when: civa_is_rhel
+          ansible.builtin.dnf:
+            name: '*'
+            state: latest
+            update_cache: true
 
     - name: User Management
       tags:
@@ -72,7 +114,7 @@
             name: "{{ civa_deployer_user }}"
             shell: /bin/bash
             create_home: true
-            groups: sudo
+            groups: "{{ civa_admin_group }}"
             append: true
 
         - name: Allow passwordless sudo for the deployer user
@@ -124,8 +166,21 @@
       tags:
         - security_firewall
       block:
-        - name: Install UFW and Fail2Ban
+        - name: Install EPEL release on RHEL-family targets
+          when: civa_is_rhel
+          ansible.builtin.dnf:
+            name: epel-release
+            state: present
+
+        - name: Install Debian security packages
+          when: civa_is_debian
           ansible.builtin.apt:
+            name: "{{ civa_security_packages }}"
+            state: present
+
+        - name: Install RHEL security packages
+          when: civa_is_rhel
+          ansible.builtin.dnf:
             name: "{{ civa_security_packages }}"
             state: present
 
@@ -144,29 +199,53 @@
             enabled: true
 
         - name: Set UFW default incoming policy to deny
+          when: civa_is_debian
           ansible.builtin.command: ufw default deny incoming
           register: civa_ufw_deny
           changed_when: "'Default incoming policy changed' in civa_ufw_deny.stdout or 'Default incoming policy changed' in civa_ufw_deny.stderr"
 
         - name: Set UFW default outgoing policy to allow
+          when: civa_is_debian
           ansible.builtin.command: ufw default allow outgoing
           register: civa_ufw_allow
           changed_when: "'Default outgoing policy changed' in civa_ufw_allow.stdout or 'Default outgoing policy changed' in civa_ufw_allow.stderr"
 
         - name: Allow essential firewall ports
+          when: civa_is_debian
           ansible.builtin.command: "ufw allow {{ item }}/tcp"
           loop: "{{ civa_firewall_ports }}"
           register: civa_ufw_rules
           changed_when: "'Skipping adding existing rule' not in civa_ufw_rules.stdout and 'Skipping adding existing rule' not in civa_ufw_rules.stderr"
 
         - name: Check whether UFW is already active
+          when: civa_is_debian
           ansible.builtin.command: ufw status
           register: civa_ufw_status
           changed_when: false
 
         - name: Enable UFW if needed
+          when:
+            - civa_is_debian
+            - "'Status: active' not in civa_ufw_status.stdout"
           ansible.builtin.command: ufw --force enable
-          when: "'Status: active' not in civa_ufw_status.stdout"
+
+        - name: Ensure firewalld is enabled and running
+          when: civa_is_rhel
+          ansible.builtin.service:
+            name: firewalld
+            state: started
+            enabled: true
+
+        - name: Allow essential firewalld ports permanently
+          when: civa_is_rhel
+          ansible.builtin.command: "firewall-cmd --permanent --add-port={{ item }}/tcp"
+          loop: "{{ civa_firewall_ports }}"
+          register: civa_firewalld_rules
+          changed_when: "'ALREADY_ENABLED' not in civa_firewalld_rules.stdout and 'ALREADY_ENABLED' not in civa_firewalld_rules.stderr"
+
+        - name: Reload firewalld when rules change
+          when: civa_is_rhel
+          ansible.builtin.command: firewall-cmd --reload
 
     - name: System Config
       tags:
@@ -225,20 +304,37 @@
     - name: Dependencies
       tags:
         - dependencies
-      ansible.builtin.apt:
-        name: "{{ civa_dependency_packages }}"
-        state: present
+      block:
+        - name: Install Debian dependency packages
+          when: civa_is_debian
+          ansible.builtin.apt:
+            name: "{{ civa_dependency_packages }}"
+            state: present
+
+        - name: Install RHEL dependency packages
+          when: civa_is_rhel
+          ansible.builtin.dnf:
+            name: "{{ civa_dependency_packages }}"
+            state: present
 
     - name: Containerization
       tags:
         - containerization
       block:
         - name: Install Docker apt prerequisites
+          when: civa_is_debian
           ansible.builtin.apt:
             name: "{{ civa_docker_prerequisites }}"
             state: present
 
+        - name: Install Docker dnf prerequisites
+          when: civa_is_rhel
+          ansible.builtin.dnf:
+            name: "{{ civa_docker_prerequisites }}"
+            state: present
+
         - name: Ensure the Docker apt keyring directory exists
+          when: civa_is_debian
           ansible.builtin.file:
             path: /etc/apt/keyrings
             state: directory
@@ -247,22 +343,43 @@
             mode: '0755'
 
         - name: Install the official Docker GPG key
+          when: civa_is_debian
           ansible.builtin.get_url:
             url: https://download.docker.com/linux/{{ ansible_facts.distribution | lower }}/gpg
             dest: /etc/apt/keyrings/docker.asc
             mode: '0644'
 
         - name: Configure the official Docker apt repository
+          when: civa_is_debian
           ansible.builtin.apt_repository:
             repo: "deb [arch={{ civa_docker_arch }} signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/{{ ansible_facts.distribution | lower }} {{ ansible_facts.distribution_release }} stable"
             filename: docker
             state: present
             update_cache: true
 
+        - name: Configure the official Docker yum repository
+          when: civa_is_rhel
+          ansible.builtin.yum_repository:
+            name: docker-ce-stable
+            description: Docker CE Stable Repository
+            baseurl: "https://download.docker.com/linux/{{ civa_docker_repo_os }}/$releasever/$basearch/stable"
+            enabled: true
+            gpgcheck: true
+            gpgkey: "https://download.docker.com/linux/{{ civa_docker_repo_os }}/gpg"
+
         - name: Install Docker Engine and Compose plugin
-          ansible.builtin.apt:
-            name: "{{ civa_docker_packages }}"
-            state: present
+          block:
+            - name: Install Docker packages on Debian-family targets
+              when: civa_is_debian
+              ansible.builtin.apt:
+                name: "{{ civa_docker_packages }}"
+                state: present
+
+            - name: Install Docker packages on RHEL-family targets
+              when: civa_is_rhel
+              ansible.builtin.dnf:
+                name: "{{ civa_docker_packages }}"
+                state: present
 
         - name: Ensure Docker is enabled and running
           ansible.builtin.service:
