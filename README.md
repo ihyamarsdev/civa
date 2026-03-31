@@ -1,252 +1,76 @@
 # civa
 
-`civa` adalah CLI interaktif berbasis Ansible untuk bootstrap banyak server sekaligus. Tool ini mewawancarai operator tentang target server, komponen yang ingin dijalankan, lalu menghasilkan inventory, vars, dan plan sebelum mengeksekusi `ansible-playbook`.
+`civa` is an interactive Ansible-based CLI for bootstrapping one or more servers with a consistent baseline: system updates, deploy user setup, SSH hardening, firewalling, Docker, and Traefik preparation.
 
-## Status
+## Table of Contents
 
-- Fokus target saat ini: Ubuntu, Debian, dan RHEL-compatible targets seperti RHEL, Rocky, AlmaLinux, CentOS, dan Oracle Linux
-- Mode utama: `apply`, `plan`, `preview`, `doctor`, `version`
-- Engine eksekusi: Ansible playbook multi-server
-- Artifact run: inventory, vars, dan plan Markdown di `.civa/runs/`
+- [Overview](#overview)
+- [Current Support](#current-support)
+- [Quick Start](#quick-start)
+- [Commands](#commands)
+- [Documentation](#documentation)
+- [Release and Installation Options](#release-and-installation-options)
 
-## Yang Bisa Dikerjakan
+## Overview
 
-- update dan upgrade sistem
-- buat user deployer, passwordless sudo, dan pasang SSH public key
-- hardening SSH: nonaktifkan root login dan password auth
-- instal dan konfigurasi UFW atau firewalld + Fail2Ban
-- set timezone `Asia/Jakarta` dan buat swap 2GB
-- instal utilitas dasar
-- instal Docker Engine + Docker Compose Plugin dari repo resmi Docker
-- siapkan Traefik v3 dengan ACME HTTP atau DNS challenge
+`civa` interviews the operator for server targets and selected components, generates Ansible inventory and variables, writes a Markdown execution plan, and then optionally runs `ansible-playbook`.
 
-## Struktur Repo
+## Current Support
 
-- `main.go` - wrapper Go untuk binary compiled `civa`
-- `scripts/civa` - source shell yang mengorkestrasi Ansible
-- `ansible/playbook.yml` - playbook utama
-- `ansible/templates/` - template Traefik dan Fail2Ban
-- `docs/vps-hardening-references.md` - referensi implementasi dan alasan desain
-- `bin/` - output binary build
-- `plans/` - contoh atau catatan plan manual jika diperlukan
+- Target families: Debian/Ubuntu and RHEL-compatible distributions such as RHEL, Rocky, AlmaLinux, CentOS, and Oracle Linux
+- Commands: `apply`, `plan`, `preview`, `doctor`, `version`, `help`
+- Runtime artifacts: `.civa/runs/<timestamp>/inventory.yml`, `vars.yml`, and `plan.md`
 
-## Instalasi dari GitHub
+## Quick Start
 
-Ada 3 cara install `civa`:
-
-1. build dari source
-2. download binary release
-3. one-line installer
-
-### Opsi 1 - Build dari source
+Build locally:
 
 ```bash
 git clone https://github.com/ihyamarsdev/civa.git
 cd civa
 go build -o bin/civa .
+./bin/civa help
 ```
 
-Kalau ingin binary `civa` bisa dipanggil dari mana saja:
+Run an interactive plan:
 
 ```bash
-sudo install -m 755 bin/civa /usr/local/bin/civa
+./bin/civa plan
 ```
 
-### Opsi 2 - Download binary release
+Check local prerequisites:
 
-Kalau kamu hanya ingin binary siap pakai, buka halaman release GitHub lalu ambil file sesuai OS dan arsitektur:
+```bash
+./bin/civa doctor --ssh-private-key ~/.ssh/id_rsa --ssh-public-key ~/.ssh/id_rsa.pub
+```
 
-- `civa_linux_amd64.tar.gz`
-- `civa_linux_arm64.tar.gz`
-- `civa_darwin_amd64.tar.gz`
-- `civa_darwin_arm64.tar.gz`
+## Commands
 
-Release dibuat otomatis lewat workflow GitHub Actions saat tag `v*` dipush.
+- `civa apply` — generate artifacts and execute the playbook against the selected servers
+- `civa plan` — generate inventory, vars, and a Markdown plan only
+- `civa preview` — run the playbook in `--check --diff` mode
+- `civa doctor` — validate the local machine and required files
+- `civa version` — print the current version
+- `civa help` — show usage information
 
-### Opsi 3 - One-line installer
+Running `civa` without arguments shows help.
+
+## Documentation
+
+- `docs/installation.md` — installation methods and prerequisites
+- `docs/usage.md` — command reference, interactive flow, and examples
+- `docs/components.md` — component list and what each Ansible tag does
+- `docs/architecture.md` — runtime artifacts, repository structure, and workflow design
+- `docs/references.md` — implementation notes, limitations, and design rationale
+
+## Release and Installation Options
+
+- Build from source
+- Download a release archive
+- Use the one-line installer:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ihyamarsdev/civa/main/install.sh | bash
 ```
 
-Kalau ingin install versi tertentu:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/ihyamarsdev/civa/main/install.sh | CIVA_VERSION=v0.3.0 bash
-```
-
-Setelah itu:
-
-```bash
-civa
-civa help
-civa doctor
-```
-
-Prasyarat local machine:
-
-- `git`
-- `go`
-- `bash`
-- `ansible-playbook`
-- SSH private key dan public key yang valid
-
-## Build
-
-```bash
-go build -o bin/civa .
-```
-
-## Command
-
-- `civa apply` - jalankan playbook ke server target
-- `civa plan` - generate inventory, vars, dan plan saja
-- `civa preview` - jalankan `ansible-playbook` dengan `--check --diff`
-- `civa doctor` - cek kesiapan local machine
-- `civa version` - tampilkan versi
-- `civa help` - tampilkan bantuan
-
-Menjalankan `civa` tanpa argumen akan menampilkan help.
-
-## Interview Interaktif
-
-Saat menjalankan `civa apply`, `civa plan`, atau `civa preview` tanpa flag lengkap, `civa` akan bertanya secara bertahap tentang:
-
-- komponen yang ingin dijalankan
-- jumlah server
-- IP atau address tiap server
-- hostname opsional tiap server
-- SSH user, SSH port, dan private key lokal
-- public key lokal yang akan diinstal ke user deployer
-- nama user deployer
-- timezone
-- email dan challenge type untuk Traefik bila komponen Traefik dipilih
-
-Sebelum apply sungguhan berjalan, `civa` akan menampilkan ringkasan jawaban operator.
-
-## Pilihan Komponen
-
-Kamu bisa memilih `all` atau subset berikut:
-
-1. `system_update`
-2. `user_management`
-3. `ssh_hardening`
-4. `security_firewall`
-5. `system_config`
-6. `dependencies`
-7. `containerization`
-8. `traefik`
-
-Urutan task di playbook tetap mengikuti urutan bootstrap yang aman, walaupun kamu hanya memilih beberapa komponen.
-
-## Contoh Pakai
-
-Lihat help:
-
-```bash
-./bin/civa
-```
-
-Apply interaktif:
-
-```bash
-./bin/civa apply
-```
-
-Plan saja dengan dua server:
-
-```bash
-./bin/civa plan \
-  --non-interactive \
-  --server 203.0.113.10,web-01 \
-  --server 203.0.113.11,api-01 \
-  --ssh-user root \
-  --ssh-port 22 \
-  --ssh-private-key ~/.ssh/id_ed25519 \
-  --ssh-public-key ~/.ssh/id_ed25519.pub \
-  --deployer-user deployer \
-  --timezone Asia/Jakarta \
-  --components all
-```
-
-Preview hanya komponen user, SSH, firewall, dan dependencies:
-
-```bash
-./bin/civa preview \
-  --non-interactive \
-  --server 203.0.113.10,web-01 \
-  --ssh-user root \
-  --ssh-port 22 \
-  --ssh-private-key ~/.ssh/id_ed25519 \
-  --ssh-public-key ~/.ssh/id_ed25519.pub \
-  --components 2,3,4,6
-```
-
-Apply dengan Traefik DNS challenge:
-
-```bash
-./bin/civa apply \
-  --non-interactive \
-  --server 203.0.113.10,edge-01 \
-  --ssh-user root \
-  --ssh-port 22 \
-  --ssh-private-key ~/.ssh/id_ed25519 \
-  --ssh-public-key ~/.ssh/id_ed25519.pub \
-  --components 1,2,3,4,5,6,7,8 \
-  --traefik-email admin@example.com \
-  --traefik-challenge dns \
-  --traefik-dns-provider cloudflare
-```
-
-Contoh plan untuk Rocky Linux atau AlmaLinux:
-
-```bash
-./bin/civa plan \
-  --non-interactive \
-  --server 198.51.100.20,rocky-app-01 \
-  --ssh-user root \
-  --ssh-port 22 \
-  --ssh-private-key ~/.ssh/id_rsa \
-  --ssh-public-key ~/.ssh/id_rsa.pub \
-  --deployer-user deployer \
-  --timezone Asia/Jakarta \
-  --components all
-```
-
-Contoh apply ke server RHEL-compatible dengan Traefik HTTP challenge:
-
-```bash
-./bin/civa apply \
-  --non-interactive \
-  --server 198.51.100.21,alma-edge-01 \
-  --ssh-user root \
-  --ssh-port 22 \
-  --ssh-private-key ~/.ssh/id_rsa \
-  --ssh-public-key ~/.ssh/id_rsa.pub \
-  --deployer-user deployer \
-  --timezone Asia/Jakarta \
-  --components 1,2,3,4,5,6,7,8 \
-  --traefik-email admin@example.com \
-  --traefik-challenge http
-```
-
-## Apa yang Dihasilkan `civa`
-
-Setiap run membuat direktori baru di `.civa/runs/<timestamp>/` berisi:
-
-- `inventory.yml`
-- `vars.yml`
-- `plan.md`
-
-`civa` juga menampilkan progress lokal per fase sebelum Ansible mengambil alih task-level output.
-
-## Catatan Keamanan
-
-- playbook sekarang mendukung Debian-family dan RHEL-compatible targets dengan tool native masing-masing: `apt` atau `dnf`, `ufw` atau `firewalld`, dan repo Docker yang sesuai platform
-- SSH hardening akan menonaktifkan root login dan password authentication
-- jalankan `civa preview` lebih dulu bila ingin melihat perubahan tanpa mengeksekusi apply langsung
-- untuk Traefik DNS challenge, file `.env` yang dibuat di target masih butuh secret provider yang valid
-
-## Referensi
-
-Lihat `docs/vps-hardening-references.md` untuk alasan desain playbook dan referensi modul/pendekatan yang dipakai.
+For the full install guide, see `docs/installation.md`.
