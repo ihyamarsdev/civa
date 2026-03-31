@@ -7,7 +7,7 @@ Dokumen ini merangkum alasan desain untuk workflow Ansible di `civa`.
 - `civa` sekarang berperan sebagai orchestrator lokal
 - inventory, vars, dan plan digenerate oleh `scripts/civa`
 - eksekusi remote dijalankan oleh `ansible/playbook.yml`
-- scope target saat ini adalah Ubuntu dan Debian
+- scope target saat ini adalah Debian-family dan RHEL-compatible targets seperti RHEL, Rocky, AlmaLinux, CentOS, dan Oracle Linux
 
 ## Kenapa Diganti ke Ansible
 
@@ -37,8 +37,9 @@ Dokumen ini merangkum alasan desain untuk workflow Ansible di `civa`.
 
 ## Keterbatasan Saat Ini
 
-- target distro non-Debian belum disupport oleh playbook ini
+- target distro di luar Debian-family dan RHEL-compatible targets belum disupport oleh playbook ini
 - UFW diimplementasikan dengan command line idempotence sederhana, bukan collection tambahan
+- firewalld diimplementasikan dengan command line idempotence sederhana, bukan collection tambahan
 - preview `--check --diff` tetap bergantung pada dukungan check mode task yang dipakai Ansible
 - Traefik DNS challenge masih memerlukan secret provider untuk dimasukkan ke `.env` target
 

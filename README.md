@@ -4,7 +4,7 @@
 
 ## Status
 
-- Fokus target saat ini: Ubuntu dan Debian
+- Fokus target saat ini: Ubuntu, Debian, dan RHEL-compatible targets seperti RHEL, Rocky, AlmaLinux, CentOS, dan Oracle Linux
 - Mode utama: `apply`, `plan`, `preview`, `doctor`, `version`
 - Engine eksekusi: Ansible playbook multi-server
 - Artifact run: inventory, vars, dan plan Markdown di `.civa/runs/`
@@ -14,7 +14,7 @@
 - update dan upgrade sistem
 - buat user deployer, passwordless sudo, dan pasang SSH public key
 - hardening SSH: nonaktifkan root login dan password auth
-- instal dan konfigurasi UFW + Fail2Ban
+- instal dan konfigurasi UFW atau firewalld + Fail2Ban
 - set timezone `Asia/Jakarta` dan buat swap 2GB
 - instal utilitas dasar
 - instal Docker Engine + Docker Compose Plugin dari repo resmi Docker
@@ -198,6 +198,38 @@ Apply dengan Traefik DNS challenge:
   --traefik-dns-provider cloudflare
 ```
 
+Contoh plan untuk Rocky Linux atau AlmaLinux:
+
+```bash
+./bin/civa plan \
+  --non-interactive \
+  --server 198.51.100.20,rocky-app-01 \
+  --ssh-user root \
+  --ssh-port 22 \
+  --ssh-private-key ~/.ssh/id_rsa \
+  --ssh-public-key ~/.ssh/id_rsa.pub \
+  --deployer-user deployer \
+  --timezone Asia/Jakarta \
+  --components all
+```
+
+Contoh apply ke server RHEL-compatible dengan Traefik HTTP challenge:
+
+```bash
+./bin/civa apply \
+  --non-interactive \
+  --server 198.51.100.21,alma-edge-01 \
+  --ssh-user root \
+  --ssh-port 22 \
+  --ssh-private-key ~/.ssh/id_rsa \
+  --ssh-public-key ~/.ssh/id_rsa.pub \
+  --deployer-user deployer \
+  --timezone Asia/Jakarta \
+  --components 1,2,3,4,5,6,7,8 \
+  --traefik-email admin@example.com \
+  --traefik-challenge http
+```
+
 ## Apa yang Dihasilkan `civa`
 
 Setiap run membuat direktori baru di `.civa/runs/<timestamp>/` berisi:
@@ -210,7 +242,7 @@ Setiap run membuat direktori baru di `.civa/runs/<timestamp>/` berisi:
 
 ## Catatan Keamanan
 
-- playbook sekarang ditujukan untuk Ubuntu/Debian karena task memakai `apt`, `ufw`, dan repo Docker Debian-style
+- playbook sekarang mendukung Debian-family dan RHEL-compatible targets dengan tool native masing-masing: `apt` atau `dnf`, `ufw` atau `firewalld`, dan repo Docker yang sesuai platform
 - SSH hardening akan menonaktifkan root login dan password authentication
 - jalankan `civa preview` lebih dulu bila ingin melihat perubahan tanpa mengeksekusi apply langsung
 - untuk Traefik DNS challenge, file `.env` yang dibuat di target masih butuh secret provider yang valid
