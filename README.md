@@ -1,67 +1,44 @@
 # civa
 
-`civa` adalah CLI interaktif untuk hardening awal VPS yang sekarang dibuild sebagai binary compiled. Tool ini memandu interview user, menyiapkan plan, menjalankan apply distro-aware, menampilkan progress per fase, dan menutup proses dengan summary yang jelas.
-
-Singkatnya, `civa` dirancang untuk membuat bootstrap keamanan VPS terasa lebih aman, lebih terstruktur, dan lebih mudah dioperasikan.
+`civa` adalah CLI interaktif berbasis Ansible untuk bootstrap banyak server sekaligus. Tool ini mewawancarai operator tentang target server, komponen yang ingin dijalankan, lalu menghasilkan inventory, vars, dan plan sebelum mengeksekusi `ansible-playbook`.
 
 ## Status
 
-- Status: aktif dan siap dipakai untuk bootstrap hardening VPS
-- Mode utama: apply langsung ke host
-- Distro detection: otomatis dari `/etc/os-release`, dengan override manual bila perlu
-- Security focus: SSH hardening, firewall, Fail2Ban, update policy, time sync, logging, dan backup readiness
-- Safety default: perubahan SSH ditulis langsung, tetapi reload SSH tetap manual kecuali `--reload-ssh`
+- Fokus target saat ini: Ubuntu dan Debian
+- Mode utama: `apply`, `plan`, `preview`, `doctor`, `version`
+- Engine eksekusi: Ansible playbook multi-server
+- Artifact run: inventory, vars, dan plan Markdown di `.civa/runs/`
 
-Script ini bisa:
+## Yang Bisa Dikerjakan
 
-- baseline package update
-- user admin berbasis SSH key
-- hardening SSH
-- firewall host
-- Fail2Ban
-- update policy
-- sinkronisasi waktu
-- logging, audit, dan backup readiness
-- menulis file Markdown sebagai catatan plan hasil konfigurasi
-
-## Kenapa Planner Ini Aman
-
-- Ada `--dry-run` untuk preview aman sebelum apply
-- Ada `--plan-only` jika kamu hanya ingin generate plan
-- Tidak otomatis me-reload SSH sebelum kamu sengaja memilih `--reload-ssh`
-- Mendukung fallback generik untuk distro yang tidak punya mapping native
-- Menjaga langkah hardening rawan lockout tetap eksplisit dan bisa direview dulu
-
-## Fitur Utama
-
-- Auto-detect distro dari `/etc/os-release`
-- Manual override dengan `--distro` bila diperlukan
-- Apply langsung ke host sebagai default behavior
-- Prompt interaktif bertahap untuk nilai penting saat dijalankan di terminal
-- `--plan-only` untuk kembali ke mode plan-only
-- `--dry-run` untuk mensimulasikan apply tanpa perubahan host
-- `--reload-ssh` untuk mengaktifkan perubahan SSH langsung pada apply mode
-- `--non-interactive` untuk automation tanpa prompt
-- Native profile untuk family berikut:
-  - Debian/Ubuntu
-  - RPM family
-  - SUSE family
-  - Arch family
-- Generic fallback untuk distro lain
-- Fail2Ban tetap masuk ke plan dengan `banaction` yang disesuaikan per family
-- Metadata hasil detect ikut ditulis ke output plan
+- update dan upgrade sistem
+- buat user deployer, passwordless sudo, dan pasang SSH public key
+- hardening SSH: nonaktifkan root login dan password auth
+- instal dan konfigurasi UFW + Fail2Ban
+- set timezone `Asia/Jakarta` dan buat swap 2GB
+- instal utilitas dasar
+- instal Docker Engine + Docker Compose Plugin dari repo resmi Docker
+- siapkan Traefik v3 dengan ACME HTTP atau DNS challenge
 
 ## Struktur Repo
 
 - `main.go` - wrapper Go untuk binary compiled `civa`
-- `scripts/civa` - source shell yang di-embed ke binary
-- `docs/vps-hardening-references.md` - referensi dan keputusan desain
-- `bin/` - output binary hasil build
-- `plans/` - direktori output hasil generate
+- `scripts/civa` - source shell yang mengorkestrasi Ansible
+- `ansible/playbook.yml` - playbook utama
+- `ansible/templates/` - template Traefik dan Fail2Ban
+- `docs/vps-hardening-references.md` - referensi implementasi dan alasan desain
+- `bin/` - output binary build
+- `plans/` - contoh atau catatan plan manual jika diperlukan
 
-## Instalasi dan Build
+## Instalasi dari GitHub
 
-Install dari GitHub repository resmi:
+Ada 3 cara install `civa`:
+
+1. build dari source
+2. download binary release
+3. one-line installer
+
+### Opsi 1 - Build dari source
 
 ```bash
 git clone https://github.com/ihyamarsdev/civa.git
@@ -75,7 +52,30 @@ Kalau ingin binary `civa` bisa dipanggil dari mana saja:
 sudo install -m 755 bin/civa /usr/local/bin/civa
 ```
 
-Setelah itu kamu bisa menjalankan:
+### Opsi 2 - Download binary release
+
+Kalau kamu hanya ingin binary siap pakai, buka halaman release GitHub lalu ambil file sesuai OS dan arsitektur:
+
+- `civa_linux_amd64.tar.gz`
+- `civa_linux_arm64.tar.gz`
+- `civa_darwin_amd64.tar.gz`
+- `civa_darwin_arm64.tar.gz`
+
+Release dibuat otomatis lewat workflow GitHub Actions saat tag `v*` dipush.
+
+### Opsi 3 - One-line installer
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ihyamarsdev/civa/main/install.sh | bash
+```
+
+Kalau ingin install versi tertentu:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ihyamarsdev/civa/main/install.sh | CIVA_VERSION=v0.3.0 bash
+```
+
+Setelah itu:
 
 ```bash
 civa
@@ -83,226 +83,138 @@ civa help
 civa doctor
 ```
 
-Prasyarat minimal untuk build:
+Prasyarat local machine:
 
 - `git`
 - `go`
-- `bash` tersedia di host target saat binary dijalankan
+- `bash`
+- `ansible-playbook`
+- SSH private key dan public key yang valid
 
-Build binary lokal:
+## Build
 
 ```bash
 go build -o bin/civa .
 ```
 
-Jalankan binary hasil build:
+## Command
 
-```bash
-./bin/civa
-```
-
-## Cara Pakai
-
-Jalankan tanpa argumen untuk melihat help:
-
-```bash
-./bin/civa
-```
-
-Command yang tersedia:
-
-- `civa apply` - apply langsung ke host
-- `civa plan` - generate plan saja
-- `civa preview` - preview apply tanpa perubahan host
-- `civa doctor` - cek kesiapan host saat ini untuk apply
-- `civa version` - tampilkan versi `civa`
+- `civa apply` - jalankan playbook ke server target
+- `civa plan` - generate inventory, vars, dan plan saja
+- `civa preview` - jalankan `ansible-playbook` dengan `--check --diff`
+- `civa doctor` - cek kesiapan local machine
+- `civa version` - tampilkan versi
 - `civa help` - tampilkan bantuan
 
-Contoh command tambahan:
+Menjalankan `civa` tanpa argumen akan menampilkan help.
+
+## Interview Interaktif
+
+Saat menjalankan `civa apply`, `civa plan`, atau `civa preview` tanpa flag lengkap, `civa` akan bertanya secara bertahap tentang:
+
+- komponen yang ingin dijalankan
+- jumlah server
+- IP atau address tiap server
+- hostname opsional tiap server
+- SSH user, SSH port, dan private key lokal
+- public key lokal yang akan diinstal ke user deployer
+- nama user deployer
+- timezone
+- email dan challenge type untuk Traefik bila komponen Traefik dipilih
+
+Sebelum apply sungguhan berjalan, `civa` akan menampilkan ringkasan jawaban operator.
+
+## Pilihan Komponen
+
+Kamu bisa memilih `all` atau subset berikut:
+
+1. `system_update`
+2. `user_management`
+3. `ssh_hardening`
+4. `security_firewall`
+5. `system_config`
+6. `dependencies`
+7. `containerization`
+8. `traefik`
+
+Urutan task di playbook tetap mengikuti urutan bootstrap yang aman, walaupun kamu hanya memilih beberapa komponen.
+
+## Contoh Pakai
+
+Lihat help:
 
 ```bash
-./bin/civa version
-./bin/civa doctor
+./bin/civa
 ```
 
-Jalankan interaktif dan biarkan script bertanya step-by-step dengan section yang lebih jelas, lalu tampilkan ringkasan jawaban sebelum apply dimulai atau dibatalkan:
+Apply interaktif:
 
 ```bash
 ./bin/civa apply
 ```
 
-Apply langsung dengan auto-detect distro:
+Plan saja dengan dua server:
 
 ```bash
-./bin/civa apply \
+./bin/civa plan \
   --non-interactive \
-  --hostname app-prod-01 \
-  --admin-user deploy \
-  --current-ssh-port 22 \
-  --ssh-port 2222 \
-  --public-key-file /root/bootstrap/deploy.pub \
-  --timezone Asia/Jakarta
+  --server 203.0.113.10,web-01 \
+  --server 203.0.113.11,api-01 \
+  --ssh-user root \
+  --ssh-port 22 \
+  --ssh-private-key ~/.ssh/id_ed25519 \
+  --ssh-public-key ~/.ssh/id_ed25519.pub \
+  --deployer-user deployer \
+  --timezone Asia/Jakarta \
+  --components all
 ```
 
-Apply langsung dan reload SSH juga:
-
-```bash
-./bin/civa apply \
-  --reload-ssh \
-  --hostname app-prod-01 \
-  --admin-user deploy \
-  --current-ssh-port 22 \
-  --ssh-port 2222 \
-  --public-key-file /root/bootstrap/deploy.pub \
-  --timezone Asia/Jakarta
-```
-
-Preview apply tanpa mengubah host:
+Preview hanya komponen user, SSH, firewall, dan dependencies:
 
 ```bash
 ./bin/civa preview \
   --non-interactive \
-  --hostname app-prod-01 \
-  --admin-user deploy \
-  --current-ssh-port 22 \
-  --ssh-port 2222 \
-  --public-key-file /root/bootstrap/deploy.pub \
-  --timezone Asia/Jakarta
+  --server 203.0.113.10,web-01 \
+  --ssh-user root \
+  --ssh-port 22 \
+  --ssh-private-key ~/.ssh/id_ed25519 \
+  --ssh-public-key ~/.ssh/id_ed25519.pub \
+  --components 2,3,4,6
 ```
 
-Mode plan-only:
-
-```bash
-./bin/civa plan \
-  --non-interactive \
-  --hostname app-prod-01 \
-  --admin-user deploy \
-  --current-ssh-port 22 \
-  --ssh-port 2222 \
-  --public-key-file /root/bootstrap/deploy.pub \
-  --timezone Asia/Jakarta
-```
-
-Manual override distro:
+Apply dengan Traefik DNS challenge:
 
 ```bash
 ./bin/civa apply \
   --non-interactive \
-  --distro ubuntu \
-  --hostname app-prod-01 \
-  --admin-user deploy \
-  --current-ssh-port 22 \
-  --ssh-port 2222 \
-  --public-key-file /root/bootstrap/deploy.pub \
-  --timezone Asia/Jakarta
-```
-
-Contoh generic fallback:
-
-```bash
-./bin/civa plan \
-  --non-interactive \
-  --distro alpine \
-  --hostname edge-01 \
-  --admin-user deploy \
-  --current-ssh-port 22 \
+  --server 203.0.113.10,edge-01 \
+  --ssh-user root \
   --ssh-port 22 \
-  --public-key-file /root/bootstrap/deploy.pub \
-  --timezone Asia/Jakarta
+  --ssh-private-key ~/.ssh/id_ed25519 \
+  --ssh-public-key ~/.ssh/id_ed25519.pub \
+  --components 1,2,3,4,5,6,7,8 \
+  --traefik-email admin@example.com \
+  --traefik-challenge dns \
+  --traefik-dns-provider cloudflare
 ```
 
-Output default akan ditulis ke `plans/<hostname>-hardening-plan.md`.
+## Apa yang Dihasilkan `civa`
 
-Catatan path key:
+Setiap run membuat direktori baru di `.civa/runs/<timestamp>/` berisi:
 
-- Default `--public-key-file` adalah `~/.ssh/id_ed25519.pub` dan sekarang akan diekspansi ke home user yang menjalankan script.
-- Untuk apply mode, file public key itu harus benar-benar ada di host target.
+- `inventory.yml`
+- `vars.yml`
+- `plan.md`
 
-## Contoh Output
+`civa` juga menampilkan progress lokal per fase sebelum Ansible mengambil alih task-level output.
 
-Potongan hasil plan auto-detect:
+## Catatan Keamanan
 
-```md
-# Initial VPS Hardening Plan
-
-## Target Profile
-
-- Mode: apply
-- Distro request: auto
-- Distro source: auto-detected-id_like
-- Detected OS ID: cachyos
-- Detected OS ID_LIKE: arch
-- Distro family: Arch family
-
-## Phase 5 - Brute-Force Protection With Fail2Ban
-
-~~~bash
-sudo tee /etc/fail2ban/jail.local >/dev/null <<'JAIL'
-[DEFAULT]
-bantime = 1h
-findtime = 10m
-maxretry = 5
-banaction = firewallcmd-rich-rules
-~~~
-```
-
-## Auto-Detect Distro
-
-Jika `--distro` tidak diisi, civa akan:
-
-1. membaca `ID` dari `/etc/os-release`
-2. mencoba memetakan `ID` ke family native
-3. jika belum cocok, mencoba `ID_LIKE`
-4. jika masih belum cocok, turun ke `generic fallback`
-
-Jika script dijalankan di terminal interaktif, dia juga akan menanyakan nilai yang belum diberikan, seperti mode, hostname, user admin, port SSH, reload SSH, public key path, dan timezone.
-
-Di hasil plan, metadata berikut ikut ditulis:
-
-- `Distro request`
-- `Distro source`
-- `Distro detection note`
-- `Detected OS ID`
-- `Detected OS ID_LIKE`
-- `Mode`
-- `Mode note`
-
-## Support Matrix
-
-Native family mapping saat ini:
-
-- `debian`: `debian`, `ubuntu`, `kali`, `linuxmint`, `mint`, `pop`, `pop-os`, `popos`, `neon`, `raspbian`, `elementary`, `zorin`
-- `rpm`: `rhel`, `redhat`, `rocky`, `almalinux`, `alma`, `centos`, `fedora`, `amazonlinux`, `amazon-linux`, `amzn`, `oraclelinux`, `oracle-linux`, `ol`
-- `suse`: `opensuse`, `opensuse-leap`, `opensuse-tumbleweed`, `sles`, `sle`, `sle-micro`, `suse`
-- `arch`: `arch`, `manjaro`, `endeavouros`
-
-Semua input distro lain tetap diterima, tetapi output-nya akan memakai placeholder yang harus ditinjau manual.
-
-## Fail2Ban
-
-Script selalu menyiapkan section dan konfigurasi Fail2Ban ke output plan, dan akan menerapkannya saat mode apply aktif.
-
-Mapping backend saat ini:
-
-- Debian family -> `banaction = ufw`
-- RPM, SUSE, Arch -> `banaction = firewallcmd-rich-rules`
-- Generic fallback -> placeholder manual
-
-Catatan penting:
-
-- Fail2Ban tidak menggantikan hardening SSH dan firewall
-- Kalau firewall backend di host berbeda dari yang diprediksi civa, ubah `banaction` sebelum menerapkan plan
-- `--dry-run` adalah preview command, bukan bukti bahwa apply mode pasti berhasil di host
-
-## Batasan
-
-- Tidak memilih tool backup tertentu
-- Tidak mengerjakan hardening lanjutan seperti CIS benchmark penuh
-- Distro di generic fallback tetap butuh review manual sebelum dipakai di production
-- Apply mode akan menolak generic fallback agar tidak menjalankan placeholder berbahaya
-- Untuk perubahan SSH yang sensitif, pastikan akses console atau rescue tetap tersedia saat menjalankan apply mode
-- Jika mau pindah port SSH, gunakan `--reload-ssh`; tanpa itu script akan menolak perubahan port agar host tidak setengah berubah
+- playbook sekarang ditujukan untuk Ubuntu/Debian karena task memakai `apt`, `ufw`, dan repo Docker Debian-style
+- SSH hardening akan menonaktifkan root login dan password authentication
+- jalankan `civa preview` lebih dulu bila ingin melihat perubahan tanpa mengeksekusi apply langsung
+- untuk Traefik DNS challenge, file `.env` yang dibuat di target masih butuh secret provider yang valid
 
 ## Referensi
 
-Lihat `docs/vps-hardening-references.md` untuk sumber resmi dan alasan desain per distro family.
+Lihat `docs/vps-hardening-references.md` untuk alasan desain playbook dan referensi modul/pendekatan yang dipakai.
