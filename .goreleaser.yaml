@@ -1,0 +1,42 @@
+version: 2
+
+project_name: civa
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: civa
+    main: ./main.go
+    binary: civa
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    env:
+      - CGO_ENABLED=0
+
+archives:
+  - id: civa-archive
+    ids:
+      - civa
+    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
+    formats:
+      - tar.gz
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: checksums.txt
+
+release:
+  github:
+    owner: ihyamarsdev
+    name: civa
+
+changelog:
+  disable: true
