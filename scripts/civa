@@ -1,0 +1,1689 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+DISTRO="auto"
+HOSTNAME_VALUE="vps"
+ADMIN_USER="ops"
+CURRENT_SSH_PORT="22"
+SSH_PORT="22"
+PUBLIC_KEY_FILE="~/.ssh/id_ed25519.pub"
+TIMEZONE_VALUE="UTC"
+OUTPUT_FILE=""
+MODE="apply"
+DRY_RUN="false"
+RELOAD_SSH="false"
+INTERACTIVE="auto"
+COMMAND=""
+VERSION="0.1.0"
+DISPLAY_MODE="apply"
+PROGRESS_TOTAL="0"
+PROGRESS_CURRENT="0"
+APPLY_COMPLETED_STEPS=""
+STYLE_BOLD=""
+STYLE_DIM=""
+STYLE_CYAN=""
+STYLE_YELLOW=""
+STYLE_GREEN=""
+STYLE_RESET=""
+
+DISTRO_SOURCE="auto"
+DISTRO_REQUESTED="auto"
+DISTRO_DETECTION_NOTE=""
+DETECTED_OS_ID=""
+DETECTED_OS_ID_LIKE=""
+MODE_NOTE=""
+OPERATING_MODEL_NOTE=""
+HOSTNAME_PROVIDED="false"
+ADMIN_USER_PROVIDED="false"
+CURRENT_SSH_PORT_PROVIDED="false"
+SSH_PORT_PROVIDED="false"
+PUBLIC_KEY_FILE_PROVIDED="false"
+TIMEZONE_PROVIDED="false"
+DISTRO_PROVIDED="false"
+MODE_PROVIDED="false"
+RELOAD_SSH_PROVIDED="false"
+OUTPUT_PROVIDED="false"
+DISTRO_NORMALIZED=""
+DISTRO_FAMILY=""
+DISTRO_SUPPORT_LEVEL=""
+FAMILY_LABEL=""
+PACKAGE_MANAGER_LABEL=""
+BASE_REFRESH_CMD=""
+BASE_UPGRADE_CMD=""
+BASE_INSTALL_CMD=""
+ADMIN_GROUP=""
+SSH_RELOAD_CMD=""
+SSH_INCLUDE_NOTE=""
+FIREWALL_SECTION_TITLE=""
+FIREWALL_COMMANDS=""
+FIREWALL_SSH_NOTE=""
+SSH_CUTOVER_NOTE=""
+FAIL2BAN_BANACTION=""
+FAIL2BAN_BACKEND_NOTE=""
+AUTO_UPDATE_TITLE=""
+AUTO_UPDATE_NOTE=""
+AUTO_UPDATE_COMMANDS=""
+AUTO_UPDATE_POLICY_NOTE=""
+TIME_SYNC_COMMANDS=""
+TIME_SYNC_APPLY_COMMANDS=""
+TIME_SYNC_NOTE=""
+PLATFORM_AUDIT_COMMANDS=""
+PLATFORM_AUDIT_NOTE=""
+REFERENCES_USED=""
+
+usage() {
+  cat <<'EOF'
+Usage:
+  civa <command> [options]
+
+Commands:
+  apply                        Apply hardening changes directly to the host
+  plan                         Generate the hardening plan only
+  preview                      Print what apply mode would do without changing the host
+  doctor                       Check whether the current host is ready for civa
+  version                      Show the civa version
+  help                         Show this help message
+
+Options:
+  --apply                      Apply hardening changes directly to the host (default mode)
+  --plan-only                  Only generate the plan file, do not change the host
+  --dry-run                    Print what apply mode would do without changing the host
+  --reload-ssh                 Reload SSH during apply mode after firewall rules are in place
+  --no-ssh-reload              Skip SSH reload during apply mode
+  --non-interactive            Do not ask interactive questions; rely on flags/defaults only
+  --distro <name>              Target distro or alias. Use 'auto' or omit the flag to detect from /etc/os-release.
+                               Native family mappings exist for Debian/Ubuntu,
+                               RHEL/Rocky/Alma/CentOS/Fedora/Amazon Linux, openSUSE/SLES, and Arch derivatives.
+                               Any unknown value still generates a generic fallback plan.
+  --hostname <name>            VPS hostname label (default: vps)
+  --admin-user <name>          Initial sudo user (default: ops)
+  --current-ssh-port <port>    SSH port currently in use on the VPS (default: 22)
+  --ssh-port <port>            SSH port to expose in the hardening plan (default: 22)
+  --public-key-file <path>     Server-side public key path reference (default: ~/.ssh/id_ed25519.pub)
+  --timezone <tz>              Timezone to configure (default: UTC)
+  --output <path>              Output markdown file (default: plans/<hostname>-hardening-plan.md)
+  --help                       Show this help message
+
+By default this script applies the hardening changes directly.
+SSH reload remains manual unless you pass --reload-ssh.
+You can use commands like 'civa apply', 'civa plan', 'civa preview', 'civa doctor', or 'civa version'.
+EOF
+}
+
+parse_command() {
+  [ "$#" -gt 0 ] || return 0
+
+  case "$1" in
+    apply)
+      COMMAND="apply"
+      MODE="apply"
+      MODE_PROVIDED="true"
+      return 0
+      ;;
+    plan)
+      COMMAND="plan"
+      MODE="plan"
+      MODE_PROVIDED="true"
+      return 0
+      ;;
+    preview|dry-run)
+      COMMAND="preview"
+      MODE="apply"
+      DRY_RUN="true"
+      MODE_PROVIDED="true"
+      return 0
+      ;;
+    doctor)
+      COMMAND="doctor"
+      return 0
+      ;;
+    version)
+      COMMAND="version"
+      return 0
+      ;;
+    help)
+      COMMAND="help"
+      usage
+      exit 0
+      ;;
+    --*)
+      return 1
+      ;;
+    *)
+      fail "unknown command: $1"
+      ;;
+  esac
+}
+
+fail() {
+  printf 'Error: %s\n' "$1" >&2
+  exit 1
+}
+
+validate_port() {
+  case "$1" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+
+  if [ "$1" -lt 1 ] || [ "$1" -gt 65535 ]; then
+    return 1
+  fi
+}
+
+sanitize_label() {
+  local raw="$1"
+  raw="${raw// /-}"
+  raw="${raw//[^a-zA-Z0-9._-]/-}"
+  printf '%s' "$raw"
+}
+
+normalize_distro() {
+  local raw="$1"
+  raw="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')"
+  raw="${raw// /-}"
+  raw="${raw//_/-}"
+  printf '%s' "$raw"
+}
+
+expand_home_path() {
+  local raw="$1"
+
+  case "$raw" in
+    \~/*)
+      printf '%s/%s' "$HOME" "${raw#\~/}"
+      ;;
+    *)
+      printf '%s' "$raw"
+      ;;
+  esac
+}
+
+prompt_with_default() {
+  local prompt_label="$1"
+  local default_value="$2"
+  local answer=""
+
+  if [ -n "$default_value" ]; then
+    printf '%s [%s]: ' "$prompt_label" "$default_value" >&2
+  else
+    printf '%s: ' "$prompt_label" >&2
+  fi
+
+  IFS= read -r answer
+
+  if [ -z "$answer" ]; then
+    printf '%s' "$default_value"
+  else
+    printf '%s' "$answer"
+  fi
+}
+
+prompt_yes_no() {
+  local prompt_label="$1"
+  local default_value="$2"
+  local answer=""
+
+  while :; do
+    printf '%s [%s]: ' "$prompt_label" "$default_value" >&2
+    IFS= read -r answer
+    answer="${answer:-$default_value}"
+    answer="$(printf '%s' "$answer" | tr '[:upper:]' '[:lower:]')"
+
+    case "$answer" in
+      y|yes|n|no)
+        printf '%s' "$answer"
+        return 0
+        ;;
+    esac
+
+    printf '%s\n' 'Please answer yes or no.' >&2
+  done
+}
+
+prompt_choice() {
+  local prompt_label="$1"
+  local default_value="$2"
+  shift 2
+  local answer=""
+  local option=""
+
+  while :; do
+    printf '%s [%s]: ' "$prompt_label" "$default_value" >&2
+    IFS= read -r answer
+    answer="${answer:-$default_value}"
+    answer="$(printf '%s' "$answer" | tr '[:upper:]' '[:lower:]')"
+
+    for option in "$@"; do
+      if [ "$answer" = "$option" ]; then
+        printf '%s' "$answer"
+        return 0
+      fi
+    done
+
+    printf 'Choose one of:' >&2
+    for option in "$@"; do
+      printf ' %s' "$option" >&2
+    done
+    printf '\n' >&2
+  done
+}
+
+prompt_port() {
+  local prompt_label="$1"
+  local default_value="$2"
+  local answer=""
+
+  while :; do
+    answer="$(prompt_with_default "$prompt_label" "$default_value")"
+    if validate_port "$answer"; then
+      printf '%s' "$answer"
+      return 0
+    fi
+    printf '%s\n' 'Port must be an integer between 1 and 65535.' >&2
+  done
+}
+
+current_timezone_default() {
+  timedatectl show -p Timezone --value 2>/dev/null || printf '%s' 'UTC'
+}
+
+current_hostname_default() {
+  hostnamectl --static 2>/dev/null || hostname 2>/dev/null || printf '%s' 'vps'
+}
+
+should_prompt_interactively() {
+  if [ "$INTERACTIVE" = "false" ]; then
+    return 1
+  fi
+
+  [ -t 0 ]
+}
+
+init_styles() {
+  if [ -t 2 ] && [ -z "${NO_COLOR:-}" ]; then
+    STYLE_BOLD=$(printf '\033[1m')
+    STYLE_DIM=$(printf '\033[2m')
+    STYLE_CYAN=$(printf '\033[36m')
+    STYLE_YELLOW=$(printf '\033[33m')
+    STYLE_GREEN=$(printf '\033[32m')
+    STYLE_RESET=$(printf '\033[0m')
+  else
+    STYLE_BOLD=""
+    STYLE_DIM=""
+    STYLE_CYAN=""
+    STYLE_YELLOW=""
+    STYLE_GREEN=""
+    STYLE_RESET=""
+  fi
+}
+
+print_section() {
+  printf '\n== %s ==\n' "$1" >&2
+  printf '%s\n' '----------------------------------------' >&2
+}
+
+print_highlight() {
+  printf '%s\n' "$1" >&2
+}
+
+print_warning() {
+  printf 'WARNING: %s\n' "$1" >&2
+}
+
+print_success() {
+  printf 'OK: %s\n' "$1" >&2
+}
+
+describe_prompt() {
+  printf '%s\n' "$1" >&2
+}
+
+show_interview_summary() {
+  print_section "Interview Summary"
+  if [ "$DRY_RUN" = "true" ]; then
+    printf 'Mode: preview\n' >&2
+  else
+    printf 'Mode: %s\n' "$MODE" >&2
+  fi
+  printf 'Distro input: %s\n' "$DISTRO" >&2
+  printf 'Hostname: %s\n' "$HOSTNAME_VALUE" >&2
+  printf 'Admin user: %s\n' "$ADMIN_USER" >&2
+  printf 'Current SSH port: %s\n' "$CURRENT_SSH_PORT" >&2
+  printf 'Target SSH port: %s\n' "$SSH_PORT" >&2
+  printf 'Reload SSH: %s\n' "$RELOAD_SSH" >&2
+  printf 'Public key path: %s\n' "$PUBLIC_KEY_FILE" >&2
+  printf 'Timezone: %s\n' "$TIMEZONE_VALUE" >&2
+  printf 'Output file: %s\n' "${OUTPUT_FILE:-plans/<hostname>-hardening-plan.md}" >&2
+}
+
+interactive_configure() {
+  local answer=""
+
+  should_prompt_interactively || return 0
+
+  init_styles
+  print_section "Interactive Setup"
+  print_highlight 'Press Enter to accept the suggested default.'
+  printf '%s\n' 'civa only asks for values that were not already supplied through flags.' >&2
+
+  if [ "$MODE_PROVIDED" != "true" ] && [ "$DRY_RUN" != "true" ]; then
+    print_section "Step 1/9 - Run Mode"
+    describe_prompt 'Step 1/9 - Choose how civa should run: apply changes now, generate a plan only, or preview the apply commands safely.'
+    answer="$(prompt_choice 'Mode (apply, plan, dry-run)' 'apply' apply plan dry-run)"
+    case "$answer" in
+      apply)
+        MODE="apply"
+        DRY_RUN="false"
+        ;;
+      plan)
+        MODE="plan"
+        DRY_RUN="false"
+        ;;
+      dry-run)
+        MODE="apply"
+        DRY_RUN="true"
+        ;;
+    esac
+  fi
+
+  if [ "$DISTRO_PROVIDED" != "true" ]; then
+    print_section "Step 2/9 - Distro Detection"
+    describe_prompt 'Step 2/9 - Leave this on auto to detect the current distro from /etc/os-release, or type an alias to force a specific family profile.'
+    DISTRO="$(prompt_with_default 'Distro alias or auto-detect' "$DISTRO")"
+  fi
+
+  if [ "$HOSTNAME_PROVIDED" != "true" ] && [ "$HOSTNAME_VALUE" = "vps" ]; then
+    print_section "Step 3/9 - Host Identity"
+    describe_prompt 'Step 3/9 - This hostname will be written to the target host and used in the generated record file name.'
+    HOSTNAME_VALUE="$(prompt_with_default 'Hostname' "$(current_hostname_default)")"
+  elif [ "$HOSTNAME_PROVIDED" != "true" ]; then
+    print_section "Step 3/9 - Host Identity"
+    describe_prompt 'Step 3/9 - This hostname will be written to the target host and used in the generated record file name.'
+    HOSTNAME_VALUE="$(prompt_with_default 'Hostname' "$HOSTNAME_VALUE")"
+  fi
+
+  if [ "$ADMIN_USER_PROVIDED" != "true" ]; then
+    print_section "Step 4/9 - Admin Account"
+    describe_prompt 'Step 4/9 - Choose the admin account that should receive SSH key access and sudo or wheel membership.'
+    ADMIN_USER="$(prompt_with_default 'Admin user' "$ADMIN_USER")"
+  fi
+
+  if [ "$CURRENT_SSH_PORT_PROVIDED" != "true" ]; then
+    print_section "Step 5/9 - Current SSH Access"
+    describe_prompt 'Step 5/9 - Tell civa which SSH port is working right now so firewall changes and cutover steps stay safe.'
+    CURRENT_SSH_PORT="$(prompt_port 'Current SSH port' "$CURRENT_SSH_PORT")"
+  fi
+
+  if [ "$SSH_PORT_PROVIDED" != "true" ]; then
+    print_section "Step 6/9 - Target SSH Port"
+    describe_prompt 'Step 6/9 - Choose the SSH port you want after hardening. Keeping the same port avoids a port migration.'
+    SSH_PORT="$(prompt_port 'Target SSH port' "$CURRENT_SSH_PORT")"
+  fi
+
+  if [ "$MODE" = "apply" ] && [ "$RELOAD_SSH_PROVIDED" != "true" ]; then
+    print_section "Step 7/9 - SSH Activation"
+    describe_prompt 'Step 7/9 - Decide whether civa should reload SSH itself. This activates the new SSH settings immediately and should only be done when alternate access is ready.'
+    if [ "$CURRENT_SSH_PORT" != "$SSH_PORT" ]; then
+      while :; do
+        answer="$(prompt_yes_no 'Reload SSH during apply so the new port becomes active? (required for port changes)' 'yes')"
+        case "$answer" in
+          y|yes)
+            RELOAD_SSH="true"
+            break
+            ;;
+          n|no)
+            print_warning 'Port changes need --reload-ssh in the same run. Choose yes or keep the SSH port unchanged.'
+            ;;
+        esac
+      done
+    else
+      answer="$(prompt_yes_no 'Reload SSH during apply?' 'no')"
+      case "$answer" in
+        y|yes)
+          RELOAD_SSH="true"
+          ;;
+        n|no)
+          RELOAD_SSH="false"
+          ;;
+      esac
+    fi
+  fi
+
+  if [ "$PUBLIC_KEY_FILE_PROVIDED" != "true" ]; then
+    print_section "Step 8/9 - SSH Public Key"
+    describe_prompt 'Step 8/9 - Provide the public key path that already exists on the target host. civa copies this key into the admin user authorized_keys file.'
+    PUBLIC_KEY_FILE="$(prompt_with_default 'Public key path on the target host' "$PUBLIC_KEY_FILE")"
+  fi
+
+  if [ "$TIMEZONE_PROVIDED" != "true" ] && [ "$TIMEZONE_VALUE" = "UTC" ]; then
+    print_section "Step 9/9 - Timezone"
+    describe_prompt 'Step 9/9 - Choose the timezone to apply on the target host so logs and maintenance windows stay consistent.'
+    TIMEZONE_VALUE="$(prompt_with_default 'Timezone' "$(current_timezone_default)")"
+  elif [ "$TIMEZONE_PROVIDED" != "true" ]; then
+    print_section "Step 9/9 - Timezone"
+    describe_prompt 'Step 9/9 - Choose the timezone to apply on the target host so logs and maintenance windows stay consistent.'
+    TIMEZONE_VALUE="$(prompt_with_default 'Timezone' "$TIMEZONE_VALUE")"
+  fi
+
+  if [ "$OUTPUT_PROVIDED" != "true" ]; then
+    print_section "Optional - Output Record"
+    describe_prompt 'Optional - Choose where the generated Markdown record should be written. Leave it blank to use the default plans/<hostname>-hardening-plan.md path.'
+    OUTPUT_FILE="$(prompt_with_default 'Output plan file (blank for default)' "$OUTPUT_FILE")"
+  fi
+
+  show_interview_summary
+
+  if [ "$MODE" = "apply" ] && [ "$DRY_RUN" != "true" ]; then
+    print_warning 'Apply mode will change the host directly.'
+    answer="$(prompt_yes_no 'Continue with apply after reviewing the summary?' 'yes')"
+    case "$answer" in
+      y|yes)
+        print_success 'Continuing with apply mode.'
+        ;;
+      n|no)
+        printf '%s\n' 'civa apply was cancelled by the user before any changes were made.' >&2
+        exit 0
+        ;;
+    esac
+  fi
+}
+
+family_for_normalized_distro() {
+  case "$1" in
+    ubuntu|debian|kali|linuxmint|mint|pop|popos|pop-os|neon|raspbian|elementary|zorin)
+      printf '%s' "debian"
+      ;;
+    rhel|redhat|red-hat|red-hat-enterprise-linux|redhatenterpriselinux|rocky|rockylinux|alma|almalinux|centos|fedora|amzn|amazonlinux|amazon-linux|oraclelinux|oracle-linux|ol)
+      printf '%s' "rpm"
+      ;;
+    opensuse|opensuse-leap|opensuse-tumbleweed|sles|sle|suse|sle-micro)
+      printf '%s' "suse"
+      ;;
+    arch|manjaro|endeavouros)
+      printf '%s' "arch"
+      ;;
+    generic|linux|other|unknown|auto|'')
+      printf '%s' "generic"
+      ;;
+    *)
+      printf '%s' "generic"
+      ;;
+  esac
+}
+
+unquote_value() {
+  local raw="$1"
+  raw="${raw#\"}"
+  raw="${raw%\"}"
+  printf '%s' "$raw"
+}
+
+detect_distro_from_os_release() {
+  local os_release_path="/etc/os-release"
+  local key=""
+  local value=""
+  local normalized_id=""
+  local candidate=""
+  local family=""
+
+  [ -r "$os_release_path" ] || return 1
+
+  DETECTED_OS_ID=""
+  DETECTED_OS_ID_LIKE=""
+
+  while IFS='=' read -r key value; do
+    case "$key" in
+      ID)
+        DETECTED_OS_ID="$(unquote_value "$value")"
+        ;;
+      ID_LIKE)
+        DETECTED_OS_ID_LIKE="$(unquote_value "$value")"
+        ;;
+    esac
+  done < "$os_release_path"
+
+  normalized_id="$(normalize_distro "$DETECTED_OS_ID")"
+  family="$(family_for_normalized_distro "$normalized_id")"
+
+  if [ -n "$normalized_id" ] && [ "$family" != "generic" ]; then
+    DISTRO="$normalized_id"
+    DISTRO_SOURCE="auto-detected-id"
+    DISTRO_DETECTION_NOTE="Auto-detected from /etc/os-release using ID=${DETECTED_OS_ID}."
+    return 0
+  fi
+
+  for candidate in $DETECTED_OS_ID_LIKE; do
+    candidate="$(normalize_distro "$candidate")"
+    family="$(family_for_normalized_distro "$candidate")"
+
+    if [ -n "$candidate" ] && [ "$family" != "generic" ]; then
+      DISTRO="$candidate"
+      DISTRO_SOURCE="auto-detected-id_like"
+      DISTRO_DETECTION_NOTE="Auto-detected from /etc/os-release using ID=${DETECTED_OS_ID} and ID_LIKE=${DETECTED_OS_ID_LIKE}."
+      return 0
+    fi
+  done
+
+  if [ -n "$normalized_id" ]; then
+    DISTRO="$normalized_id"
+    DISTRO_SOURCE="auto-detected-generic"
+    DISTRO_DETECTION_NOTE="Auto-detected from /etc/os-release using ID=${DETECTED_OS_ID}, but no native family mapping exists so the generic fallback will be used."
+    return 0
+  fi
+
+  return 1
+}
+
+resolve_distro_family() {
+  case "$(family_for_normalized_distro "$DISTRO_NORMALIZED")" in
+    debian)
+      DISTRO_FAMILY="debian"
+      DISTRO_SUPPORT_LEVEL="native-family"
+      ;;
+    rpm)
+      DISTRO_FAMILY="rpm"
+      DISTRO_SUPPORT_LEVEL="native-family"
+      ;;
+    suse)
+      DISTRO_FAMILY="suse"
+      DISTRO_SUPPORT_LEVEL="native-family"
+      ;;
+    arch)
+      DISTRO_FAMILY="arch"
+      DISTRO_SUPPORT_LEVEL="native-family"
+      ;;
+    *)
+      DISTRO_FAMILY="generic"
+      DISTRO_SUPPORT_LEVEL="generic-fallback"
+      ;;
+  esac
+}
+
+configure_firewall_profile() {
+  case "$1" in
+    ufw)
+      FIREWALL_SECTION_TITLE="Host Firewall With UFW"
+
+      if [ "$CURRENT_SSH_PORT" = "$SSH_PORT" ]; then
+        FIREWALL_COMMANDS=$(cat <<EOF
+sudo ufw default deny incoming
+sudo ufw default allow outgoing
+sudo ufw allow ${SSH_PORT}/tcp comment 'SSH management'
+# Optional examples:
+# sudo ufw allow 80/tcp comment 'HTTP'
+# sudo ufw allow 443/tcp comment 'HTTPS'
+sudo ufw logging on
+sudo ufw enable
+sudo ufw status verbose
+EOF
+)
+        FIREWALL_SSH_NOTE="Current and target SSH ports are the same, so a single UFW allow rule is enough."
+        SSH_CUTOVER_NOTE="No SSH port migration is needed; after validation you can simply reload SSH and retest."
+      else
+        FIREWALL_COMMANDS=$(cat <<EOF
+sudo ufw default deny incoming
+sudo ufw default allow outgoing
+sudo ufw allow ${CURRENT_SSH_PORT}/tcp comment 'Current SSH access'
+sudo ufw allow ${SSH_PORT}/tcp comment 'Target SSH access'
+# Optional examples:
+# sudo ufw allow 80/tcp comment 'HTTP'
+# sudo ufw allow 443/tcp comment 'HTTPS'
+sudo ufw logging on
+sudo ufw enable
+sudo ufw status verbose
+EOF
+)
+        FIREWALL_SSH_NOTE="Because the target SSH port differs from the current port, keep both ports allowed in UFW during the cutover window."
+        SSH_CUTOVER_NOTE="After login on port ${SSH_PORT} is confirmed, remove the old UFW rule for port ${CURRENT_SSH_PORT}."
+      fi
+      ;;
+    firewalld)
+      FIREWALL_SECTION_TITLE="Host Firewall With firewalld"
+
+      if [ "$CURRENT_SSH_PORT" = "$SSH_PORT" ]; then
+        FIREWALL_COMMANDS=$(cat <<EOF
+sudo systemctl enable --now firewalld
+sudo firewall-cmd --set-default-zone=public
+sudo firewall-cmd --permanent --add-port=${SSH_PORT}/tcp
+# Optional examples:
+# sudo firewall-cmd --permanent --add-service=http
+# sudo firewall-cmd --permanent --add-service=https
+sudo firewall-cmd --reload
+sudo firewall-cmd --list-all
+EOF
+)
+        FIREWALL_SSH_NOTE="Current and target SSH ports are the same, so one permanent firewalld port rule is enough."
+        SSH_CUTOVER_NOTE="No SSH port migration is needed; after validation you can simply reload SSH and retest."
+      else
+        FIREWALL_COMMANDS=$(cat <<EOF
+sudo systemctl enable --now firewalld
+sudo firewall-cmd --set-default-zone=public
+sudo firewall-cmd --permanent --add-port=${CURRENT_SSH_PORT}/tcp
+sudo firewall-cmd --permanent --add-port=${SSH_PORT}/tcp
+# Optional examples:
+# sudo firewall-cmd --permanent --add-service=http
+# sudo firewall-cmd --permanent --add-service=https
+sudo firewall-cmd --reload
+sudo firewall-cmd --list-all
+EOF
+)
+        FIREWALL_SSH_NOTE="Because the target SSH port differs from the current port, keep both ports allowed in firewalld during the cutover window."
+        SSH_CUTOVER_NOTE="After login on port ${SSH_PORT} is confirmed, remove the old permanent firewalld rule for port ${CURRENT_SSH_PORT} and reload firewalld again."
+      fi
+      ;;
+    *)
+      FIREWALL_SECTION_TITLE="Host Firewall Review"
+      if [ "$CURRENT_SSH_PORT" = "$SSH_PORT" ]; then
+        FIREWALL_COMMANDS=$(cat <<EOF
+# Replace the placeholders below with the host firewall tool used on the target distro.
+sudo <firewall-tool> set-default deny-incoming
+sudo <firewall-tool> allow ${SSH_PORT}/tcp
+sudo <firewall-tool> show-active-rules
+EOF
+)
+        FIREWALL_SSH_NOTE="The distro is using the generic fallback profile, so you must map the actual firewall tool before enforcing remote-access changes."
+        SSH_CUTOVER_NOTE="No SSH port migration is needed, but you still need to confirm the real firewall backend and rule persistence model."
+      else
+        FIREWALL_COMMANDS=$(cat <<EOF
+# Replace the placeholders below with the host firewall tool used on the target distro.
+sudo <firewall-tool> set-default deny-incoming
+sudo <firewall-tool> allow ${CURRENT_SSH_PORT}/tcp
+sudo <firewall-tool> allow ${SSH_PORT}/tcp
+sudo <firewall-tool> show-active-rules
+EOF
+)
+        FIREWALL_SSH_NOTE="The distro is using the generic fallback profile, so you must map the actual firewall tool before enforcing remote-access changes."
+        SSH_CUTOVER_NOTE="Only remove the old SSH port rule after the new port has been verified from a second session and the real firewall backend is confirmed."
+      fi
+      ;;
+  esac
+}
+
+configure_distro_profile() {
+  case "$DISTRO_FAMILY" in
+    debian)
+      FAMILY_LABEL="Debian family"
+      PACKAGE_MANAGER_LABEL="apt"
+      BASE_REFRESH_CMD="sudo apt update"
+      BASE_UPGRADE_CMD="sudo apt full-upgrade -y"
+      BASE_INSTALL_CMD="sudo apt install -y sudo curl ca-certificates ufw fail2ban unattended-upgrades apt-listchanges needrestart apparmor apparmor-utils"
+      ADMIN_GROUP="sudo"
+      SSH_RELOAD_CMD="sudo systemctl reload ssh || sudo systemctl reload sshd"
+      SSH_INCLUDE_NOTE='Most Debian-family images already include /etc/ssh/sshd_config.d/*.conf, but verify the main sshd_config still contains an Include directive before relying on drop-ins.'
+      configure_firewall_profile "ufw"
+      FAIL2BAN_BANACTION="ufw"
+      FAIL2BAN_BACKEND_NOTE='If UFW is not the firewall of record on the target image, change banaction to match the firewall backend you actually use.'
+      AUTO_UPDATE_TITLE="Automatic Security Updates"
+      AUTO_UPDATE_NOTE='Debian-family images commonly use unattended-upgrades; Ubuntu often ships it by default, while Debian may require explicit enablement.'
+      AUTO_UPDATE_COMMANDS=$(cat <<EOF
+sudo apt install -y unattended-upgrades apt-listchanges
+sudo tee /etc/apt/apt.conf.d/20auto-upgrades >/dev/null <<'APT20'
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+APT20
+sudo tee /etc/apt/apt.conf.d/52unattended-upgrades-local >/dev/null <<'APT52'
+Unattended-Upgrade::Automatic-Reboot "false";
+APT52
+apt-config dump APT::Periodic::Update-Package-Lists
+apt-config dump APT::Periodic::Unattended-Upgrade
+systemctl status apt-daily.timer --no-pager
+systemctl status apt-daily-upgrade.timer --no-pager
+EOF
+)
+      AUTO_UPDATE_POLICY_NOTE='Only configure email reporting if you also set Unattended-Upgrade::Mail and the host can actually send mail.'
+      TIME_SYNC_COMMANDS=$(cat <<EOF
+timedatectl status
+timedatectl show -p NTPSynchronized --value
+systemctl is-enabled chrony 2>/dev/null || true
+systemctl is-enabled systemd-timesyncd 2>/dev/null || true
+systemctl status chrony --no-pager || systemctl status systemd-timesyncd --no-pager || true
+chronyc -N sources || true
+EOF
+)
+      TIME_SYNC_APPLY_COMMANDS=$(cat <<EOF
+sudo systemctl disable --now systemd-timesyncd || true
+sudo systemctl enable --now chrony || sudo systemctl enable --now chronyd
+EOF
+)
+      TIME_SYNC_NOTE="Verify exactly one NTP client is intended to be active on the image and confirm the system clock is synchronized."
+      PLATFORM_AUDIT_COMMANDS=$(cat <<EOF
+sudo journalctl -u ssh --since today --no-pager || sudo journalctl -u sshd --since today --no-pager
+sudo journalctl -u fail2ban --since today --no-pager
+sudo ufw status numbered
+sudo aa-status || sudo sestatus || true
+sudo ss -tulpn
+EOF
+)
+      PLATFORM_AUDIT_NOTE="Debian-family images commonly rely on AppArmor, but some cloud images may also expose SELinux tooling; check whichever MAC system is actually active."
+      REFERENCES_USED=$(cat <<EOF
+- OpenSSH sshd_config manual: https://man.openbsd.org/sshd_config
+- Ubuntu Server firewall guide: https://documentation.ubuntu.com/server/how-to/security/firewalls/
+- Ubuntu automatic updates guide: https://documentation.ubuntu.com/server/how-to/software/automatic-updates/
+- Debian periodic updates wiki: https://wiki.debian.org/PeriodicUpdates
+- Ubuntu time sync guide: https://documentation.ubuntu.com/server/how-to/networking/timedatectl-and-timesyncd/
+- Fail2Ban jail config manpage: https://manpages.ubuntu.com/manpages/jammy/man5/jail.conf.5.html
+EOF
+)
+      ;;
+    rpm)
+      FAMILY_LABEL="RPM family"
+      PACKAGE_MANAGER_LABEL="dnf/yum"
+      BASE_REFRESH_CMD="sudo dnf makecache --refresh || sudo yum makecache"
+      BASE_UPGRADE_CMD="sudo dnf upgrade -y || sudo yum update -y"
+      BASE_INSTALL_CMD="sudo dnf install -y sudo curl ca-certificates openssh-server firewalld fail2ban dnf-automatic chrony || sudo yum install -y sudo curl ca-certificates openssh-server firewalld fail2ban dnf-automatic chrony"
+      ADMIN_GROUP="wheel"
+      SSH_RELOAD_CMD="sudo systemctl reload sshd"
+      SSH_INCLUDE_NOTE='Most modern RPM-family images support /etc/ssh/sshd_config.d/*.conf, but verify the main sshd_config still loads that directory before relying on drop-ins.'
+      configure_firewall_profile "firewalld"
+      FAIL2BAN_BANACTION="firewallcmd-rich-rules"
+      FAIL2BAN_BACKEND_NOTE='If firewalld is not the firewall of record on the target image, change banaction to the backend you actually use before enabling the jail.'
+      AUTO_UPDATE_TITLE="Automatic Security Updates"
+      AUTO_UPDATE_NOTE='RPM-family hosts typically use dnf-automatic instead of unattended-upgrades for scheduled patching.'
+      AUTO_UPDATE_COMMANDS=$(cat <<EOF
+sudo dnf install -y dnf-automatic || sudo yum install -y dnf-automatic
+sudo install -d -m 755 /etc/dnf/automatic.conf.d
+sudo tee /etc/dnf/automatic.conf.d/99-security.conf >/dev/null <<'DNFAUTO'
+[commands]
+apply_updates = yes
+upgrade_type = security
+
+[emitters]
+emit_via = motd
+DNFAUTO
+sudo systemctl enable --now dnf-automatic-install.timer || sudo systemctl enable --now dnf-automatic.timer
+systemctl status dnf-automatic-install.timer --no-pager || systemctl status dnf-automatic.timer --no-pager
+EOF
+)
+      AUTO_UPDATE_POLICY_NOTE='Review the local dnf-automatic defaults on cloud images, because timer names and supported options can vary slightly by release.'
+      TIME_SYNC_COMMANDS=$(cat <<EOF
+timedatectl status
+timedatectl show -p NTPSynchronized --value
+systemctl is-enabled chronyd 2>/dev/null || true
+systemctl status chronyd --no-pager || systemctl status systemd-timesyncd --no-pager || true
+chronyc -N sources || true
+EOF
+)
+      TIME_SYNC_APPLY_COMMANDS=$(cat <<EOF
+sudo systemctl enable --now chronyd || sudo systemctl enable --now chrony
+EOF
+)
+      TIME_SYNC_NOTE='RPM-family cloud images commonly use chronyd; confirm exactly one NTP client is enabled and that the clock reports synchronized.'
+      PLATFORM_AUDIT_COMMANDS=$(cat <<EOF
+sudo journalctl -u sshd --since today --no-pager || sudo journalctl -u ssh --since today --no-pager
+sudo journalctl -u fail2ban --since today --no-pager
+sudo firewall-cmd --list-all || true
+sudo sestatus || sudo aa-status || true
+sudo ss -tulpn
+EOF
+)
+      PLATFORM_AUDIT_NOTE="RPM-family images usually rely on SELinux rather than AppArmor; verify enforcing/permissive state and adjust service policy accordingly."
+      REFERENCES_USED=$(cat <<EOF
+- OpenSSH sshd_config manual: https://man.openbsd.org/sshd_config
+- Fedora quick docs for DNF automatic updates: https://docs.fedoraproject.org/en-US/quick-docs/autoupdates/
+- DNF automatic documentation: https://dnf.readthedocs.io/en/latest/automatic.html
+- Red Hat firewalld documentation: https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/9/html/configuring_firewalls_and_packet_filters/
+- Red Hat chrony documentation: https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/9/html/configuring_basic_system_settings/configuring-time-synchronization_configuring-basic-system-settings
+EOF
+)
+      ;;
+    suse)
+      FAMILY_LABEL="SUSE family"
+      PACKAGE_MANAGER_LABEL="zypper"
+      BASE_REFRESH_CMD="sudo zypper refresh"
+      BASE_UPGRADE_CMD="sudo zypper update -y"
+      BASE_INSTALL_CMD="sudo zypper install -y sudo curl ca-certificates openssh firewalld fail2ban chrony"
+      ADMIN_GROUP="wheel"
+      SSH_RELOAD_CMD="sudo systemctl reload sshd"
+      SSH_INCLUDE_NOTE='openSUSE and SLES generally support OpenSSH drop-ins, but confirm the main sshd_config contains the Include directive before relying on /etc/ssh/sshd_config.d.'
+      configure_firewall_profile "firewalld"
+      FAIL2BAN_BANACTION="firewallcmd-rich-rules"
+      FAIL2BAN_BACKEND_NOTE='If firewalld is not the firewall of record on the target image, change banaction to the backend you actually use before enabling the jail.'
+      AUTO_UPDATE_TITLE="Security Patch Policy"
+      AUTO_UPDATE_NOTE="SUSE-family automation varies more by edition than Debian or RPM families. Prefer a clearly scheduled security patch policy instead of assuming one unattended mechanism fits every image."
+      AUTO_UPDATE_COMMANDS=$(cat <<EOF
+sudo zypper refresh
+sudo zypper patch --category security -y || sudo zypper patch -g security -y
+sudo yast2 online_update_configuration || true
+EOF
+)
+      AUTO_UPDATE_POLICY_NOTE="For Leap and SLES, document the approved YaST or timer-based security-patching workflow. For rolling or transactional editions, do not blindly copy a Debian-style unattended model."
+      TIME_SYNC_COMMANDS=$(cat <<EOF
+timedatectl status
+timedatectl show -p NTPSynchronized --value
+systemctl is-enabled chronyd 2>/dev/null || true
+systemctl status chronyd --no-pager || systemctl status systemd-timesyncd --no-pager || true
+chronyc -N sources || true
+EOF
+)
+      TIME_SYNC_APPLY_COMMANDS=$(cat <<EOF
+sudo systemctl enable --now chronyd || sudo systemctl enable --now chrony
+EOF
+)
+      TIME_SYNC_NOTE="Confirm which NTP client is active on the image and avoid enabling multiple time-sync daemons in parallel."
+      PLATFORM_AUDIT_COMMANDS=$(cat <<EOF
+sudo journalctl -u sshd --since today --no-pager || sudo journalctl -u ssh --since today --no-pager
+sudo journalctl -u fail2ban --since today --no-pager
+sudo firewall-cmd --list-all || true
+sudo aa-status || sudo sestatus || true
+sudo ss -tulpn
+EOF
+)
+      PLATFORM_AUDIT_NOTE="SUSE-family images may use AppArmor or SELinux depending on edition and policy; verify the active MAC framework instead of assuming one."
+      REFERENCES_USED=$(cat <<EOF
+- OpenSSH sshd_config manual: https://man.openbsd.org/sshd_config
+- openSUSE package management guide: https://doc.opensuse.org/documentation/leap/reference/html/book-reference/cha-sw-cl.html
+- openSUSE firewalld start-up guide: https://doc.opensuse.org/documentation/leap/security/html/book-security/cha-security-firewall.html
+- SUSE zypper patch management guide: https://documentation.suse.com/sles/15-SP6/html/SLES-all/cha-sw-cl.html
+EOF
+)
+      ;;
+    arch)
+      FAMILY_LABEL="Arch family"
+      PACKAGE_MANAGER_LABEL="pacman"
+      BASE_REFRESH_CMD="# Do not run pacman -Sy alone on rolling releases; use pacman -Syu below."
+      BASE_UPGRADE_CMD="sudo pacman -Syu --noconfirm"
+      BASE_INSTALL_CMD="sudo pacman -S --noconfirm --needed sudo curl ca-certificates openssh firewalld fail2ban chrony"
+      ADMIN_GROUP="wheel"
+      SSH_RELOAD_CMD="sudo systemctl reload sshd"
+      SSH_INCLUDE_NOTE='Arch-family hosts generally support OpenSSH drop-ins, but confirm the main sshd_config still loads /etc/ssh/sshd_config.d/*.conf before relying on it.'
+      configure_firewall_profile "firewalld"
+      FAIL2BAN_BANACTION="firewallcmd-rich-rules"
+      FAIL2BAN_BACKEND_NOTE='If firewalld is not the firewall of record on the target image, change banaction to the backend you actually use before enabling the jail.'
+      AUTO_UPDATE_TITLE="Update Policy For Rolling Releases"
+      AUTO_UPDATE_NOTE="Arch-family systems are rolling releases, so unattended full upgrades can be risky. Prefer a documented, reviewed update cadence instead of blind unattended patching."
+      AUTO_UPDATE_COMMANDS=$(cat <<EOF
+# Recommended: review Arch news and maintenance windows before upgrading.
+sudo pacman -Syu --noconfirm
+EOF
+)
+      AUTO_UPDATE_POLICY_NOTE="Do not claim unattended patching is healthy on a rolling-release host unless you have an explicit staged-update process and rollback plan."
+      TIME_SYNC_COMMANDS=$(cat <<EOF
+timedatectl status
+timedatectl show -p NTPSynchronized --value
+systemctl is-enabled chronyd 2>/dev/null || true
+systemctl status chronyd --no-pager || systemctl status systemd-timesyncd --no-pager || true
+chronyc -N sources || true
+EOF
+)
+      TIME_SYNC_APPLY_COMMANDS=$(cat <<EOF
+sudo systemctl enable --now chronyd || sudo systemctl enable --now chrony
+EOF
+)
+      TIME_SYNC_NOTE='Arch-family images frequently use chronyd; confirm one NTP client is enabled and the clock reports synchronized.'
+      PLATFORM_AUDIT_COMMANDS=$(cat <<EOF
+sudo journalctl -u sshd --since today --no-pager || sudo journalctl -u ssh --since today --no-pager
+sudo journalctl -u fail2ban --since today --no-pager
+sudo firewall-cmd --list-all || true
+sudo aa-status || sudo sestatus || true
+sudo ss -tulpn
+EOF
+)
+      PLATFORM_AUDIT_NOTE="Arch-family hosts vary widely by image build. Treat MAC tooling and optional packages as image-specific checks, not assumptions."
+      REFERENCES_USED=$(cat <<EOF
+- OpenSSH sshd_config manual: https://man.openbsd.org/sshd_config
+- Arch Linux package management guide: https://wiki.archlinux.org/title/Pacman
+- Arch Linux OpenSSH guide: https://wiki.archlinux.org/title/OpenSSH
+- Arch Linux Firewalld guide: https://wiki.archlinux.org/title/Firewalld
+- Arch Linux chrony guide: https://wiki.archlinux.org/title/Chrony
+EOF
+)
+      ;;
+    *)
+      FAMILY_LABEL="Generic fallback"
+      PACKAGE_MANAGER_LABEL="manual mapping required"
+      BASE_REFRESH_CMD="sudo <package-manager> refresh-index"
+      BASE_UPGRADE_CMD="sudo <package-manager> upgrade-all"
+      BASE_INSTALL_CMD="sudo <package-manager> install sudo curl ca-certificates openssh <firewall-tool> fail2ban <time-sync-tool>"
+      ADMIN_GROUP="<admin-group>"
+      SSH_RELOAD_CMD="sudo systemctl reload sshd"
+      SSH_INCLUDE_NOTE='The distro is using the generic fallback profile. Verify OpenSSH include support before relying on /etc/ssh/sshd_config.d.'
+      configure_firewall_profile "generic"
+      FAIL2BAN_BANACTION="<match-your-firewall-backend>"
+      FAIL2BAN_BACKEND_NOTE="Map the real firewall backend before enabling Fail2Ban, or the jail may appear healthy while bans are ineffective."
+      AUTO_UPDATE_TITLE="Security Update Policy"
+      AUTO_UPDATE_NOTE="This distro does not have a native profile in the generator yet. The plan still works as a framework, but package manager, firewall, and patch automation commands must be mapped manually."
+      AUTO_UPDATE_COMMANDS=$(cat <<EOF
+# Replace the placeholders below with the native update mechanism for the target distro.
+sudo <package-manager> install <security-update-tool>
+sudo <security-update-tool> enable-or-schedule
+EOF
+)
+      AUTO_UPDATE_POLICY_NOTE="Do not treat the generic fallback as production-ready until package, firewall, and update commands are mapped to the real distro."
+      TIME_SYNC_COMMANDS=$(cat <<EOF
+timedatectl status
+timedatectl show -p NTPSynchronized --value || true
+systemctl status chronyd --no-pager || systemctl status chrony --no-pager || systemctl status systemd-timesyncd --no-pager || true
+EOF
+)
+      TIME_SYNC_APPLY_COMMANDS=$(cat <<EOF
+# Replace this with the native time-sync service for the target distro before applying.
+sudo <time-sync-tool> enable-and-start
+EOF
+)
+      TIME_SYNC_NOTE="Confirm exactly one NTP client is intended to be active on the real distro and adjust the commands above to match the installed service names."
+      PLATFORM_AUDIT_COMMANDS=$(cat <<EOF
+sudo journalctl -u sshd --since today --no-pager || sudo journalctl -u ssh --since today --no-pager
+sudo journalctl -u fail2ban --since today --no-pager
+sudo ss -tulpn
+EOF
+)
+      PLATFORM_AUDIT_NOTE="The generic fallback intentionally avoids assuming AppArmor, SELinux, UFW, or firewalld. Verify the platform security stack manually."
+      REFERENCES_USED=$(cat <<EOF
+- OpenSSH sshd_config manual: https://man.openbsd.org/sshd_config
+- Review the vendor documentation for the target distro's package manager, firewall tool, and patch-automation mechanism before applying the generated plan.
+EOF
+)
+      ;;
+  esac
+}
+
+log_step() {
+  printf '==> %s\n' "$1"
+}
+
+append_completed_step() {
+  if [ -z "$APPLY_COMPLETED_STEPS" ]; then
+    APPLY_COMPLETED_STEPS="- $1"
+  else
+    APPLY_COMPLETED_STEPS="$APPLY_COMPLETED_STEPS
+- $1"
+  fi
+}
+
+progress_step() {
+  PROGRESS_CURRENT=$((PROGRESS_CURRENT + 1))
+  printf '[%s/%s] %s\n' "$PROGRESS_CURRENT" "$PROGRESS_TOTAL" "$1"
+}
+
+show_apply_summary() {
+  print_section "Execution Summary"
+  printf 'Mode: %s\n' "$DISPLAY_MODE" >&2
+  printf 'Distro family: %s\n' "$DISTRO_FAMILY" >&2
+  printf 'Completed phases: %s/%s\n' "$PROGRESS_CURRENT" "$PROGRESS_TOTAL" >&2
+
+  if [ -n "$APPLY_COMPLETED_STEPS" ]; then
+    printf 'Phases completed:\n%s\n' "$APPLY_COMPLETED_STEPS" >&2
+  fi
+
+  printf 'Plan record: %s\n' "$OUTPUT_FILE" >&2
+
+  if [ "$DRY_RUN" = "true" ]; then
+    print_success 'Preview finished. No host changes were applied.'
+  elif [ "$RELOAD_SSH" = "true" ]; then
+    print_success 'Apply finished. SSH was reloaded during this run.'
+  else
+    print_warning 'Apply finished, but SSH reload is still manual. Review access readiness before reloading SSH yourself.'
+  fi
+}
+
+run_block() {
+  local description="$1"
+  local commands="$2"
+
+  progress_step "$description"
+
+  if [ "$DRY_RUN" = "true" ]; then
+    printf '%s\n' "$commands"
+    append_completed_step "$description"
+    return 0
+  fi
+
+  bash -ueo pipefail -c "$commands"
+  append_completed_step "$description"
+}
+
+print_version() {
+  printf 'civa %s\n' "$VERSION"
+}
+
+doctor_result() {
+  local label="$1"
+  local status="$2"
+  local detail="$3"
+
+  printf '[%s] %s: %s\n' "$status" "$label" "$detail"
+}
+
+run_doctor() {
+  local failures=0
+  local bash_path=""
+  local sudo_path=""
+
+  print_version
+  printf 'Detected distro input: %s\n' "$DISTRO"
+  printf 'Detected family: %s\n' "$DISTRO_FAMILY"
+  printf 'Public key path: %s\n' "$PUBLIC_KEY_FILE"
+
+  bash_path="$(command -v bash || true)"
+  if [ -n "$bash_path" ]; then
+    doctor_result "bash" "ok" "$bash_path"
+  else
+    doctor_result "bash" "fail" "bash is required"
+    failures=$((failures + 1))
+  fi
+
+  sudo_path="$(command -v sudo || true)"
+  if [ -n "$sudo_path" ]; then
+    doctor_result "sudo" "ok" "$sudo_path"
+  else
+    doctor_result "sudo" "fail" "sudo is required for apply mode"
+    failures=$((failures + 1))
+  fi
+
+  if [ -r /etc/os-release ]; then
+    doctor_result "os-release" "ok" "/etc/os-release is readable"
+  else
+    doctor_result "os-release" "fail" "/etc/os-release is missing or unreadable"
+    failures=$((failures + 1))
+  fi
+
+  if [ "$DISTRO_FAMILY" = "generic" ]; then
+    doctor_result "family support" "fail" "generic fallback cannot run apply mode safely"
+    failures=$((failures + 1))
+  else
+    doctor_result "family support" "ok" "native family profile available"
+  fi
+
+  if [ -f /etc/ssh/sshd_config ]; then
+    doctor_result "sshd config" "ok" "/etc/ssh/sshd_config found"
+    if grep -Eq '^[[:space:]]*Include[[:space:]]+/etc/ssh/sshd_config\.d/\*\.conf' /etc/ssh/sshd_config; then
+      doctor_result "sshd include" "ok" "/etc/ssh/sshd_config.d include directive found"
+    else
+      doctor_result "sshd include" "fail" "missing include directive for /etc/ssh/sshd_config.d/*.conf"
+      failures=$((failures + 1))
+    fi
+  else
+    doctor_result "sshd config" "fail" "/etc/ssh/sshd_config not found"
+    failures=$((failures + 1))
+  fi
+
+  if [ -f "$PUBLIC_KEY_FILE" ]; then
+    doctor_result "public key" "ok" "public key exists on the host"
+  else
+    doctor_result "public key" "fail" "public key file does not exist on the host"
+    failures=$((failures + 1))
+  fi
+
+  case "$DISTRO_FAMILY" in
+    debian)
+      if command -v apt >/dev/null 2>&1; then
+        doctor_result "package manager" "ok" "apt found"
+      else
+        doctor_result "package manager" "fail" "apt not found"
+        failures=$((failures + 1))
+      fi
+      ;;
+    rpm)
+      if command -v dnf >/dev/null 2>&1 || command -v yum >/dev/null 2>&1; then
+        doctor_result "package manager" "ok" "dnf/yum found"
+      else
+        doctor_result "package manager" "fail" "dnf or yum not found"
+        failures=$((failures + 1))
+      fi
+      ;;
+    suse)
+      if command -v zypper >/dev/null 2>&1; then
+        doctor_result "package manager" "ok" "zypper found"
+      else
+        doctor_result "package manager" "fail" "zypper not found"
+        failures=$((failures + 1))
+      fi
+      ;;
+    arch)
+      if command -v pacman >/dev/null 2>&1; then
+        doctor_result "package manager" "ok" "pacman found"
+      else
+        doctor_result "package manager" "fail" "pacman not found"
+        failures=$((failures + 1))
+      fi
+      ;;
+  esac
+
+  if [ "$failures" -gt 0 ]; then
+    printf 'Doctor summary: %s blocker(s) found\n' "$failures"
+    return 1
+  fi
+
+  printf 'Doctor summary: host looks ready for civa apply\n'
+}
+
+build_ssh_apply_commands() {
+  cat <<EOF
+sudo install -d -m 755 /etc/ssh/sshd_config.d
+if ! sudo grep -Eq '^[[:space:]]*Include[[:space:]]+/etc/ssh/sshd_config\.d/\*\.conf' /etc/ssh/sshd_config; then
+  printf '%s\n' 'OpenSSH include directive for /etc/ssh/sshd_config.d/*.conf is missing. Refusing to apply SSH changes automatically.' >&2
+  exit 1
+fi
+if [ -f /etc/ssh/sshd_config.d/99-hardening.conf ]; then
+  sudo cp /etc/ssh/sshd_config.d/99-hardening.conf /etc/ssh/sshd_config.d/99-hardening.conf.bak.$(date +%Y%m%d%H%M%S)
+fi
+sudo tee /etc/ssh/sshd_config.d/99-hardening.conf >/dev/null <<'SSHCONF'
+Port ${SSH_PORT}
+PermitRootLogin no
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PubkeyAuthentication yes
+PermitEmptyPasswords no
+X11Forwarding no
+MaxAuthTries 3
+LoginGraceTime 30
+AllowUsers ${ADMIN_USER}
+UsePAM yes
+SSHCONF
+sudo sshd -t
+EOF
+}
+
+build_fail2ban_apply_commands() {
+  cat <<EOF
+sudo install -d -m 755 /etc/fail2ban
+if [ -f /etc/fail2ban/jail.local ]; then
+  sudo cp /etc/fail2ban/jail.local /etc/fail2ban/jail.local.bak.$(date +%Y%m%d%H%M%S)
+fi
+sudo tee /etc/fail2ban/jail.local >/dev/null <<'JAIL'
+[DEFAULT]
+bantime = 1h
+findtime = 10m
+maxretry = 5
+banaction = ${FAIL2BAN_BANACTION}
+
+[sshd]
+enabled = true
+port = ${SSH_PORT}
+backend = systemd
+logpath = %(sshd_log)s
+JAIL
+sudo systemctl enable --now fail2ban
+sudo fail2ban-client status
+sudo fail2ban-client status sshd
+EOF
+}
+
+apply_hardening() {
+  local ssh_apply_commands=""
+  local user_apply_commands=""
+  local final_validation_commands=""
+
+  [ "$MODE" = "apply" ] || return 0
+
+  if [ "$DISTRO_FAMILY" = "generic" ]; then
+    fail "apply mode is disabled for generic fallback distros; use --distro with a supported family or --plan-only"
+  fi
+
+  if [ "$DRY_RUN" != "true" ] && [ ! -f "$PUBLIC_KEY_FILE" ]; then
+    fail "public key file not found on the target host: $PUBLIC_KEY_FILE"
+  fi
+
+  PROGRESS_CURRENT="0"
+  PROGRESS_TOTAL="10"
+  APPLY_COMPLETED_STEPS=""
+
+  user_apply_commands=$(cat <<EOF
+id -u ${ADMIN_USER} >/dev/null 2>&1 || sudo useradd -m ${ADMIN_USER}
+sudo usermod -aG ${ADMIN_GROUP} ${ADMIN_USER}
+sudo install -d -m 700 -o ${ADMIN_USER} -g ${ADMIN_USER} /home/${ADMIN_USER}/.ssh
+sudo install -m 600 -o ${ADMIN_USER} -g ${ADMIN_USER} ${PUBLIC_KEY_FILE} /home/${ADMIN_USER}/.ssh/authorized_keys
+sudo -u ${ADMIN_USER} test -f /home/${ADMIN_USER}/.ssh/authorized_keys
+EOF
+)
+
+  run_block "Applying hostname and timezone" "sudo hostnamectl set-hostname ${HOSTNAME_VALUE}
+sudo timedatectl set-timezone ${TIMEZONE_VALUE}"
+  run_block "Refreshing packages and installing baseline tools" "${BASE_REFRESH_CMD}
+${BASE_UPGRADE_CMD}
+${BASE_INSTALL_CMD}"
+  run_block "Creating admin user and installing the SSH key" "$user_apply_commands"
+
+  ssh_apply_commands="$(build_ssh_apply_commands)"
+  run_block "Writing SSH hardening drop-in" "$ssh_apply_commands"
+  run_block "Applying host firewall rules" "$FIREWALL_COMMANDS"
+
+  if [ "$RELOAD_SSH" = "true" ]; then
+    run_block "Reloading SSH daemon" "$SSH_RELOAD_CMD"
+  else
+    progress_step "Skipping SSH reload for now"
+    log_step "Activate SSH later with --reload-ssh or a manual service reload once alternate access is ready"
+    append_completed_step "SSH reload intentionally skipped"
+  fi
+
+  run_block "Configuring Fail2Ban" "$(build_fail2ban_apply_commands)"
+  run_block "Applying automatic update policy" "$AUTO_UPDATE_COMMANDS"
+  run_block "Applying time synchronization service" "$TIME_SYNC_APPLY_COMMANDS"
+
+  final_validation_commands=$(cat <<EOF
+sudo sshd -t
+sudo fail2ban-client status sshd
+${PLATFORM_AUDIT_COMMANDS}
+${TIME_SYNC_COMMANDS}
+EOF
+)
+  run_block "Running final validation checks" "$final_validation_commands"
+
+  show_apply_summary
+}
+
+if [ "$#" -eq 0 ]; then
+  usage
+  exit 0
+fi
+
+if parse_command "$1"; then
+  if [ "$#" -gt 0 ] && [ "${1#--}" = "$1" ]; then
+    shift
+  fi
+fi
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --apply)
+      MODE="apply"
+      MODE_PROVIDED="true"
+      shift
+      ;;
+    --plan-only)
+      MODE="plan"
+      MODE_PROVIDED="true"
+      shift
+      ;;
+    --dry-run)
+      MODE="apply"
+      DRY_RUN="true"
+      MODE_PROVIDED="true"
+      shift
+      ;;
+    --reload-ssh)
+      RELOAD_SSH="true"
+      RELOAD_SSH_PROVIDED="true"
+      shift
+      ;;
+    --no-ssh-reload)
+      RELOAD_SSH="false"
+      RELOAD_SSH_PROVIDED="true"
+      shift
+      ;;
+    --non-interactive)
+      INTERACTIVE="false"
+      shift
+      ;;
+    --distro)
+      [ "$#" -ge 2 ] || fail "--distro requires a value"
+      DISTRO="$2"
+      DISTRO_PROVIDED="true"
+      shift 2
+      ;;
+    --hostname)
+      [ "$#" -ge 2 ] || fail "--hostname requires a value"
+      HOSTNAME_VALUE="$2"
+      HOSTNAME_PROVIDED="true"
+      shift 2
+      ;;
+    --admin-user)
+      [ "$#" -ge 2 ] || fail "--admin-user requires a value"
+      ADMIN_USER="$2"
+      ADMIN_USER_PROVIDED="true"
+      shift 2
+      ;;
+    --current-ssh-port)
+      [ "$#" -ge 2 ] || fail "--current-ssh-port requires a value"
+      CURRENT_SSH_PORT="$2"
+      CURRENT_SSH_PORT_PROVIDED="true"
+      shift 2
+      ;;
+    --ssh-port)
+      [ "$#" -ge 2 ] || fail "--ssh-port requires a value"
+      SSH_PORT="$2"
+      SSH_PORT_PROVIDED="true"
+      shift 2
+      ;;
+    --public-key-file)
+      [ "$#" -ge 2 ] || fail "--public-key-file requires a value"
+      PUBLIC_KEY_FILE="$2"
+      PUBLIC_KEY_FILE_PROVIDED="true"
+      shift 2
+      ;;
+    --timezone)
+      [ "$#" -ge 2 ] || fail "--timezone requires a value"
+      TIMEZONE_VALUE="$2"
+      TIMEZONE_PROVIDED="true"
+      shift 2
+      ;;
+    --output)
+      [ "$#" -ge 2 ] || fail "--output requires a value"
+      OUTPUT_FILE="$2"
+      OUTPUT_PROVIDED="true"
+      shift 2
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    *)
+      fail "unknown argument: $1"
+      ;;
+  esac
+done
+
+if [ "$COMMAND" = "version" ]; then
+  print_version
+  exit 0
+fi
+
+if [ "$COMMAND" != "doctor" ]; then
+  interactive_configure
+fi
+
+DISTRO_REQUESTED="$DISTRO"
+
+validate_port "$CURRENT_SSH_PORT" || fail "--current-ssh-port must be an integer between 1 and 65535"
+validate_port "$SSH_PORT" || fail "--ssh-port must be an integer between 1 and 65535"
+[ -n "$HOSTNAME_VALUE" ] || fail "--hostname must not be empty"
+[ -n "$ADMIN_USER" ] || fail "--admin-user must not be empty"
+[ -n "$TIMEZONE_VALUE" ] || fail "--timezone must not be empty"
+
+PUBLIC_KEY_FILE="$(expand_home_path "$PUBLIC_KEY_FILE")"
+
+if [ -z "$DISTRO" ] || [ "$DISTRO" = "auto" ]; then
+  if ! detect_distro_from_os_release; then
+    DISTRO="generic"
+    DISTRO_SOURCE="auto-detect-failed"
+    DISTRO_DETECTION_NOTE="Could not parse /etc/os-release, so the generic fallback profile is being used."
+  fi
+else
+  DISTRO_SOURCE="manual"
+  DISTRO_DETECTION_NOTE="Manual override supplied via --distro."
+fi
+
+DISTRO_NORMALIZED="$(normalize_distro "$DISTRO")"
+resolve_distro_family
+configure_distro_profile
+
+if [ "$COMMAND" = "doctor" ]; then
+  run_doctor
+  exit $?
+fi
+
+if [ "$MODE" = "plan" ]; then
+  MODE_NOTE="Plan-only mode: no host changes will be applied."
+elif [ "$DRY_RUN" = "true" ]; then
+  MODE_NOTE="Apply mode with dry-run preview: commands are printed but not executed."
+elif [ "$RELOAD_SSH" = "false" ]; then
+  MODE_NOTE="Apply mode without SSH reload: most changes are executed, but SSH must be reloaded manually to activate new daemon settings."
+else
+  MODE_NOTE="Apply mode: the script will change the host directly and reload SSH after firewall rules are in place."
+fi
+
+if [ "$DRY_RUN" = "true" ]; then
+  DISPLAY_MODE="preview"
+else
+  DISPLAY_MODE="$MODE"
+fi
+
+if [ "$MODE" = "plan" ]; then
+  OPERATING_MODEL_NOTE="This run is plan-only. No host changes are executed."
+elif [ "$DRY_RUN" = "true" ]; then
+  OPERATING_MODEL_NOTE="This run is a dry-run preview. Command output shows intent only and does not prove the host can apply the changes successfully."
+elif [ "$RELOAD_SSH" = "true" ]; then
+  OPERATING_MODEL_NOTE="This run applies host changes directly and will also reload SSH. Keep console access open and verify a second login before closing the current session."
+else
+  OPERATING_MODEL_NOTE="This run applies host changes directly, but SSH reload remains manual. Review the generated drop-in and reload SSH only after alternate access is ready."
+fi
+
+if [ "$MODE" = "apply" ] && [ "$DRY_RUN" != "true" ] && [ "$RELOAD_SSH" = "false" ] && [ "$CURRENT_SSH_PORT" != "$SSH_PORT" ]; then
+  fail "changing SSH ports without --reload-ssh leaves the host in an inconsistent state; either keep the same SSH port or pass --reload-ssh"
+fi
+
+SAFE_LABEL="$(sanitize_label "$HOSTNAME_VALUE")"
+[ -n "$SAFE_LABEL" ] || SAFE_LABEL="vps"
+
+if [ -z "$OUTPUT_FILE" ]; then
+  OUTPUT_FILE="plans/${SAFE_LABEL}-hardening-plan.md"
+fi
+
+OUTPUT_DIR="$(dirname "$OUTPUT_FILE")"
+mkdir -p "$OUTPUT_DIR"
+
+CURRENT_DATE_UTC="$(date -u +"%Y-%m-%d %H:%M:%S UTC")"
+
+cat > "$OUTPUT_FILE" <<EOF
+# Initial VPS Hardening Plan
+
+Generated: ${CURRENT_DATE_UTC}
+
+## Target Profile
+
+- Mode: ${DISPLAY_MODE}
+- Mode note: ${MODE_NOTE}
+- Distro input: ${DISTRO}
+- Distro request: ${DISTRO_REQUESTED}
+- Distro source: ${DISTRO_SOURCE}
+- Distro detection note: ${DISTRO_DETECTION_NOTE}
+- Detected OS ID: ${DETECTED_OS_ID:-n/a}
+- Detected OS ID_LIKE: ${DETECTED_OS_ID_LIKE:-n/a}
+- Distro family: ${FAMILY_LABEL}
+- Support level: ${DISTRO_SUPPORT_LEVEL}
+- Package manager family: ${PACKAGE_MANAGER_LABEL}
+- Hostname: ${HOSTNAME_VALUE}
+- Admin user: ${ADMIN_USER}
+- Expected admin group: ${ADMIN_GROUP}
+- Current SSH port: ${CURRENT_SSH_PORT}
+- Planned SSH port: ${SSH_PORT}
+- Public key reference: ${PUBLIC_KEY_FILE}
+- Timezone: ${TIMEZONE_VALUE}
+
+## Operating Model
+
+${OPERATING_MODEL_NOTE}
+
+## Safety Guardrails
+
+1. Keep the provider console or rescue access available before touching SSH.
+2. Create and verify the sudo-capable admin user with key-based login **before** disabling root or password SSH login.
+3. Open the target SSH port in the firewall **before** changing the SSH daemon port.
+4. Test a second SSH session successfully before restarting or reloading SSH.
+5. Snapshot the VPS or confirm a restore path before hardening changes.
+
+## Phase 0 - Preflight
+
+~~~bash
+sudo hostnamectl set-hostname ${HOSTNAME_VALUE}
+sudo timedatectl set-timezone ${TIMEZONE_VALUE}
+timedatectl status
+uname -a
+cat /etc/os-release
+ss -tulpn
+systemctl list-unit-files --state=enabled
+~~~
+
+Checklist:
+
+- Record current SSH reachability and provider console access.
+- Decide which application ports must remain open in addition to SSH.
+- Confirm snapshot, backup, and restore ownership.
+
+## Phase 1 - Baseline Packages And Updates
+
+~~~bash
+${BASE_REFRESH_CMD}
+${BASE_UPGRADE_CMD}
+${BASE_INSTALL_CMD}
+~~~
+
+Notes:
+
+- ${AUTO_UPDATE_NOTE}
+- Keep OpenSSH defaults for ciphers, KEX, and MAC unless you have a compliance requirement; modern OpenSSH defaults age better than copied hardening snippets.
+- If the public key file only exists on your workstation, upload it first or use ssh-copy-id before disabling password-based SSH login.
+
+## Phase 2 - Create A Least-Privilege Admin User
+
+The command below assumes the public key file is already present on the server at the referenced path.
+
+~~~bash
+id -u ${ADMIN_USER} >/dev/null 2>&1 || sudo useradd -m ${ADMIN_USER}
+sudo usermod -aG ${ADMIN_GROUP} ${ADMIN_USER}
+sudo install -d -m 700 -o ${ADMIN_USER} -g ${ADMIN_USER} /home/${ADMIN_USER}/.ssh
+sudo install -m 600 -o ${ADMIN_USER} -g ${ADMIN_USER} ${PUBLIC_KEY_FILE} /home/${ADMIN_USER}/.ssh/authorized_keys
+sudo -u ${ADMIN_USER} test -f /home/${ADMIN_USER}/.ssh/authorized_keys
+~~~
+
+Verification:
+
+- Open a second terminal and confirm login using the current active SSH port first: ssh -p ${CURRENT_SSH_PORT} ${ADMIN_USER}@<server-ip>
+- Confirm privilege escalation works: sudo -l
+- If the public key still only exists on your workstation, copy it before continuing, for example with ssh-copy-id -p ${CURRENT_SSH_PORT} -i <public-key-file> ${ADMIN_USER}@<server-ip>.
+
+## Phase 3 - SSH Hardening With A Drop-In File
+
+Create a dedicated drop-in instead of editing the vendor file directly.
+
+~~~bash
+sudo install -d -m 755 /etc/ssh/sshd_config.d
+sudo tee /etc/ssh/sshd_config.d/99-hardening.conf >/dev/null <<'SSHCONF'
+Port ${SSH_PORT}
+PermitRootLogin no
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PubkeyAuthentication yes
+PermitEmptyPasswords no
+X11Forwarding no
+MaxAuthTries 3
+LoginGraceTime 30
+AllowUsers ${ADMIN_USER}
+UsePAM yes
+SSHCONF
+sudo sshd -t
+~~~
+
+Safe rollout:
+
+1. Keep the current session open.
+2. Prepare the drop-in file and validate with sudo sshd -t.
+3. If the target port differs from the current port, open firewall access for the target port first in the next phase.
+4. Keep the current session open until a second SSH session succeeds after the reload.
+
+Important:
+
+- ${SSH_INCLUDE_NOTE}
+- If you use AllowUsers, list every required admin or break-glass account there, or those users will be denied SSH login.
+
+## Phase 4 - ${FIREWALL_SECTION_TITLE}
+
+~~~bash
+${FIREWALL_COMMANDS}
+~~~
+
+Rules review:
+
+- ${FIREWALL_SSH_NOTE}
+- Do not expose database or internal service ports publicly unless required.
+- Prefer allow-listing by source IP for admin-only services when possible.
+- Check provider or cloud security-group rules as well; a host firewall change alone may not open the port externally.
+
+Cutover after firewall validation:
+
+1. Keep the current SSH session open.
+2. Reload SSH: ${SSH_RELOAD_CMD}
+3. Test the target port in a new session: ssh -p ${SSH_PORT} ${ADMIN_USER}@<server-ip>
+4. ${SSH_CUTOVER_NOTE}
+
+## Phase 5 - Brute-Force Protection With Fail2Ban
+
+~~~bash
+sudo tee /etc/fail2ban/jail.local >/dev/null <<'JAIL'
+[DEFAULT]
+bantime = 1h
+findtime = 10m
+maxretry = 5
+banaction = ${FAIL2BAN_BANACTION}
+
+[sshd]
+enabled = true
+port = ${SSH_PORT}
+backend = systemd
+logpath = %(sshd_log)s
+JAIL
+sudo systemctl enable --now fail2ban
+sudo fail2ban-client status
+sudo fail2ban-client status sshd
+~~~
+
+${FAIL2BAN_BACKEND_NOTE}
+
+## Phase 6 - ${AUTO_UPDATE_TITLE}
+
+~~~bash
+${AUTO_UPDATE_COMMANDS}
+~~~
+
+Policy notes:
+
+- Leave automatic reboot disabled unless the service window and recovery path are documented.
+- Review the update logs after the first run and confirm the intended timer or workflow is active.
+- ${AUTO_UPDATE_POLICY_NOTE}
+
+## Phase 7 - Time Sync And Clock Health
+
+~~~bash
+${TIME_SYNC_COMMANDS}
+~~~
+
+${TIME_SYNC_NOTE}
+
+## Phase 8 - Logging, Audit, And Service Review
+
+~~~bash
+${PLATFORM_AUDIT_COMMANDS}
+~~~
+
+Review focus:
+
+- Remove or disable unused public-facing services.
+- Verify only required listening ports remain exposed.
+- ${PLATFORM_AUDIT_NOTE}
+
+## Phase 9 - Backup And Restore Readiness
+
+Manual decisions required:
+
+1. Choose the backup mechanism: provider snapshot, image backup, or tool-based backup such as restic, borg, or rsnapshot.
+2. Define backup scope: system configs, application data, databases, secrets, and restore documentation.
+3. Set retention, encryption, and restore-owner expectations.
+4. Run at least one restore drill to a fresh host.
+
+## Phase 10 - Final Validation
+
+~~~bash
+ssh -p ${SSH_PORT} ${ADMIN_USER}@<server-ip>
+sudo sshd -t
+sudo fail2ban-client status sshd
+timedatectl status
+~~~
+
+Add the family-specific firewall and update checks from earlier phases to the final sign-off.
+
+Success criteria:
+
+- Root SSH login is blocked.
+- Password SSH login is blocked.
+- Key-based admin login works.
+- Firewall only exposes approved ports.
+- Fail2Ban protects SSH.
+- The distro's security-update policy is documented and verified.
+- Time synchronization is healthy.
+- Backup and restore plan is documented.
+
+## References Used
+
+${REFERENCES_USED}
+
+## Local Repo Notes
+
+- Supporting rationale is documented in: docs/vps-hardening-references.md
+- This plan was generated by: civa
+EOF
+
+apply_hardening
+
+printf 'Generated hardening plan: %s\n' "$OUTPUT_FILE"
+printf 'Mode: %s | target distro: %s | family: %s | admin user: %s | ssh port: %s\n' "$DISPLAY_MODE" "$DISTRO" "$DISTRO_FAMILY" "$ADMIN_USER" "$SSH_PORT"
