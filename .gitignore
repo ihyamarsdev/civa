@@ -1,0 +1,13 @@
+# Generated hardening plans
+plans/*.md
+!plans/.gitkeep
+
+# Compiled binary artifacts
+bin/*
+!bin/.gitkeep
+
+# Common shell/editor noise
+*.swp
+*.swo
+*~
+.DS_Store
