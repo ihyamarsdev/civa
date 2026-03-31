@@ -1,0 +1,327 @@
+---
+- name: civa multi-server bootstrap
+  hosts: civa_targets
+  become: true
+  gather_facts: true
+
+  vars:
+    civa_dependency_packages:
+      - git
+      - curl
+      - wget
+      - htop
+      - vim
+      - unzip
+      - jq
+      - net-tools
+    civa_security_packages:
+      - ufw
+      - fail2ban
+    civa_firewall_ports:
+      - 22
+      - 80
+      - 443
+    civa_docker_prerequisites:
+      - ca-certificates
+      - curl
+      - gnupg
+    civa_docker_packages:
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+      - docker-buildx-plugin
+      - docker-compose-plugin
+    civa_docker_arch_map:
+      x86_64: amd64
+      aarch64: arm64
+      armv7l: armhf
+    civa_ssh_service_name: ssh
+
+  handlers:
+    - name: restart ssh
+      ansible.builtin.service:
+        name: "{{ civa_ssh_service_name }}"
+        state: restarted
+
+  pre_tasks:
+    - name: Ensure the target distribution is supported
+      ansible.builtin.assert:
+        that:
+          - ansible_facts.os_family == 'Debian'
+        fail_msg: civa Ansible bootstrap currently supports Debian and Ubuntu targets only.
+
+    - name: Resolve the Docker apt architecture
+      ansible.builtin.set_fact:
+        civa_docker_arch: "{{ civa_docker_arch_map.get(ansible_facts.architecture, 'amd64') }}"
+
+  tasks:
+    - name: System Update & Upgrade
+      tags:
+        - system_update
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+        upgrade: dist
+
+    - name: User Management
+      tags:
+        - user_management
+      block:
+        - name: Create the deployer user
+          ansible.builtin.user:
+            name: "{{ civa_deployer_user }}"
+            shell: /bin/bash
+            create_home: true
+            groups: sudo
+            append: true
+
+        - name: Allow passwordless sudo for the deployer user
+          ansible.builtin.copy:
+            dest: "/etc/sudoers.d/{{ civa_deployer_user }}"
+            content: "{{ civa_deployer_user }} ALL=(ALL) NOPASSWD:ALL\n"
+            owner: root
+            group: root
+            mode: '0440'
+            validate: 'visudo -cf %s'
+
+        - name: Ensure the deployer SSH directory exists
+          ansible.builtin.file:
+            path: "/home/{{ civa_deployer_user }}/.ssh"
+            state: directory
+            owner: "{{ civa_deployer_user }}"
+            group: "{{ civa_deployer_user }}"
+            mode: '0700'
+
+        - name: Install the operator public key for the deployer user
+          ansible.builtin.copy:
+            dest: "/home/{{ civa_deployer_user }}/.ssh/authorized_keys"
+            content: "{{ lookup('file', civa_public_key_path) | trim }}\n"
+            owner: "{{ civa_deployer_user }}"
+            group: "{{ civa_deployer_user }}"
+            mode: '0600'
+
+    - name: SSH Hardening
+      tags:
+        - ssh_hardening
+      block:
+        - name: Disable root SSH login
+          ansible.builtin.lineinfile:
+            path: /etc/ssh/sshd_config
+            regexp: '^#?PermitRootLogin'
+            line: 'PermitRootLogin no'
+            validate: '/usr/sbin/sshd -t -f %s'
+          notify: restart ssh
+
+        - name: Disable password authentication
+          ansible.builtin.lineinfile:
+            path: /etc/ssh/sshd_config
+            regexp: '^#?PasswordAuthentication'
+            line: 'PasswordAuthentication no'
+            validate: '/usr/sbin/sshd -t -f %s'
+          notify: restart ssh
+
+    - name: Security & Firewall
+      tags:
+        - security_firewall
+      block:
+        - name: Install UFW and Fail2Ban
+          ansible.builtin.apt:
+            name: "{{ civa_security_packages }}"
+            state: present
+
+        - name: Write the Fail2Ban jail configuration
+          ansible.builtin.template:
+            src: fail2ban-jail.local.j2
+            dest: /etc/fail2ban/jail.local
+            owner: root
+            group: root
+            mode: '0644'
+
+        - name: Ensure Fail2Ban is enabled and running
+          ansible.builtin.service:
+            name: fail2ban
+            state: started
+            enabled: true
+
+        - name: Set UFW default incoming policy to deny
+          ansible.builtin.command: ufw default deny incoming
+          register: civa_ufw_deny
+          changed_when: "'Default incoming policy changed' in civa_ufw_deny.stdout or 'Default incoming policy changed' in civa_ufw_deny.stderr"
+
+        - name: Set UFW default outgoing policy to allow
+          ansible.builtin.command: ufw default allow outgoing
+          register: civa_ufw_allow
+          changed_when: "'Default outgoing policy changed' in civa_ufw_allow.stdout or 'Default outgoing policy changed' in civa_ufw_allow.stderr"
+
+        - name: Allow essential firewall ports
+          ansible.builtin.command: "ufw allow {{ item }}/tcp"
+          loop: "{{ civa_firewall_ports }}"
+          register: civa_ufw_rules
+          changed_when: "'Skipping adding existing rule' not in civa_ufw_rules.stdout and 'Skipping adding existing rule' not in civa_ufw_rules.stderr"
+
+        - name: Check whether UFW is already active
+          ansible.builtin.command: ufw status
+          register: civa_ufw_status
+          changed_when: false
+
+        - name: Enable UFW if needed
+          ansible.builtin.command: ufw --force enable
+          when: "'Status: active' not in civa_ufw_status.stdout"
+
+    - name: System Config
+      tags:
+        - system_config
+      block:
+        - name: Set the target hostname when one is supplied
+          ansible.builtin.hostname:
+            name: "{{ civa_target_hostname }}"
+          when: civa_target_hostname is defined
+
+        - name: Read the current timezone
+          ansible.builtin.command: timedatectl show -p Timezone --value
+          register: civa_current_timezone
+          changed_when: false
+
+        - name: Apply the requested timezone
+          ansible.builtin.command: "timedatectl set-timezone {{ civa_timezone }}"
+          when: civa_current_timezone.stdout != civa_timezone
+
+        - name: Check whether the swap file already exists
+          ansible.builtin.stat:
+            path: "{{ civa_swap_file }}"
+          register: civa_swap_stat
+
+        - name: Create the swap file when missing
+          ansible.builtin.command: "fallocate -l {{ civa_swap_size }} {{ civa_swap_file }}"
+          when: not civa_swap_stat.stat.exists
+
+        - name: Secure the swap file permissions
+          ansible.builtin.file:
+            path: "{{ civa_swap_file }}"
+            owner: root
+            group: root
+            mode: '0600'
+          when: not civa_swap_stat.stat.exists
+
+        - name: Format the swap file
+          ansible.builtin.command: "mkswap {{ civa_swap_file }}"
+          when: not civa_swap_stat.stat.exists
+
+        - name: Persist the swap file in fstab
+          ansible.builtin.lineinfile:
+            path: /etc/fstab
+            regexp: '^{{ civa_swap_file | regex_escape }}\s+'
+            line: "{{ civa_swap_file }} none swap sw 0 0"
+
+        - name: Gather active swap devices
+          ansible.builtin.command: swapon --show=NAME --noheadings
+          register: civa_swap_active
+          changed_when: false
+
+        - name: Enable the swap file when needed
+          ansible.builtin.command: "swapon {{ civa_swap_file }}"
+          when: civa_swap_file not in civa_swap_active.stdout
+
+    - name: Dependencies
+      tags:
+        - dependencies
+      ansible.builtin.apt:
+        name: "{{ civa_dependency_packages }}"
+        state: present
+
+    - name: Containerization
+      tags:
+        - containerization
+      block:
+        - name: Install Docker apt prerequisites
+          ansible.builtin.apt:
+            name: "{{ civa_docker_prerequisites }}"
+            state: present
+
+        - name: Ensure the Docker apt keyring directory exists
+          ansible.builtin.file:
+            path: /etc/apt/keyrings
+            state: directory
+            owner: root
+            group: root
+            mode: '0755'
+
+        - name: Install the official Docker GPG key
+          ansible.builtin.get_url:
+            url: https://download.docker.com/linux/{{ ansible_facts.distribution | lower }}/gpg
+            dest: /etc/apt/keyrings/docker.asc
+            mode: '0644'
+
+        - name: Configure the official Docker apt repository
+          ansible.builtin.apt_repository:
+            repo: "deb [arch={{ civa_docker_arch }} signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/{{ ansible_facts.distribution | lower }} {{ ansible_facts.distribution_release }} stable"
+            filename: docker
+            state: present
+            update_cache: true
+
+        - name: Install Docker Engine and Compose plugin
+          ansible.builtin.apt:
+            name: "{{ civa_docker_packages }}"
+            state: present
+
+        - name: Ensure Docker is enabled and running
+          ansible.builtin.service:
+            name: docker
+            state: started
+            enabled: true
+
+        - name: Add the deployer user to the docker group
+          ansible.builtin.user:
+            name: "{{ civa_deployer_user }}"
+            groups: docker
+            append: true
+
+    - name: Reverse Proxy (Traefik)
+      tags:
+        - traefik
+      block:
+        - name: Ensure the Traefik base directories exist
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: directory
+            owner: root
+            group: root
+            mode: '0755'
+          loop:
+            - /opt/traefik
+            - /opt/traefik/letsencrypt
+
+        - name: Ensure the ACME storage file exists
+          ansible.builtin.copy:
+            dest: /opt/traefik/letsencrypt/acme.json
+            content: ''
+            owner: root
+            group: root
+            mode: '0600'
+            force: false
+
+        - name: Check whether the proxy network already exists
+          ansible.builtin.command: docker network inspect proxy
+          register: civa_proxy_network
+          changed_when: false
+          failed_when: false
+
+        - name: Create the proxy Docker network when missing
+          ansible.builtin.command: docker network create proxy
+          when: civa_proxy_network.rc != 0
+
+        - name: Write the Traefik environment file
+          ansible.builtin.template:
+            src: traefik.env.j2
+            dest: /opt/traefik/.env
+            owner: root
+            group: root
+            mode: '0600'
+
+        - name: Write the Traefik docker-compose file
+          ansible.builtin.template:
+            src: traefik-compose.yml.j2
+            dest: /opt/traefik/docker-compose.yml
+            owner: root
+            group: root
+            mode: '0644'
