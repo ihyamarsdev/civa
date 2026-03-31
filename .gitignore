@@ -1,6 +1,7 @@
 # Generated hardening plans
 plans/*.md
 !plans/.gitkeep
+.civa/
 
 # Compiled binary artifacts
 bin/*
