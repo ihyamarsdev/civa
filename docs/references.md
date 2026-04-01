@@ -13,7 +13,7 @@ Benefits:
 
 ## Current Design Notes
 
-- the local CLI generates inventory, vars, and a plan before execution
+- the local CLI stages embedded Ansible assets, then generates inventory, vars, and a plan before execution
 - SSH hardening uses validated file edits and service restarts
 - the deployer public key is read from the local machine and written to the target host
 - Docker is installed from the official Docker repositories with family-specific handling
