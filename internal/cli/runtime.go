@@ -54,11 +54,26 @@ func runDoctor(cfg config) error {
 		failures++
 	}
 
-	if _, err := os.Stat(cfg.SSHPrivateKey); err == nil {
-		fmt.Printf("[ok] SSH private key found: %s\n", cfg.SSHPrivateKey)
+	if cfg.SSHAuthMethod == sshAuthMethodKey {
+		if _, err := os.Stat(cfg.SSHPrivateKey); err == nil {
+			fmt.Printf("[ok] SSH private key found: %s\n", cfg.SSHPrivateKey)
+		} else {
+			fmt.Printf("[fail] SSH private key not found: %s\n", cfg.SSHPrivateKey)
+			failures++
+		}
 	} else {
-		fmt.Printf("[fail] SSH private key not found: %s\n", cfg.SSHPrivateKey)
-		failures++
+		if _, err := exec.LookPath("sshpass"); err == nil {
+			fmt.Println("[ok] sshpass found for password-based SSH")
+		} else {
+			fmt.Println("[fail] sshpass not found for password-based SSH")
+			failures++
+		}
+		if strings.TrimSpace(cfg.SSHPassword) != "" {
+			fmt.Println("[ok] SSH password provided")
+		} else {
+			fmt.Println("[fail] SSH password not provided")
+			failures++
+		}
 	}
 
 	if _, err := os.Stat(cfg.SSHPublicKey); err == nil {
@@ -90,13 +105,24 @@ func writeInventory(cfg *config, state *runtimeState) error {
 		fmt.Fprintf(&builder, "          ansible_host: %q\n", server.Address)
 		fmt.Fprintf(&builder, "          ansible_user: %q\n", cfg.SSHUser)
 		fmt.Fprintf(&builder, "          ansible_port: %d\n", cfg.SSHPort)
-		fmt.Fprintf(&builder, "          ansible_ssh_private_key_file: %q\n", cfg.SSHPrivateKey)
+		if cfg.SSHAuthMethod == sshAuthMethodKey {
+			fmt.Fprintf(&builder, "          ansible_ssh_private_key_file: %q\n", cfg.SSHPrivateKey)
+		}
 		if server.Hostname != "" {
 			fmt.Fprintf(&builder, "          civa_target_hostname: %q\n", server.Hostname)
 		}
 	}
 
-	return os.WriteFile(state.InventoryFile, []byte(builder.String()), 0o644)
+	return os.WriteFile(state.InventoryFile, []byte(builder.String()), 0o600)
+}
+
+func writeAuthFile(cfg *config, state *runtimeState) error {
+	if state.AuthFile == "" {
+		return nil
+	}
+
+	content := fmt.Sprintf("ansible_password: %q\n", cfg.SSHPassword)
+	return os.WriteFile(state.AuthFile, []byte(content), 0o600)
 }
 
 func writeVarsFile(cfg *config, state *runtimeState) error {
@@ -140,9 +166,10 @@ func writePlanFile(cfg *config, state *runtimeState) error {
 		"# civa Run Plan\n\n"+
 			"## Mode\n\n"+
 			"- Command: %s\n"+
+			"- SSH auth method: %s\n"+
 			"- SSH user: %s\n"+
 			"- SSH port: %d\n"+
-			"- SSH private key: %s\n"+
+			"- SSH credential: %s\n"+
 			"- SSH public key: %s\n"+
 			"- Deployer user: %s\n"+
 			"- Timezone: %s\n\n"+
@@ -151,13 +178,16 @@ func writePlanFile(cfg *config, state *runtimeState) error {
 			"## Generated Files\n\n"+
 			"- Inventory: %s\n"+
 			"- Vars: %s\n"+
+			"- SSH auth file: %s\n"+
 			"- Plan: %s\n"+
 			"- Playbook: %s\n\n"+
+			"## Notes\n\n%s\n\n"+
 			"## Command\n\n```bash\n%s\n```\n",
 		cfg.Command,
+		sshAuthMethodLabel(cfg.SSHAuthMethod),
 		cfg.SSHUser,
 		cfg.SSHPort,
-		cfg.SSHPrivateKey,
+		sshCredentialSummary(*cfg),
 		cfg.SSHPublicKey,
 		cfg.DeployUser,
 		cfg.Timezone,
@@ -165,8 +195,10 @@ func writePlanFile(cfg *config, state *runtimeState) error {
 		strings.Join(serverLines, "\n"),
 		state.InventoryFile,
 		state.VarsFile,
+		sshAuthFileSummary(*state),
 		state.PlanFile,
 		state.PlaybookFile,
+		sshAuthNote(*cfg, *state),
 		buildAnsibleCommand(cfg, state),
 	)
 
@@ -178,6 +210,9 @@ func runAnsible(cfg *config, state *runtimeState) error {
 		"-i", state.InventoryFile,
 		state.PlaybookFile,
 		"-e", "@" + state.VarsFile,
+	}
+	if state.AuthFile != "" {
+		args = append(args, "-e", "@"+state.AuthFile)
 	}
 	if len(cfg.Components) > 0 {
 		args = append(args, "--tags", strings.Join(cfg.Components, ","))
@@ -199,6 +234,9 @@ func buildAnsibleCommand(cfg *config, state *runtimeState) string {
 		"-i", state.InventoryFile,
 		state.PlaybookFile,
 		"-e", "@" + state.VarsFile,
+	}
+	if state.AuthFile != "" {
+		parts = append(parts, "-e", "@"+state.AuthFile)
 	}
 	if len(cfg.Components) > 0 {
 		parts = append(parts, "--tags", strings.Join(cfg.Components, ","))
@@ -289,9 +327,10 @@ func logLine(message string) {
 func printConfigurationSummary(cfg *config) {
 	printSection("Run Summary")
 	fmt.Fprintf(os.Stderr, "Command: %s\n", cfg.Command)
+	fmt.Fprintf(os.Stderr, "SSH auth method: %s\n", sshAuthMethodLabel(cfg.SSHAuthMethod))
 	fmt.Fprintf(os.Stderr, "SSH user: %s\n", cfg.SSHUser)
 	fmt.Fprintf(os.Stderr, "SSH port: %d\n", cfg.SSHPort)
-	fmt.Fprintf(os.Stderr, "SSH private key: %s\n", cfg.SSHPrivateKey)
+	fmt.Fprintf(os.Stderr, "SSH credential: %s\n", sshCredentialSummary(*cfg))
 	fmt.Fprintf(os.Stderr, "SSH public key: %s\n", cfg.SSHPublicKey)
 	fmt.Fprintf(os.Stderr, "Deployer user: %s\n", cfg.DeployUser)
 	fmt.Fprintf(os.Stderr, "Timezone: %s\n", cfg.Timezone)
@@ -344,4 +383,28 @@ func (state *runtimeState) progressStep(label string) {
 
 func (state *runtimeState) appendCompletedPhase(phase string) {
 	state.CompletedPhases = append(state.CompletedPhases, phase)
+}
+
+func sshCredentialSummary(cfg config) string {
+	if cfg.SSHAuthMethod == sshAuthMethodPassword {
+		return "[hidden password]"
+	}
+
+	return cfg.SSHPrivateKey
+}
+
+func sshAuthFileSummary(state runtimeState) string {
+	if state.AuthFile == "" {
+		return "not used"
+	}
+
+	return state.AuthFile
+}
+
+func sshAuthNote(cfg config, state runtimeState) string {
+	if cfg.SSHAuthMethod == sshAuthMethodPassword {
+		return fmt.Sprintf("- Password auth stores the SSH secret in %s with mode 0600 so Ansible can connect without exposing it in the Markdown plan.", state.AuthFile)
+	}
+
+	return "- SSH key auth uses the configured private key path directly from the generated inventory."
 }

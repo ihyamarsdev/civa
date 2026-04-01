@@ -46,7 +46,7 @@ func collectInteractiveInputs(cfg *config) error {
 		}
 	}
 
-	if !cfg.Provided.SSHUser || !cfg.Provided.SSHPort || !cfg.Provided.SSHPrivateKey || !cfg.Provided.SSHPublicKey {
+	if !cfg.Provided.SSHUser || !cfg.Provided.SSHPort || !cfg.Provided.SSHAuthMethod || !cfg.Provided.SSHPassword || !cfg.Provided.SSHPrivateKey || !cfg.Provided.SSHPublicKey {
 		printSection("Step 3/6 - SSH Access")
 		if !cfg.Provided.SSHUser {
 			value, err := promptNonEmptyString("SSH user for the initial connection", cfg.SSHUser)
@@ -62,7 +62,21 @@ func collectInteractiveInputs(cfg *config) error {
 			}
 			cfg.SSHPort = value
 		}
-		if !cfg.Provided.SSHPrivateKey {
+		if !cfg.Provided.SSHAuthMethod {
+			value, err := promptSSHAuthMethod(cfg.SSHAuthMethod)
+			if err != nil {
+				return err
+			}
+			cfg.SSHAuthMethod = value
+		}
+		if cfg.SSHAuthMethod == sshAuthMethodPassword && !cfg.Provided.SSHPassword {
+			value, err := promptSSHPassword()
+			if err != nil {
+				return err
+			}
+			cfg.SSHPassword = value
+		}
+		if cfg.SSHAuthMethod == sshAuthMethodKey && !cfg.Provided.SSHPrivateKey {
 			value, err := promptNonEmptyString("Local SSH private key path used by Ansible", cfg.SSHPrivateKey)
 			if err != nil {
 				return err
@@ -245,6 +259,39 @@ func promptChallengeType(defaultValue string) (string, error) {
 			huh.NewOption("dns", "dns"),
 		).
 		Value(&value)
+	if err := field.Run(); err != nil {
+		return "", normalizePromptError(err)
+	}
+	return value, nil
+}
+
+func promptSSHAuthMethod(defaultValue string) (string, error) {
+	value := defaultValue
+	field := huh.NewSelect[string]().
+		Title("SSH authentication method").
+		Options(
+			huh.NewOption("SSH key", sshAuthMethodKey),
+			huh.NewOption("Password", sshAuthMethodPassword),
+		).
+		Value(&value)
+	if err := field.Run(); err != nil {
+		return "", normalizePromptError(err)
+	}
+	return value, nil
+}
+
+func promptSSHPassword() (string, error) {
+	value := ""
+	field := huh.NewInput().
+		Title("SSH password for the initial connection").
+		EchoMode(huh.EchoModePassword).
+		Value(&value).
+		Validate(func(input string) error {
+			if strings.TrimSpace(input) == "" {
+				return fmt.Errorf("this value cannot be empty")
+			}
+			return nil
+		})
 	if err := field.Run(); err != nil {
 		return "", normalizePromptError(err)
 	}

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -25,6 +26,7 @@ const (
 
 	defaultSSHUser            = "root"
 	defaultSSHPort            = 22
+	defaultSSHAuthMethod      = sshAuthMethodKey
 	defaultSSHPrivateKey      = "~/.ssh/id_ed25519"
 	defaultSSHPublicKey       = "~/.ssh/id_ed25519.pub"
 	defaultDeployUser         = "deployer"
@@ -50,6 +52,8 @@ type componentOption struct {
 type providedFlags struct {
 	SSHUser            bool
 	SSHPort            bool
+	SSHAuthMethod      bool
+	SSHPassword        bool
 	SSHPrivateKey      bool
 	SSHPublicKey       bool
 	DeployUser         bool
@@ -68,6 +72,8 @@ type config struct {
 	NonInteractive     bool
 	SSHUser            string
 	SSHPort            int
+	SSHAuthMethod      string
+	SSHPassword        string
 	SSHPrivateKey      string
 	SSHPublicKey       string
 	DeployUser         string
@@ -88,6 +94,7 @@ type runtimeState struct {
 	GeneratedDir    string
 	InventoryFile   string
 	VarsFile        string
+	AuthFile        string
 	PlanFile        string
 	PlaybookFile    string
 	ProgressCurrent int
@@ -141,6 +148,7 @@ func defaultConfig(command string) config {
 		Command:            command,
 		SSHUser:            defaultSSHUser,
 		SSHPort:            defaultSSHPort,
+		SSHAuthMethod:      defaultSSHAuthMethod,
 		SSHPrivateKey:      defaultSSHPrivateKey,
 		SSHPublicKey:       defaultSSHPublicKey,
 		DeployUser:         defaultDeployUser,
@@ -215,6 +223,28 @@ func parseArgs(args []string) (config, error) {
 		case strings.HasPrefix(arg, "--ssh-private-key="):
 			cfg.SSHPrivateKey = strings.TrimPrefix(arg, "--ssh-private-key=")
 			cfg.Provided.SSHPrivateKey = true
+		case arg == "--ssh-auth-method":
+			value, nextIndex, err := nextArgValue(args, i)
+			if err != nil {
+				return config{}, err
+			}
+			cfg.SSHAuthMethod = strings.ToLower(value)
+			cfg.Provided.SSHAuthMethod = true
+			i = nextIndex
+		case strings.HasPrefix(arg, "--ssh-auth-method="):
+			cfg.SSHAuthMethod = strings.ToLower(strings.TrimPrefix(arg, "--ssh-auth-method="))
+			cfg.Provided.SSHAuthMethod = true
+		case arg == "--ssh-password":
+			value, nextIndex, err := nextArgValue(args, i)
+			if err != nil {
+				return config{}, err
+			}
+			cfg.SSHPassword = value
+			cfg.Provided.SSHPassword = true
+			i = nextIndex
+		case strings.HasPrefix(arg, "--ssh-password="):
+			cfg.SSHPassword = strings.TrimPrefix(arg, "--ssh-password=")
+			cfg.Provided.SSHPassword = true
 		case arg == "--ssh-public-key":
 			value, nextIndex, err := nextArgValue(args, i)
 			if err != nil {
@@ -385,6 +415,10 @@ func prepareRuntime(cfg *config) (*runtimeState, error) {
 	generatedDir := filepath.Join(runRootDirectory, runID)
 	inventoryFile := filepath.Join(generatedDir, "inventory.yml")
 	varsFile := filepath.Join(generatedDir, "vars.yml")
+	authFile := ""
+	if cfg.SSHAuthMethod == sshAuthMethodPassword {
+		authFile = filepath.Join(generatedDir, "auth.yml")
+	}
 	planFile := cfg.PlanFile
 	if planFile == "" {
 		planFile = filepath.Join(generatedDir, "plan.md")
@@ -411,6 +445,7 @@ func prepareRuntime(cfg *config) (*runtimeState, error) {
 		GeneratedDir:    generatedDir,
 		InventoryFile:   inventoryFile,
 		VarsFile:        varsFile,
+		AuthFile:        authFile,
 		PlanFile:        planFile,
 		PlaybookFile:    playbookFile,
 		ProgressTotal:   total,
@@ -434,6 +469,13 @@ func executeRuntime(cfg *config, state *runtimeState) error {
 		return err
 	}
 	state.appendCompletedPhase("Vars file generated")
+
+	if cfg.SSHAuthMethod == sshAuthMethodPassword {
+		if err := writeAuthFile(cfg, state); err != nil {
+			return err
+		}
+		state.appendCompletedPhase("SSH auth file generated")
+	}
 
 	state.progressStep("Writing Markdown execution plan")
 	if err := writePlanFile(cfg, state); err != nil {
@@ -521,6 +563,9 @@ func validateExecutionConfig(cfg *config) error {
 	if len(cfg.Servers) == 0 {
 		return fmt.Errorf("at least one --server entry is required")
 	}
+	if !isValidSSHAuthMethod(cfg.SSHAuthMethod) {
+		return fmt.Errorf("--ssh-auth-method must be key or password")
+	}
 	if cfg.SSHPort < 1 || cfg.SSHPort > 65535 {
 		return fmt.Errorf("--ssh-port must be between 1 and 65535")
 	}
@@ -536,11 +581,20 @@ func validateExecutionConfig(cfg *config) error {
 	if len(cfg.Components) == 0 {
 		return fmt.Errorf("at least one component must be selected")
 	}
-	if _, err := os.Stat(cfg.SSHPrivateKey); err != nil {
-		return fmt.Errorf("SSH private key not found: %s", cfg.SSHPrivateKey)
+	if cfg.SSHAuthMethod == sshAuthMethodKey {
+		if _, err := os.Stat(cfg.SSHPrivateKey); err != nil {
+			return fmt.Errorf("SSH private key not found: %s", cfg.SSHPrivateKey)
+		}
+	} else if strings.TrimSpace(cfg.SSHPassword) == "" {
+		return fmt.Errorf("--ssh-password must not be empty when --ssh-auth-method=password")
 	}
 	if _, err := os.Stat(cfg.SSHPublicKey); err != nil {
 		return fmt.Errorf("SSH public key not found: %s", cfg.SSHPublicKey)
+	}
+	if cfg.Command != commandPlan && cfg.SSHAuthMethod == sshAuthMethodPassword {
+		if _, err := exec.LookPath("sshpass"); err != nil {
+			return fmt.Errorf("sshpass is required for password-based SSH in preview/apply")
+		}
 	}
 	if selectedComponentsInclude(cfg.Components, "traefik") {
 		if strings.TrimSpace(cfg.TraefikEmail) == "" {
@@ -688,6 +742,8 @@ Options:
   --non-interactive            Disable prompts and rely on provided flags
   --ssh-user <name>            SSH user used to connect to every target server
   --ssh-port <port>            SSH port used to connect to every target server
+  --ssh-auth-method <mode>     SSH authentication method: key or password
+  --ssh-password <value>       SSH password used when --ssh-auth-method=password
   --ssh-private-key <path>     Local private key path used by Ansible for SSH
   --ssh-public-key <path>      Local public key path that will be installed for the deploy user
   --deployer-user <name>       User created and configured on the target servers
@@ -715,4 +771,21 @@ func componentLabel(value string) string {
 		}
 	}
 	return value
+}
+
+const (
+	sshAuthMethodKey      = "key"
+	sshAuthMethodPassword = "password"
+)
+
+func isValidSSHAuthMethod(value string) bool {
+	return value == sshAuthMethodKey || value == sshAuthMethodPassword
+}
+
+func sshAuthMethodLabel(value string) string {
+	if value == sshAuthMethodPassword {
+		return "Password"
+	}
+
+	return "SSH Key"
 }

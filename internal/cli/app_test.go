@@ -23,6 +23,18 @@ func TestResolveComponentsSupportsMixedTokens(t *testing.T) {
 	}
 }
 
+func TestIsValidSSHAuthMethod(t *testing.T) {
+	if !isValidSSHAuthMethod(sshAuthMethodKey) {
+		t.Fatal("expected key auth method to be valid")
+	}
+	if !isValidSSHAuthMethod(sshAuthMethodPassword) {
+		t.Fatal("expected password auth method to be valid")
+	}
+	if isValidSSHAuthMethod("token") {
+		t.Fatal("expected token auth method to be invalid")
+	}
+}
+
 func TestParseServerSpecSupportsHostname(t *testing.T) {
 	server, err := parseServerSpec("203.0.113.10,web-01")
 	if err != nil {
@@ -108,6 +120,7 @@ func TestBuildAnsibleCommandQuotesPathsWithSpaces(t *testing.T) {
 		InventoryFile: "/tmp/civa test/inventory.yml",
 		PlaybookFile:  "/tmp/civa test/ansible/playbook.yml",
 		VarsFile:      "/tmp/civa test/vars.yml",
+		AuthFile:      "/tmp/civa test/auth.yml",
 	}
 
 	command := buildAnsibleCommand(cfg, state)
@@ -120,8 +133,23 @@ func TestBuildAnsibleCommandQuotesPathsWithSpaces(t *testing.T) {
 	if !strings.Contains(command, `@"/tmp/civa test/vars.yml"`) && !strings.Contains(command, `"@/tmp/civa test/vars.yml"`) {
 		t.Fatalf("expected quoted vars path, got %s", command)
 	}
+	if !strings.Contains(command, `@"/tmp/civa test/auth.yml"`) && !strings.Contains(command, `"@/tmp/civa test/auth.yml"`) {
+		t.Fatalf("expected quoted auth path, got %s", command)
+	}
 	if !strings.Contains(command, "--tags system_update,user_management") {
 		t.Fatalf("expected tags in command, got %s", command)
+	}
+}
+
+func TestSSHCredentialSummaryHidesPassword(t *testing.T) {
+	passwordSummary := sshCredentialSummary(config{SSHAuthMethod: sshAuthMethodPassword, SSHPassword: "super-secret"})
+	if passwordSummary != "[hidden password]" {
+		t.Fatalf("unexpected password summary: %s", passwordSummary)
+	}
+
+	keySummary := sshCredentialSummary(config{SSHAuthMethod: sshAuthMethodKey, SSHPrivateKey: "/tmp/id_test"})
+	if keySummary != "/tmp/id_test" {
+		t.Fatalf("unexpected key summary: %s", keySummary)
 	}
 }
 
@@ -151,5 +179,52 @@ func TestMaterializeAnsibleAssetsWritesEmbeddedFiles(t *testing.T) {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("expected embedded asset at %s: %v", path, err)
 		}
+	}
+}
+
+func TestWriteInventoryUsesPasswordForPasswordAuth(t *testing.T) {
+	tempDir := t.TempDir()
+	cfg := &config{
+		SSHAuthMethod: sshAuthMethodPassword,
+		SSHPassword:   "super-secret",
+		SSHUser:       "root",
+		SSHPort:       22,
+		Servers: []serverSpec{{
+			Address:  "203.0.113.10",
+			Hostname: "web-01",
+		}},
+	}
+	state := &runtimeState{InventoryFile: filepath.Join(tempDir, "inventory.yml")}
+
+	if err := writeInventory(cfg, state); err != nil {
+		t.Fatalf("writeInventory returned error: %v", err)
+	}
+
+	content, err := os.ReadFile(state.InventoryFile)
+	if err != nil {
+		t.Fatalf("failed to read inventory: %v", err)
+	}
+
+	inventory := string(content)
+	if strings.Contains(inventory, "ansible_ssh_private_key_file") {
+		t.Fatalf("did not expect key auth in password inventory, got %s", inventory)
+	}
+	if strings.Contains(inventory, "ansible_password") {
+		t.Fatalf("did not expect plaintext password in inventory, got %s", inventory)
+	}
+
+	state.AuthFile = filepath.Join(tempDir, "auth.yml")
+	if err := writeAuthFile(cfg, state); err != nil {
+		t.Fatalf("writeAuthFile returned error: %v", err)
+	}
+
+	authContent, err := os.ReadFile(state.AuthFile)
+	if err != nil {
+		t.Fatalf("failed to read auth file: %v", err)
+	}
+
+	authVars := string(authContent)
+	if !strings.Contains(authVars, `ansible_password: "super-secret"`) {
+		t.Fatalf("expected password auth in auth file, got %s", authVars)
 	}
 }
