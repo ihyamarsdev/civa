@@ -57,7 +57,7 @@ curl -fsSL https://raw.githubusercontent.com/ihyamarsdev/civa/main/install.sh | 
 Install a specific release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ihyamarsdev/civa/main/install.sh | CIVA_VERSION=v1.1.0 bash
+curl -fsSL https://raw.githubusercontent.com/ihyamarsdev/civa/main/install.sh | CIVA_VERSION=v1.1.2 bash
 ```
 
 ## Verify the Installation
