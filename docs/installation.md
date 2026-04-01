@@ -62,7 +62,7 @@ curl -fsSL https://raw.githubusercontent.com/ihyamarsdev/civa/main/scripts/insta
 Install a specific release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ihyamarsdev/civa/main/scripts/install.sh | CIVA_VERSION=v1.1.4 bash
+curl -fsSL https://raw.githubusercontent.com/ihyamarsdev/civa/main/scripts/install.sh | CIVA_VERSION=v1.1.5 bash
 ```
 
 Uninstall the installed binary:
