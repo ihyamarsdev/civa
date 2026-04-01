@@ -8,7 +8,12 @@ Local machine requirements:
 - `go`
 - `ansible-playbook`
 - `python` or `python3`
-- a valid SSH private key and matching public key
+- `tar`
+- `curl` or `wget`
+- a valid SSH public key to install for the deployer user
+- a valid SSH private key when using `--ssh-auth-method key`
+
+If you plan to connect to the initial VPS login with a password instead of an SSH key, install `sshpass` on the local machine as well.
 
 ## Option 1: Build From Source
 
@@ -51,19 +56,28 @@ sudo install -m 755 civa /usr/local/bin/civa
 Install the latest release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ihyamarsdev/civa/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/ihyamarsdev/civa/main/scripts/install.sh | bash
 ```
 
 Install a specific release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ihyamarsdev/civa/main/install.sh | CIVA_VERSION=v1.1.2 bash
+curl -fsSL https://raw.githubusercontent.com/ihyamarsdev/civa/main/scripts/install.sh | CIVA_VERSION=v1.1.2 bash
 ```
+
+Uninstall the installed binary:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ihyamarsdev/civa/main/scripts/uninstall.sh | bash
+```
+
+Both scripts honor `INSTALL_DIR`, so you can install or remove `civa` from a custom path without editing the script.
 
 ## Verify the Installation
 
 ```bash
 civa help
 civa version
+civa doctor --ssh-auth-method password --ssh-password 'super-secret-password' --ssh-public-key ~/.ssh/id_rsa.pub
 civa doctor --ssh-private-key ~/.ssh/id_rsa --ssh-public-key ~/.ssh/id_rsa.pub
 ```
