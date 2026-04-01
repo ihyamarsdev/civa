@@ -14,15 +14,16 @@ import (
 	"golang.org/x/term"
 )
 
-const version = "1.1.3"
+const version = "1.1.4"
 
 const (
-	commandApply   = "apply"
-	commandPlan    = "plan"
-	commandPreview = "preview"
-	commandDoctor  = "doctor"
-	commandVersion = "version"
-	commandHelp    = "help"
+	commandApply     = "apply"
+	commandPlan      = "plan"
+	commandPreview   = "preview"
+	commandDoctor    = "doctor"
+	commandUninstall = "uninstall"
+	commandVersion   = "version"
+	commandHelp      = "help"
 
 	defaultSSHUser            = "root"
 	defaultSSHPort            = 22
@@ -69,6 +70,7 @@ type providedFlags struct {
 
 type config struct {
 	Command            string
+	AssumeYes          bool
 	NonInteractive     bool
 	SSHUser            string
 	SSHPort            int
@@ -136,6 +138,8 @@ func Run(args []string) error {
 			return err
 		}
 		return runDoctor(cfg)
+	case commandUninstall:
+		return runUninstall(cfg)
 	case commandApply, commandPlan, commandPreview:
 		return runExecutionFlow(&cfg)
 	default:
@@ -176,6 +180,8 @@ func parseArgs(args []string) (config, error) {
 		arg := args[i]
 
 		switch {
+		case arg == "--yes" || arg == "-y":
+			cfg.AssumeYes = true
 		case arg == "--non-interactive":
 			cfg.NonInteractive = true
 			cfg.Provided.NonInteractive = true
@@ -512,7 +518,7 @@ func nextArgValue(args []string, index int) (string, int, error) {
 
 func isKnownCommand(command string) bool {
 	switch command {
-	case commandApply, commandPlan, commandPreview, commandDoctor, commandVersion, commandHelp:
+	case commandApply, commandPlan, commandPreview, commandDoctor, commandUninstall, commandVersion, commandHelp:
 		return true
 	default:
 		return false
@@ -734,13 +740,15 @@ Commands:
   apply                        Run the Ansible playbook against the selected servers
   plan                         Generate inventory, vars, and the execution plan only
   preview                      Run ansible-playbook in check mode with diff output
-  doctor                       Check whether the local machine is ready to run civa
-  version                      Show the civa version
+	  doctor                       Check whether the local machine is ready to run civa
+	  uninstall                    Remove the currently installed civa binary
+	  version                      Show the civa version
   help                         Show this help message
 
 Options:
-  --non-interactive            Disable prompts and rely on provided flags
-  --ssh-user <name>            SSH user used to connect to every target server
+	  --non-interactive            Disable prompts and rely on provided flags
+	  --yes, -y                    Skip confirmation prompts for destructive commands
+	  --ssh-user <name>            SSH user used to connect to every target server
   --ssh-port <port>            SSH port used to connect to every target server
   --ssh-auth-method <mode>     SSH authentication method: key or password
   --ssh-password <value>       SSH password used when --ssh-auth-method=password
@@ -757,8 +765,9 @@ Options:
   --help                       Show this help message
 
 Examples:
-  civa apply
-  civa preview --server 203.0.113.10,edge-01 --components all
+	  civa apply
+	  civa uninstall --yes
+	  civa preview --server 203.0.113.10,edge-01 --components all
   civa plan --non-interactive --server 203.0.113.10,web-01 --server 203.0.113.11,api-01 --components 1,2,3,4`
 
 	fmt.Println(usage)

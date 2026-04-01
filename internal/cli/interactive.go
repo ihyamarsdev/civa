@@ -189,6 +189,18 @@ func promptApplyConfirmation() (bool, error) {
 	return confirmed, nil
 }
 
+func promptUninstallConfirmation(targetPath string) (bool, error) {
+	confirmed := false
+	field := huh.NewConfirm().
+		Title(fmt.Sprintf("Remove the civa binary at %s?", targetPath)).
+		Description("This deletes the currently running civa executable from disk.").
+		Value(&confirmed)
+	if err := field.Run(); err != nil {
+		return false, normalizePromptError(err)
+	}
+	return confirmed, nil
+}
+
 func promptString(title, defaultValue string, requireNonEmpty bool) (string, error) {
 	value := defaultValue
 	field := huh.NewInput().

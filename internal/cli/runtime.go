@@ -2,12 +2,62 @@ package cli
 
 import (
 	ansible "civa/ansible"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
+
+	"golang.org/x/term"
 )
+
+func runUninstall(cfg config) error {
+	executablePath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("failed to resolve current executable: %w", err)
+	}
+
+	targetPath, err := uninstallTargetPathForPath(executablePath)
+	if err != nil {
+		return err
+	}
+
+	if !cfg.AssumeYes {
+		if !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())) {
+			return fmt.Errorf("non-interactive uninstall requires --yes")
+		}
+
+		confirmed, err := promptUninstallConfirmation(targetPath)
+		if err != nil {
+			if errors.Is(err, errUserCancelled) {
+				return nil
+			}
+			return err
+		}
+		if !confirmed {
+			fmt.Fprintln(os.Stderr, "civa uninstall was cancelled by the user.")
+			return nil
+		}
+	}
+
+	if err := os.Remove(targetPath); err != nil {
+		return fmt.Errorf("failed to remove %s: %w", targetPath, err)
+	}
+
+	fmt.Printf("Removed %s\n", targetPath)
+	return nil
+}
+
+func uninstallTargetPathForPath(path string) (string, error) {
+	path = filepath.Clean(path)
+	if filepath.Base(path) != "civa" {
+		return "", fmt.Errorf("refusing to uninstall unexpected executable: %s", path)
+	}
+
+	return path, nil
+}
 
 func materializeAnsibleAssets(ansibleDir string) error {
 	return ansible.Materialize(ansibleDir)

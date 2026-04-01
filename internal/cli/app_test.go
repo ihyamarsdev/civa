@@ -46,6 +46,20 @@ func TestParseServerSpecSupportsHostname(t *testing.T) {
 	}
 }
 
+func TestUninstallTargetPathForPathValidatesBinaryName(t *testing.T) {
+	path, err := uninstallTargetPathForPath("/usr/local/bin/civa")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if path != "/usr/local/bin/civa" {
+		t.Fatalf("unexpected uninstall path: %s", path)
+	}
+
+	if _, err := uninstallTargetPathForPath("/usr/local/bin/not-civa"); err == nil {
+		t.Fatal("expected uninstall target validation to reject a non-civa binary")
+	}
+}
+
 func TestSanitizeAlias(t *testing.T) {
 	alias := sanitizeAlias("My Host@1")
 	if alias != "my-host-1" {
