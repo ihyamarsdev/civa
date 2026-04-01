@@ -13,13 +13,13 @@
 
 ## Overview
 
-`civa` interviews the operator for server targets and selected components, generates Ansible inventory and variables, writes a Markdown execution plan, and then optionally runs `ansible-playbook`.
+`civa` is a Go-native CLI that interviews the operator for server targets and selected components, stages the embedded Ansible assets for each run, generates inventory and variables, writes a Markdown execution plan, and then optionally runs `ansible-playbook`.
 
 ## Current Support
 
 - Target families: Debian/Ubuntu and RHEL-compatible distributions such as RHEL, Rocky, AlmaLinux, CentOS, and Oracle Linux
 - Commands: `apply`, `plan`, `preview`, `doctor`, `version`, `help`
-- Runtime artifacts: `.civa/runs/<timestamp>/inventory.yml`, `vars.yml`, and `plan.md`
+- Runtime artifacts: `.civa/runs/<timestamp>/inventory.yml`, `vars.yml`, `plan.md`, and staged embedded Ansible assets
 
 ## Quick Start
 

@@ -23,7 +23,9 @@ When you run `civa apply`, `civa plan`, or `civa preview` without all required f
 - timezone
 - Traefik ACME email and challenge settings when Traefik is selected
 
-Before `apply` runs, `civa` shows a summary of the selected values.
+Before `apply` runs, `civa` shows a summary of the selected values. Interactive `apply` asks for a final confirmation; `--non-interactive` skips that confirmation.
+
+Component selection in interactive mode uses a Charmbracelet Huh multi-select prompt: use the Up and Down arrow keys to move, press Space to select or clear the highlighted component, then press Enter to confirm.
 
 ## Common Examples
 
