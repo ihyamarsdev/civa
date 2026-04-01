@@ -13,6 +13,11 @@ remove_binary() {
     return 0
   fi
 
+  if [ -x "$target" ] && "$target" uninstall --yes >/dev/null 2>&1; then
+    printf 'Removed %s via "%s uninstall --yes"\n' "$target" "$BIN_NAME"
+    return 0
+  fi
+
   if [ -w "$target" ] || [ -w "$INSTALL_DIR" ]; then
     rm -f "$target"
   elif command -v sudo >/dev/null 2>&1; then
