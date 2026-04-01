@@ -6,8 +6,8 @@ Local machine requirements:
 
 - `git`
 - `go`
-- `bash`
 - `ansible-playbook`
+- `python` or `python3`
 - a valid SSH private key and matching public key
 
 ## Option 1: Build From Source

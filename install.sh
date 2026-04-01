@@ -6,6 +6,7 @@ REPO="ihyamarsdev/civa"
 BIN_NAME="civa"
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
 TMP_DIR=""
+PYTHON_CMD=""
 
 cleanup() {
   if [ -n "$TMP_DIR" ] && [ -d "$TMP_DIR" ]; then
@@ -20,6 +21,17 @@ need_cmd() {
     printf 'Error: required command not found: %s\n' "$1" >&2
     exit 1
   }
+}
+
+detect_python() {
+  if command -v python >/dev/null 2>&1; then
+    PYTHON_CMD="python"
+  elif command -v python3 >/dev/null 2>&1; then
+    PYTHON_CMD="python3"
+  else
+    printf '%s\n' 'Error: python or python3 is required to install civa.' >&2
+    exit 1
+  fi
 }
 
 detect_os() {
@@ -68,7 +80,7 @@ release_version() {
   local metadata_file="$TMP_DIR/release.json"
   fetch "$api_url" "$metadata_file"
 
-  python - <<'PY' "$metadata_file"
+  "$PYTHON_CMD" - <<'PY' "$metadata_file"
 import json, sys
 with open(sys.argv[1], 'r', encoding='utf-8') as fh:
     data = json.load(fh)
@@ -95,7 +107,7 @@ install_binary() {
 
 main() {
   need_cmd tar
-  need_cmd python
+  detect_python
 
   TMP_DIR="$(mktemp -d)"
   mkdir -p "$INSTALL_DIR"
