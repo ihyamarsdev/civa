@@ -20,7 +20,7 @@ It does not harden servers by itself. Instead, it:
 - `ansible/playbook.yml` — main playbook
 - `ansible/templates/` — Traefik and Fail2Ban templates
 - `scripts/install.sh` — one-line installer target
-- `scripts/uninstall.sh` — uninstall helper for the installed binary
+- `scripts/uninstall.sh` — uninstall wrapper that delegates to `civa uninstall --yes` when available
 - `.github/workflows/release.yml` — automated release workflow
 - `.goreleaser.yaml` — release packaging configuration
 

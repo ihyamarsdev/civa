@@ -62,16 +62,28 @@ curl -fsSL https://raw.githubusercontent.com/ihyamarsdev/civa/main/scripts/insta
 Install a specific release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ihyamarsdev/civa/main/scripts/install.sh | CIVA_VERSION=v1.1.3 bash
+curl -fsSL https://raw.githubusercontent.com/ihyamarsdev/civa/main/scripts/install.sh | CIVA_VERSION=v1.1.4 bash
 ```
 
 Uninstall the installed binary:
 
 ```bash
+civa uninstall
+```
+
+For scripted or non-interactive removal:
+
+```bash
+civa uninstall --yes
+```
+
+Or use the uninstall script wrapper:
+
+```bash
 curl -fsSL https://raw.githubusercontent.com/ihyamarsdev/civa/main/scripts/uninstall.sh | bash
 ```
 
-Both scripts honor `INSTALL_DIR`, so you can install or remove `civa` from a custom path without editing the script.
+Both scripts honor `INSTALL_DIR`, so you can install or remove `civa` from a custom path without editing the script. The uninstall script prefers `civa uninstall --yes` when the installed binary already supports the command.
 
 ## Verify the Installation
 

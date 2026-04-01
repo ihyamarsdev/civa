@@ -6,6 +6,7 @@
 - `civa plan`
 - `civa preview`
 - `civa doctor`
+- `civa uninstall`
 - `civa version`
 - `civa help`
 
