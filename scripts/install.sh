@@ -105,12 +105,30 @@ install_binary() {
   fi
 }
 
+ensure_install_dir() {
+  if [ -d "$INSTALL_DIR" ]; then
+    return 0
+  fi
+
+  if mkdir -p "$INSTALL_DIR" 2>/dev/null; then
+    return 0
+  fi
+
+  if command -v sudo >/dev/null 2>&1; then
+    sudo mkdir -p "$INSTALL_DIR"
+    return 0
+  fi
+
+  printf 'Error: cannot create %s and sudo is not available\n' "$INSTALL_DIR" >&2
+  exit 1
+}
+
 main() {
   need_cmd tar
   detect_python
 
   TMP_DIR="$(mktemp -d)"
-  mkdir -p "$INSTALL_DIR"
+  ensure_install_dir
 
   local os_name="$(detect_os)"
   local arch_name="$(detect_arch)"

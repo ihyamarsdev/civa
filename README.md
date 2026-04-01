@@ -70,7 +70,7 @@ Running `civa` without arguments shows help.
 - Use the one-line installer:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ihyamarsdev/civa/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/ihyamarsdev/civa/main/scripts/install.sh | bash
 ```
 
 For the full install guide, see `docs/installation.md`.

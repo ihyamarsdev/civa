@@ -19,7 +19,8 @@ It does not harden servers by itself. Instead, it:
 - `ansible/assets.go` — embedded Ansible asset loader for the Go runtime
 - `ansible/playbook.yml` — main playbook
 - `ansible/templates/` — Traefik and Fail2Ban templates
-- `install.sh` — one-line installer target
+- `scripts/install.sh` — one-line installer target
+- `scripts/uninstall.sh` — uninstall helper for the installed binary
 - `.github/workflows/release.yml` — automated release workflow
 - `.goreleaser.yaml` — release packaging configuration
 
