@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"bufio"
 	ansible "civa/ansible"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -12,6 +14,335 @@ import (
 
 	"golang.org/x/term"
 )
+
+type plannedRunMetadata struct {
+	SSHAuthMethod string   `json:"sshAuthMethod"`
+	SSHUser       string   `json:"sshUser"`
+	SSHPort       int      `json:"sshPort"`
+	Components    []string `json:"components"`
+	InventoryFile string   `json:"inventoryFile"`
+	VarsFile      string   `json:"varsFile"`
+	AuthFile      string   `json:"authFile,omitempty"`
+	PlanFile      string   `json:"planFile"`
+	PlaybookFile  string   `json:"playbookFile"`
+}
+
+func resolvePlanInputFile(cfg *config) (string, error) {
+	if err := finalizePaths(cfg); err != nil {
+		return "", err
+	}
+
+	if strings.TrimSpace(cfg.PlanName) != "" {
+		planPath := planPathForName(cfg.PlanName)
+		if _, err := os.Stat(planPath); err != nil {
+			return "", fmt.Errorf("generated plan not found: %s", cfg.PlanName)
+		}
+		cfg.PlanInputFile = planPath
+		return planPath, nil
+	}
+
+	if strings.TrimSpace(cfg.PlanInputFile) != "" {
+		if _, err := os.Stat(cfg.PlanInputFile); err != nil {
+			return "", fmt.Errorf("plan file not found: %s", cfg.PlanInputFile)
+		}
+		return cfg.PlanInputFile, nil
+	}
+
+	return "", fmt.Errorf("preview/apply require a generated plan name or --plan-file")
+}
+
+func readLatestPlanPointer() (string, error) {
+	content, err := os.ReadFile(latestPlanPointerFile)
+	if err != nil {
+		return "", err
+	}
+	path := strings.TrimSpace(string(content))
+	if path == "" {
+		return "", fmt.Errorf("latest plan pointer is empty")
+	}
+	if _, err := os.Stat(path); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+func writeLatestPlanPointer(planPath string) error {
+	if err := os.MkdirAll(filepath.Dir(latestPlanPointerFile), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(latestPlanPointerFile, []byte(planPath+"\n"), 0o644)
+}
+
+func planPathForName(name string) string {
+	return filepath.Join(runRootDirectory, name, "plan.md")
+}
+
+func planDirForName(name string) string {
+	return filepath.Join(runRootDirectory, name)
+}
+
+func listPlans() error {
+	entries, err := os.ReadDir(runRootDirectory)
+	if err != nil {
+		if os.IsNotExist(err) {
+			fmt.Println("No generated plans found.")
+			return nil
+		}
+		return err
+	}
+
+	latestPlan, _ := readLatestPlanPointer()
+	printed := false
+	for i := len(entries) - 1; i >= 0; i-- {
+		entry := entries[i]
+		if !entry.IsDir() {
+			continue
+		}
+		planName := entry.Name()
+		planPath := planPathForName(planName)
+		if _, err := os.Stat(planPath); err != nil {
+			continue
+		}
+
+		marker := ""
+		if latestPlan == planPath {
+			marker = " (latest)"
+		}
+		fmt.Printf("- %s%s\n  %s\n", planName, marker, planPath)
+		printed = true
+	}
+
+	if !printed {
+		fmt.Println("No generated plans found.")
+	}
+	return nil
+}
+
+func removePlan(cfg *config) error {
+	targetDir := planDirForName(cfg.PlanName)
+	planPath := planPathForName(cfg.PlanName)
+	if _, err := os.Stat(planPath); err != nil {
+		return fmt.Errorf("generated plan not found: %s", cfg.PlanName)
+	}
+
+	if !cfg.AssumeYes {
+		if !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())) {
+			return fmt.Errorf("non-interactive plan removal requires --yes")
+		}
+
+		confirmed, err := promptPlanRemovalConfirmation(cfg.PlanName)
+		if err != nil {
+			if errors.Is(err, errUserCancelled) {
+				return nil
+			}
+			return err
+		}
+		if !confirmed {
+			fmt.Fprintln(os.Stderr, "civa plan remove was cancelled by the user.")
+			return nil
+		}
+	}
+
+	if err := os.RemoveAll(targetDir); err != nil {
+		return fmt.Errorf("failed to remove plan %s: %w", cfg.PlanName, err)
+	}
+
+	if latestPlan, err := readLatestPlanPointer(); err == nil && latestPlan == planPath {
+		if nextLatest, nextErr := latestGeneratedPlanFile(); nextErr == nil {
+			if writeErr := writeLatestPlanPointer(nextLatest); writeErr != nil {
+				return writeErr
+			}
+		} else {
+			_ = os.Remove(latestPlanPointerFile)
+		}
+	}
+
+	fmt.Printf("Removed generated plan %s\n", cfg.PlanName)
+	return nil
+}
+
+func latestGeneratedPlanFile() (string, error) {
+	entries, err := os.ReadDir(runRootDirectory)
+	if err != nil {
+		return "", err
+	}
+
+	for i := len(entries) - 1; i >= 0; i-- {
+		entry := entries[i]
+		if !entry.IsDir() {
+			continue
+		}
+		candidate := filepath.Join(runRootDirectory, entry.Name(), "plan.md")
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate, nil
+		}
+	}
+
+	return "", fmt.Errorf("no generated plan found under %s", runRootDirectory)
+}
+
+func loadPlannedRun(planPath string) (*config, *runtimeState, error) {
+	metadata, err := loadPlannedRunMetadata(planPath)
+	if err == nil {
+		return metadataToPlannedRun(metadata)
+	}
+
+	return loadPlannedRunFromMarkdown(planPath)
+}
+
+func loadPlannedRunMetadata(planPath string) (*plannedRunMetadata, error) {
+	metadataPath := planMetadataPath(planPath)
+	content, err := os.ReadFile(metadataPath)
+	if err != nil {
+		return nil, err
+	}
+
+	var metadata plannedRunMetadata
+	if err := json.Unmarshal(content, &metadata); err != nil {
+		return nil, err
+	}
+	return &metadata, nil
+}
+
+func metadataToPlannedRun(metadata *plannedRunMetadata) (*config, *runtimeState, error) {
+	loadedCfg := defaultConfig(commandApply)
+	loadedCfg.SSHAuthMethod = metadata.SSHAuthMethod
+	loadedCfg.SSHUser = metadata.SSHUser
+	loadedCfg.SSHPort = metadata.SSHPort
+	loadedCfg.Components = append([]string(nil), metadata.Components...)
+
+	state := &runtimeState{
+		InventoryFile: metadata.InventoryFile,
+		VarsFile:      metadata.VarsFile,
+		AuthFile:      metadata.AuthFile,
+		MetadataFile:  planMetadataPath(metadata.PlanFile),
+		PlanFile:      metadata.PlanFile,
+		PlaybookFile:  metadata.PlaybookFile,
+	}
+
+	if state.InventoryFile == "" || state.VarsFile == "" || state.PlaybookFile == "" || state.PlanFile == "" {
+		return nil, nil, fmt.Errorf("plan metadata is missing execution artifacts: %s", metadata.PlanFile)
+	}
+	if len(loadedCfg.Components) == 0 {
+		return nil, nil, fmt.Errorf("plan metadata is missing selected components: %s", metadata.PlanFile)
+	}
+
+	for _, path := range []string{state.InventoryFile, state.VarsFile, state.PlaybookFile, state.PlanFile} {
+		if _, err := os.Stat(path); err != nil {
+			return nil, nil, fmt.Errorf("planned artifact not found: %s", path)
+		}
+	}
+	if state.AuthFile != "" {
+		if _, err := os.Stat(state.AuthFile); err != nil {
+			return nil, nil, fmt.Errorf("planned auth file not found: %s", state.AuthFile)
+		}
+	}
+
+	return &loadedCfg, state, nil
+}
+
+func loadPlannedRunFromMarkdown(planPath string) (*config, *runtimeState, error) {
+	file, err := os.Open(planPath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to open plan file %s: %w", planPath, err)
+	}
+	defer file.Close()
+
+	loadedCfg := defaultConfig(commandApply)
+	loadedCfg.PlanInputFile = planPath
+	state := &runtimeState{PlanFile: planPath}
+	section := ""
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := scanner.Text()
+		trimmed := strings.TrimSpace(line)
+
+		switch trimmed {
+		case "## Mode":
+			section = "mode"
+			continue
+		case "## Selected Components":
+			section = "components"
+			continue
+		case "## Generated Files":
+			section = "files"
+			continue
+		case "## Command":
+			section = "command"
+			continue
+		}
+
+		if section == "mode" {
+			switch {
+			case strings.HasPrefix(trimmed, "- SSH auth method: "):
+				method := strings.TrimPrefix(trimmed, "- SSH auth method: ")
+				if strings.EqualFold(method, "password") {
+					loadedCfg.SSHAuthMethod = sshAuthMethodPassword
+				} else {
+					loadedCfg.SSHAuthMethod = sshAuthMethodKey
+				}
+			case strings.HasPrefix(trimmed, "- SSH user: "):
+				loadedCfg.SSHUser = strings.TrimPrefix(trimmed, "- SSH user: ")
+			case strings.HasPrefix(trimmed, "- SSH port: "):
+				port, convErr := strconv.Atoi(strings.TrimPrefix(trimmed, "- SSH port: "))
+				if convErr == nil {
+					loadedCfg.SSHPort = port
+				}
+			}
+		}
+
+		if section == "components" && strings.HasPrefix(trimmed, "- ") {
+			label := strings.TrimPrefix(trimmed, "- ")
+			for _, option := range componentOptions {
+				if option.Label == label {
+					loadedCfg.Components = append(loadedCfg.Components, option.Value)
+					break
+				}
+			}
+		}
+
+		if section == "files" {
+			switch {
+			case strings.HasPrefix(trimmed, "- Inventory: "):
+				state.InventoryFile = strings.TrimPrefix(trimmed, "- Inventory: ")
+			case strings.HasPrefix(trimmed, "- Vars: "):
+				state.VarsFile = strings.TrimPrefix(trimmed, "- Vars: ")
+			case strings.HasPrefix(trimmed, "- SSH auth file: "):
+				value := strings.TrimPrefix(trimmed, "- SSH auth file: ")
+				if value != "not used" {
+					state.AuthFile = value
+				}
+			case strings.HasPrefix(trimmed, "- Playbook: "):
+				state.PlaybookFile = strings.TrimPrefix(trimmed, "- Playbook: ")
+			}
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, nil, fmt.Errorf("failed to read plan file %s: %w", planPath, err)
+	}
+
+	if state.InventoryFile == "" || state.VarsFile == "" || state.PlaybookFile == "" {
+		return nil, nil, fmt.Errorf("plan file is missing execution artifacts: %s", planPath)
+	}
+	if len(loadedCfg.Components) == 0 {
+		return nil, nil, fmt.Errorf("plan file is missing selected components: %s", planPath)
+	}
+
+	for _, path := range []string{state.InventoryFile, state.VarsFile, state.PlaybookFile} {
+		if _, err := os.Stat(path); err != nil {
+			return nil, nil, fmt.Errorf("planned artifact not found: %s", path)
+		}
+	}
+	if state.AuthFile != "" {
+		if _, err := os.Stat(state.AuthFile); err != nil {
+			return nil, nil, fmt.Errorf("planned auth file not found: %s", state.AuthFile)
+		}
+	}
+
+	return &loadedCfg, state, nil
+}
 
 func runUninstall(cfg config) error {
 	executablePath, err := os.Executable()
@@ -175,6 +506,35 @@ func writeAuthFile(cfg *config, state *runtimeState) error {
 	return os.WriteFile(state.AuthFile, []byte(content), 0o600)
 }
 
+func writePlanMetadata(cfg *config, state *runtimeState) error {
+	metadata := plannedRunMetadata{
+		SSHAuthMethod: cfg.SSHAuthMethod,
+		SSHUser:       cfg.SSHUser,
+		SSHPort:       cfg.SSHPort,
+		Components:    append([]string(nil), cfg.Components...),
+		InventoryFile: state.InventoryFile,
+		VarsFile:      state.VarsFile,
+		AuthFile:      state.AuthFile,
+		PlanFile:      state.PlanFile,
+		PlaybookFile:  state.PlaybookFile,
+	}
+
+	content, err := json.MarshalIndent(metadata, "", "  ")
+	if err != nil {
+		return err
+	}
+	content = append(content, '\n')
+	if err := os.WriteFile(state.MetadataFile, content, 0o600); err != nil {
+		return err
+	}
+	if cfg.PlanFile != "" {
+		if err := os.WriteFile(planMetadataPath(cfg.PlanFile), content, 0o600); err != nil {
+			return err
+		}
+	}
+	return writeLatestPlanPointer(state.PlanFile)
+}
+
 func writeVarsFile(cfg *config, state *runtimeState) error {
 	content := fmt.Sprintf(
 		"civa_deployer_user: %q\n"+
@@ -229,6 +589,7 @@ func writePlanFile(cfg *config, state *runtimeState) error {
 			"- Inventory: %s\n"+
 			"- Vars: %s\n"+
 			"- SSH auth file: %s\n"+
+			"- Metadata: %s\n"+
 			"- Plan: %s\n"+
 			"- Playbook: %s\n\n"+
 			"## Notes\n\n%s\n\n"+
@@ -246,13 +607,22 @@ func writePlanFile(cfg *config, state *runtimeState) error {
 		state.InventoryFile,
 		state.VarsFile,
 		sshAuthFileSummary(*state),
+		state.MetadataFile,
 		state.PlanFile,
 		state.PlaybookFile,
 		sshAuthNote(*cfg, *state),
 		buildAnsibleCommand(cfg, state),
 	)
 
-	return os.WriteFile(state.PlanFile, []byte(content), 0o644)
+	if err := os.WriteFile(state.PlanFile, []byte(content), 0o644); err != nil {
+		return err
+	}
+	if cfg.PlanFile != "" {
+		if err := os.WriteFile(cfg.PlanFile, []byte(content), 0o644); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func runAnsible(cfg *config, state *runtimeState) error {

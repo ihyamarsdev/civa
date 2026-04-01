@@ -46,6 +46,62 @@ func TestParseServerSpecSupportsHostname(t *testing.T) {
 	}
 }
 
+func TestShouldShowCommandHelpForBarePlanPreviewApply(t *testing.T) {
+	for _, args := range [][]string{{"plan"}, {"preview"}, {"apply"}, {"plan", "help"}, {"preview", "--help"}, {"apply", "-h"}} {
+		if !shouldShowCommandHelp(args) {
+			t.Fatalf("expected help for args %v", args)
+		}
+	}
+
+	for _, args := range [][]string{{"plan", "start"}, {"preview", "my-plan"}, {"apply", "my-plan", "--yes"}} {
+		if shouldShowCommandHelp(args) {
+			t.Fatalf("did not expect help for args %v", args)
+		}
+	}
+}
+
+func TestParseArgsSupportsPlanSubcommandsAndPlanNames(t *testing.T) {
+	planCfg, err := parseArgs([]string{"plan", "start", "--non-interactive"})
+	if err != nil {
+		t.Fatalf("parseArgs returned error for plan start: %v", err)
+	}
+	if planCfg.PlanAction != planActionStart {
+		t.Fatalf("unexpected plan action: %s", planCfg.PlanAction)
+	}
+
+	listCfg, err := parseArgs([]string{"plan", "list"})
+	if err != nil {
+		t.Fatalf("parseArgs returned error for plan list: %v", err)
+	}
+	if listCfg.PlanAction != planActionList {
+		t.Fatalf("unexpected plan list action: %s", listCfg.PlanAction)
+	}
+
+	removeCfg, err := parseArgs([]string{"plan", "remove", "my-plan", "--yes"})
+	if err != nil {
+		t.Fatalf("parseArgs returned error for plan remove: %v", err)
+	}
+	if removeCfg.PlanAction != planActionRemove || removeCfg.PlanName != "my-plan" {
+		t.Fatalf("unexpected plan remove config: %#v", removeCfg)
+	}
+
+	previewCfg, err := parseArgs([]string{"preview", "my-plan"})
+	if err != nil {
+		t.Fatalf("parseArgs returned error for preview: %v", err)
+	}
+	if previewCfg.PlanName != "my-plan" {
+		t.Fatalf("unexpected preview plan name: %s", previewCfg.PlanName)
+	}
+
+	applyCfg, err := parseArgs([]string{"apply", "my-plan", "--yes"})
+	if err != nil {
+		t.Fatalf("parseArgs returned error for apply: %v", err)
+	}
+	if applyCfg.PlanName != "my-plan" {
+		t.Fatalf("unexpected apply plan name: %s", applyCfg.PlanName)
+	}
+}
+
 func TestUninstallTargetPathForPathValidatesBinaryName(t *testing.T) {
 	path, err := uninstallTargetPathForPath("/usr/local/bin/civa")
 	if err != nil {
@@ -109,6 +165,20 @@ func TestShouldPromptApplyConfirmationRespectsNonInteractive(t *testing.T) {
 
 	if !shouldPromptApplyConfirmation(config{Command: commandApply, NonInteractive: false}) {
 		t.Fatal("expected interactive apply to prompt for confirmation")
+	}
+}
+
+func TestValidateExistingPlanCommandFlagsRejectsPlanGenerationFlags(t *testing.T) {
+	if err := validateExistingPlanCommandFlags(config{Provided: providedFlags{Servers: true}}); err == nil {
+		t.Fatal("expected preview/apply validation to reject server flags")
+	}
+
+	if err := validateExistingPlanCommandFlags(config{Provided: providedFlags{PlanInputFile: true}}); err != nil {
+		t.Fatalf("expected --plan-file override to remain valid, got %v", err)
+	}
+
+	if err := validateExistingPlanCommandFlags(config{Provided: providedFlags{}}); err != nil {
+		t.Fatalf("expected empty provided flags to be valid, got %v", err)
 	}
 }
 
@@ -240,5 +310,139 @@ func TestWriteInventoryUsesPasswordForPasswordAuth(t *testing.T) {
 	authVars := string(authContent)
 	if !strings.Contains(authVars, `ansible_password: "super-secret"`) {
 		t.Fatalf("expected password auth in auth file, got %s", authVars)
+	}
+}
+
+func TestLoadPlannedRunParsesGeneratedArtifacts(t *testing.T) {
+	tempDir := t.TempDir()
+	inventoryFile := filepath.Join(tempDir, "inventory.yml")
+	varsFile := filepath.Join(tempDir, "vars.yml")
+	authFile := filepath.Join(tempDir, "auth.yml")
+	playbookFile := filepath.Join(tempDir, "ansible", "playbook.yml")
+	planFile := filepath.Join(tempDir, "plan.md")
+
+	if err := os.MkdirAll(filepath.Dir(playbookFile), 0o755); err != nil {
+		t.Fatalf("failed to create playbook dir: %v", err)
+	}
+	for _, file := range []string{inventoryFile, varsFile, authFile, playbookFile} {
+		if err := os.WriteFile(file, []byte("test"), 0o600); err != nil {
+			t.Fatalf("failed to write %s: %v", file, err)
+		}
+	}
+
+	planContent := strings.Join([]string{
+		"# civa Run Plan",
+		"",
+		"## Mode",
+		"",
+		"- Command: plan",
+		"- SSH auth method: Password",
+		"- SSH user: root",
+		"- SSH port: 22",
+		"",
+		"## Selected Components",
+		"",
+		"- System Update & Upgrade",
+		"- User Management",
+		"",
+		"## Generated Files",
+		"",
+		"- Inventory: " + inventoryFile,
+		"- Vars: " + varsFile,
+		"- SSH auth file: " + authFile,
+		"- Plan: " + planFile,
+		"- Playbook: " + playbookFile,
+	}, "\n")
+	if err := os.WriteFile(planFile, []byte(planContent), 0o644); err != nil {
+		t.Fatalf("failed to write plan file: %v", err)
+	}
+
+	loadedCfg, state, err := loadPlannedRun(planFile)
+	if err != nil {
+		t.Fatalf("loadPlannedRun returned error: %v", err)
+	}
+	if loadedCfg.SSHAuthMethod != sshAuthMethodPassword {
+		t.Fatalf("unexpected auth method: %s", loadedCfg.SSHAuthMethod)
+	}
+	if strings.Join(loadedCfg.Components, ",") != "system_update,user_management" {
+		t.Fatalf("unexpected components: %v", loadedCfg.Components)
+	}
+	if state.InventoryFile != inventoryFile || state.VarsFile != varsFile || state.AuthFile != authFile || state.PlaybookFile != playbookFile {
+		t.Fatalf("unexpected planned state: %#v", state)
+	}
+}
+
+func TestResolvePlanInputFileRequiresNameOrPlanFile(t *testing.T) {
+	cfg := &config{Command: commandPreview, NonInteractive: true}
+	_, err := resolvePlanInputFile(cfg)
+	if err == nil || !strings.Contains(err.Error(), "require a generated plan name or --plan-file") {
+		t.Fatalf("expected name-or-plan-file error, got %v", err)
+	}
+}
+
+func TestResolvePlanInputFileUsesPlanName(t *testing.T) {
+	workingDir := t.TempDir()
+	originalDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working dir: %v", err)
+	}
+	defer func() { _ = os.Chdir(originalDir) }()
+	if err := os.Chdir(workingDir); err != nil {
+		t.Fatalf("failed to chdir: %v", err)
+	}
+
+	planName := "example-plan"
+	planPath := planPathForName(planName)
+	if err := os.MkdirAll(filepath.Dir(planPath), 0o755); err != nil {
+		t.Fatalf("failed to create plan dir: %v", err)
+	}
+	if err := os.WriteFile(planPath, []byte("# plan\n"), 0o644); err != nil {
+		t.Fatalf("failed to write plan: %v", err)
+	}
+
+	cfg := &config{Command: commandPreview, PlanName: planName}
+	resolved, err := resolvePlanInputFile(cfg)
+	if err != nil {
+		t.Fatalf("resolvePlanInputFile returned error: %v", err)
+	}
+	if resolved != planPath {
+		t.Fatalf("unexpected resolved plan path: %s", resolved)
+	}
+}
+
+func TestRunApplyFlowRequiresYesWhenNonInteractive(t *testing.T) {
+	tempDir := t.TempDir()
+	planPath := filepath.Join(tempDir, "plan.md")
+	metadataPath := planMetadataPath(planPath)
+	inventoryFile := filepath.Join(tempDir, "inventory.yml")
+	varsFile := filepath.Join(tempDir, "vars.yml")
+	playbookFile := filepath.Join(tempDir, "ansible", "playbook.yml")
+
+	if err := os.MkdirAll(filepath.Dir(playbookFile), 0o755); err != nil {
+		t.Fatalf("failed to create playbook dir: %v", err)
+	}
+	for _, file := range []string{planPath, inventoryFile, varsFile, playbookFile} {
+		if err := os.WriteFile(file, []byte("test"), 0o644); err != nil {
+			t.Fatalf("failed to write %s: %v", file, err)
+		}
+	}
+
+	metadata := `{
+  "sshAuthMethod": "key",
+  "sshUser": "root",
+  "sshPort": 22,
+  "components": ["system_update"],
+  "inventoryFile": "` + inventoryFile + `",
+  "varsFile": "` + varsFile + `",
+  "planFile": "` + planPath + `",
+  "playbookFile": "` + playbookFile + `"
+}` + "\n"
+	if err := os.WriteFile(metadataPath, []byte(metadata), 0o644); err != nil {
+		t.Fatalf("failed to write metadata: %v", err)
+	}
+
+	err := runApplyFlow(&config{Command: commandApply, NonInteractive: true, PlanInputFile: planPath})
+	if err == nil || !strings.Contains(err.Error(), "requires --yes") {
+		t.Fatalf("expected --yes gate error, got %v", err)
 	}
 }

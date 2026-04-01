@@ -189,6 +189,47 @@ func promptApplyConfirmation() (bool, error) {
 	return confirmed, nil
 }
 
+func promptApplyExistingPlanConfirmation(planPath string) (bool, error) {
+	confirmed := true
+	field := huh.NewConfirm().
+		Title(fmt.Sprintf("Execute the generated plan at %s?", planPath)).
+		Description("This runs ansible-playbook with the artifacts recorded in the existing plan.").
+		Value(&confirmed)
+	if err := field.Run(); err != nil {
+		return false, normalizePromptError(err)
+	}
+	return confirmed, nil
+}
+
+func promptPlanFilePath(defaultValue string) (string, error) {
+	value := defaultValue
+	field := huh.NewInput().
+		Title("Existing plan file path").
+		Value(&value).
+		Validate(func(input string) error {
+			if strings.TrimSpace(input) == "" {
+				return fmt.Errorf("this value cannot be empty")
+			}
+			return nil
+		})
+	if err := field.Run(); err != nil {
+		return "", normalizePromptError(err)
+	}
+	return strings.TrimSpace(value), nil
+}
+
+func promptPlanRemovalConfirmation(planName string) (bool, error) {
+	confirmed := false
+	field := huh.NewConfirm().
+		Title(fmt.Sprintf("Remove generated plan %s?", planName)).
+		Description("This deletes the stored run directory and its generated artifacts.").
+		Value(&confirmed)
+	if err := field.Run(); err != nil {
+		return false, normalizePromptError(err)
+	}
+	return confirmed, nil
+}
+
 func promptUninstallConfirmation(targetPath string) (bool, error) {
 	confirmed := false
 	field := huh.NewConfirm().

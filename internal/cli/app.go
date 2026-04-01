@@ -36,6 +36,10 @@ const (
 	defaultTraefikChallenge   = "http"
 	defaultTraefikDNSProvider = "cloudflare"
 	runRootDirectory          = ".civa/runs"
+	latestPlanPointerFile     = ".civa/latest-plan"
+	planActionStart           = "start"
+	planActionList            = "list"
+	planActionRemove          = "remove"
 )
 
 type serverSpec struct {
@@ -60,6 +64,7 @@ type providedFlags struct {
 	DeployUser         bool
 	Timezone           bool
 	Components         bool
+	PlanInputFile      bool
 	PlanFile           bool
 	TraefikEmail       bool
 	TraefikChallenge   bool
@@ -70,6 +75,8 @@ type providedFlags struct {
 
 type config struct {
 	Command            string
+	PlanAction         string
+	PlanName           string
 	AssumeYes          bool
 	NonInteractive     bool
 	SSHUser            string
@@ -86,6 +93,7 @@ type config struct {
 	TraefikDNSProvider string
 	ComponentsInput    string
 	Components         []string
+	PlanInputFile      string
 	PlanFile           string
 	Servers            []serverSpec
 	Provided           providedFlags
@@ -97,6 +105,7 @@ type runtimeState struct {
 	InventoryFile   string
 	VarsFile        string
 	AuthFile        string
+	MetadataFile    string
 	PlanFile        string
 	PlaybookFile    string
 	ProgressCurrent int
@@ -121,6 +130,11 @@ func Run(args []string) error {
 		return nil
 	}
 
+	if shouldShowCommandHelp(args) {
+		printCommandUsage(args[0])
+		return nil
+	}
+
 	cfg, err := parseArgs(args)
 	if err != nil {
 		return err
@@ -140,8 +154,19 @@ func Run(args []string) error {
 		return runDoctor(cfg)
 	case commandUninstall:
 		return runUninstall(cfg)
-	case commandApply, commandPlan, commandPreview:
-		return runExecutionFlow(&cfg)
+	case commandPlan:
+		switch cfg.PlanAction {
+		case planActionList:
+			return runPlanListFlow(&cfg)
+		case planActionRemove:
+			return runPlanRemoveFlow(&cfg)
+		default:
+			return runPlanFlow(&cfg)
+		}
+	case commandPreview:
+		return runPreviewFlow(&cfg)
+	case commandApply:
+		return runApplyFlow(&cfg)
 	default:
 		return fmt.Errorf("unknown command: %s", cfg.Command)
 	}
@@ -150,6 +175,7 @@ func Run(args []string) error {
 func defaultConfig(command string) config {
 	return config{
 		Command:            command,
+		PlanAction:         planActionStart,
 		SSHUser:            defaultSSHUser,
 		SSHPort:            defaultSSHPort,
 		SSHAuthMethod:      defaultSSHAuthMethod,
@@ -164,6 +190,24 @@ func defaultConfig(command string) config {
 	}
 }
 
+func shouldShowCommandHelp(args []string) bool {
+	if len(args) == 1 {
+		switch args[0] {
+		case commandPlan, commandPreview, commandApply:
+			return true
+		}
+	}
+
+	if len(args) == 2 && (args[1] == "help" || args[1] == "--help" || args[1] == "-h") {
+		switch args[0] {
+		case commandPlan, commandPreview, commandApply:
+			return true
+		}
+	}
+
+	return false
+}
+
 func parseArgs(args []string) (config, error) {
 	command := args[0]
 	if command == "--help" || command == "-h" {
@@ -175,8 +219,21 @@ func parseArgs(args []string) (config, error) {
 	}
 
 	cfg := defaultConfig(command)
+	startIndex := 1
 
-	for i := 1; i < len(args); i++ {
+	if command == commandPlan {
+		if len(args) > 1 && !strings.HasPrefix(args[1], "-") {
+			switch args[1] {
+			case planActionStart, planActionList, planActionRemove:
+				cfg.PlanAction = args[1]
+				startIndex = 2
+			default:
+				return config{}, fmt.Errorf("unknown plan subcommand: %s", args[1])
+			}
+		}
+	}
+
+	for i := startIndex; i < len(args); i++ {
 		arg := args[i]
 
 		switch {
@@ -295,6 +352,17 @@ func parseArgs(args []string) (config, error) {
 		case strings.HasPrefix(arg, "--components="):
 			cfg.ComponentsInput = strings.TrimPrefix(arg, "--components=")
 			cfg.Provided.Components = true
+		case arg == "--plan-file":
+			value, nextIndex, err := nextArgValue(args, i)
+			if err != nil {
+				return config{}, err
+			}
+			cfg.PlanInputFile = value
+			cfg.Provided.PlanInputFile = true
+			i = nextIndex
+		case strings.HasPrefix(arg, "--plan-file="):
+			cfg.PlanInputFile = strings.TrimPrefix(arg, "--plan-file=")
+			cfg.Provided.PlanInputFile = true
 		case arg == "--server":
 			value, nextIndex, err := nextArgValue(args, i)
 			if err != nil {
@@ -358,6 +426,10 @@ func parseArgs(args []string) (config, error) {
 		case strings.HasPrefix(arg, "--output="):
 			cfg.PlanFile = strings.TrimPrefix(arg, "--output=")
 			cfg.Provided.PlanFile = true
+		case command == commandPlan && cfg.PlanAction == planActionRemove && cfg.PlanName == "" && !strings.HasPrefix(arg, "-"):
+			cfg.PlanName = arg
+		case (command == commandPreview || command == commandApply) && cfg.PlanName == "" && !strings.HasPrefix(arg, "-"):
+			cfg.PlanName = arg
 		default:
 			return config{}, fmt.Errorf("unknown argument: %s", arg)
 		}
@@ -366,7 +438,18 @@ func parseArgs(args []string) (config, error) {
 	return cfg, nil
 }
 
-func runExecutionFlow(cfg *config) error {
+func runPlanListFlow(_ *config) error {
+	return listPlans()
+}
+
+func runPlanRemoveFlow(cfg *config) error {
+	if strings.TrimSpace(cfg.PlanName) == "" {
+		return fmt.Errorf("plan remove requires a generated plan name")
+	}
+	return removePlan(cfg)
+}
+
+func runPlanFlow(cfg *config) error {
 	if shouldPrompt(cfg) {
 		if err := collectInteractiveInputs(cfg); err != nil {
 			if errors.Is(err, errUserCancelled) {
@@ -412,6 +495,86 @@ func runExecutionFlow(cfg *config) error {
 	return executeRuntime(cfg, state)
 }
 
+func runPreviewFlow(cfg *config) error {
+	if err := validateExistingPlanCommandFlags(*cfg); err != nil {
+		return err
+	}
+
+	planPath, err := resolvePlanInputFile(cfg)
+	if err != nil {
+		return err
+	}
+
+	content, err := os.ReadFile(planPath)
+	if err != nil {
+		return fmt.Errorf("failed to read plan file %s: %w", planPath, err)
+	}
+
+	fmt.Printf("Plan file: %s\n\n", planPath)
+	fmt.Print(string(content))
+	if len(content) == 0 || content[len(content)-1] != '\n' {
+		fmt.Println()
+	}
+
+	return nil
+}
+
+func runApplyFlow(cfg *config) error {
+	if err := validateExistingPlanCommandFlags(*cfg); err != nil {
+		return err
+	}
+
+	planPath, err := resolvePlanInputFile(cfg)
+	if err != nil {
+		return err
+	}
+
+	loadedCfg, state, err := loadPlannedRun(planPath)
+	if err != nil {
+		return err
+	}
+
+	if !cfg.AssumeYes {
+		if !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())) {
+			return fmt.Errorf("non-interactive apply requires --yes when executing an existing plan")
+		}
+
+		confirmed, err := promptApplyExistingPlanConfirmation(planPath)
+		if err != nil {
+			if errors.Is(err, errUserCancelled) {
+				return nil
+			}
+			return err
+		}
+		if !confirmed {
+			fmt.Fprintln(os.Stderr, "civa apply was cancelled by the user before ansible-playbook started.")
+			return nil
+		}
+	}
+
+	loadedCfg.Command = commandApply
+	state.ProgressCurrent = 0
+	state.ProgressTotal = 1
+	state.CompletedPhases = nil
+
+	printSection("Apply Existing Plan")
+	fmt.Fprintf(os.Stderr, "Plan file: %s\n", planPath)
+	fmt.Fprintf(os.Stderr, "Inventory: %s\n", state.InventoryFile)
+	fmt.Fprintf(os.Stderr, "Vars: %s\n", state.VarsFile)
+	if state.AuthFile != "" {
+		fmt.Fprintf(os.Stderr, "SSH auth file: %s\n", state.AuthFile)
+	}
+	fmt.Fprintf(os.Stderr, "Playbook: %s\n", state.PlaybookFile)
+
+	state.progressStep("Running ansible-playbook from existing plan")
+	if err := runAnsible(loadedCfg, state); err != nil {
+		return err
+	}
+	state.appendCompletedPhase("ansible-playbook execution")
+	showExecutionSummary(loadedCfg, state)
+	return nil
+}
+
 func shouldPromptApplyConfirmation(cfg config) bool {
 	return cfg.Command == commandApply && !cfg.NonInteractive
 }
@@ -425,10 +588,8 @@ func prepareRuntime(cfg *config) (*runtimeState, error) {
 	if cfg.SSHAuthMethod == sshAuthMethodPassword {
 		authFile = filepath.Join(generatedDir, "auth.yml")
 	}
-	planFile := cfg.PlanFile
-	if planFile == "" {
-		planFile = filepath.Join(generatedDir, "plan.md")
-	}
+	planFile := filepath.Join(generatedDir, "plan.md")
+	metadataFile := planMetadataPath(planFile)
 	playbookFile := filepath.Join(generatedDir, "ansible", "playbook.yml")
 
 	if err := os.MkdirAll(generatedDir, 0o755); err != nil {
@@ -437,13 +598,24 @@ func prepareRuntime(cfg *config) (*runtimeState, error) {
 	if err := os.MkdirAll(filepath.Dir(planFile), 0o755); err != nil {
 		return nil, err
 	}
+	if cfg.PlanFile != "" {
+		if err := os.MkdirAll(filepath.Dir(cfg.PlanFile), 0o755); err != nil {
+			return nil, err
+		}
+	}
 	if err := materializeAnsibleAssets(filepath.Join(generatedDir, "ansible")); err != nil {
 		return nil, err
 	}
 
-	total := 4
+	total := 3
+	if cfg.Command != commandPlan {
+		total = 4
+	}
 	if cfg.Command == commandPlan {
-		total = 3
+		total++
+	}
+	if cfg.Command == commandPlan && cfg.SSHAuthMethod == sshAuthMethodPassword {
+		total++
 	}
 
 	return &runtimeState{
@@ -452,6 +624,7 @@ func prepareRuntime(cfg *config) (*runtimeState, error) {
 		InventoryFile:   inventoryFile,
 		VarsFile:        varsFile,
 		AuthFile:        authFile,
+		MetadataFile:    metadataFile,
 		PlanFile:        planFile,
 		PlaybookFile:    playbookFile,
 		ProgressTotal:   total,
@@ -477,6 +650,7 @@ func executeRuntime(cfg *config, state *runtimeState) error {
 	state.appendCompletedPhase("Vars file generated")
 
 	if cfg.SSHAuthMethod == sshAuthMethodPassword {
+		state.progressStep("Generating SSH auth file")
 		if err := writeAuthFile(cfg, state); err != nil {
 			return err
 		}
@@ -488,6 +662,14 @@ func executeRuntime(cfg *config, state *runtimeState) error {
 		return err
 	}
 	state.appendCompletedPhase("Markdown plan generated")
+
+	if cfg.Command == commandPlan {
+		state.progressStep("Writing structured plan metadata")
+		if err := writePlanMetadata(cfg, state); err != nil {
+			return err
+		}
+		state.appendCompletedPhase("Structured plan metadata generated")
+	}
 
 	if cfg.Command != commandPlan {
 		state.progressStep("Running ansible-playbook")
@@ -502,7 +684,11 @@ func executeRuntime(cfg *config, state *runtimeState) error {
 	}
 
 	showExecutionSummary(cfg, state)
+	fmt.Printf("Generated plan name: %s\n", state.RunID)
 	fmt.Printf("Generated plan: %s\n", state.PlanFile)
+	if cfg.PlanFile != "" {
+		fmt.Printf("Exported plan copy: %s\n", cfg.PlanFile)
+	}
 	fmt.Printf("Inventory: %s\n", state.InventoryFile)
 	fmt.Printf("Vars: %s\n", state.VarsFile)
 	return nil
@@ -545,6 +731,12 @@ func finalizePaths(cfg *config) error {
 	}
 	if cfg.PlanFile != "" {
 		cfg.PlanFile, err = expandHomePath(cfg.PlanFile)
+		if err != nil {
+			return err
+		}
+	}
+	if cfg.PlanInputFile != "" {
+		cfg.PlanInputFile, err = expandHomePath(cfg.PlanInputFile)
 		if err != nil {
 			return err
 		}
@@ -732,14 +924,25 @@ func expandHomePath(path string) (string, error) {
 	return path, nil
 }
 
+func planMetadataPath(planPath string) string {
+	ext := filepath.Ext(planPath)
+	if ext == "" {
+		return planPath + ".json"
+	}
+
+	return strings.TrimSuffix(planPath, ext) + ".json"
+}
+
 func printUsage() {
 	const usage = `Usage:
   civa <command> [options]
 
 Commands:
-  apply                        Run the Ansible playbook against the selected servers
-  plan                         Generate inventory, vars, and the execution plan only
-  preview                      Run ansible-playbook in check mode with diff output
+	  apply <plan-name>            Execute an existing generated plan
+	  plan start                   Generate inventory, vars, and the execution plan only
+	  plan list                    List generated plans
+	  plan remove <plan-name>      Remove a generated plan and its artifacts
+	  preview <plan-name>          Show an existing generated plan
 	  doctor                       Check whether the local machine is ready to run civa
 	  uninstall                    Remove the currently installed civa binary
 	  version                      Show the civa version
@@ -756,21 +959,62 @@ Options:
   --ssh-public-key <path>      Local public key path that will be installed for the deploy user
   --deployer-user <name>       User created and configured on the target servers
   --timezone <tz>              Timezone applied to the target servers
-  --components <list>          Components to run: all or a comma list such as 1,2,4 or docker,traefik
-  --server <addr[,hostname]>   Add a target server; hostname is optional and becomes the server hostname
+	  --components <list>          Components to run: all or a comma list such as 1,2,4 or docker,traefik
+	  --plan-file <path>           Existing plan file override used by preview or apply
+	  --server <addr[,hostname]>   Add a target server; hostname is optional and becomes the server hostname
   --traefik-email <email>      Email used by Let's Encrypt ACME
   --traefik-challenge <type>   Traefik challenge type: http or dns
   --traefik-dns-provider <id>  DNS provider name used when challenge type is dns
-  --output <path>              Markdown summary path (default: .civa/runs/<timestamp>/plan.md)
+  --output <path>              Extra exported Markdown copy for plan start
   --help                       Show this help message
 
 Examples:
-	  civa apply
-	  civa uninstall --yes
-	  civa preview --server 203.0.113.10,edge-01 --components all
-  civa plan --non-interactive --server 203.0.113.10,web-01 --server 203.0.113.11,api-01 --components 1,2,3,4`
+	  civa plan start --non-interactive --server 203.0.113.10,web-01 --server 203.0.113.11,api-01 --components 1,2,3,4
+	  civa plan list
+	  civa preview 20260401-152334-210329559
+	  civa apply 20260401-152334-210329559 --yes
+	  civa plan remove 20260401-152334-210329559 --yes
+	  civa uninstall --yes`
 
 	fmt.Println(usage)
+}
+
+func printCommandUsage(command string) {
+	switch command {
+	case commandPlan:
+		fmt.Println(`Usage:
+  civa plan start [options]
+  civa plan list
+  civa plan remove <plan-name> [--yes]
+
+Subcommands:
+  start                        Generate a new named plan under .civa/runs/
+  list                         List generated plans
+  remove <plan-name>           Remove a generated plan and its artifacts
+
+Examples:
+  civa plan start --non-interactive --server 203.0.113.10,web-01 --components all
+  civa plan list
+  civa plan remove 20260401-160900-040074544 --yes`)
+	case commandPreview:
+		fmt.Println(`Usage:
+  civa preview <plan-name>
+  civa preview --plan-file <path>
+
+Examples:
+  civa preview 20260401-160900-040074544
+  civa preview --plan-file .civa/runs/20260401-160900-040074544/plan.md`)
+	case commandApply:
+		fmt.Println(`Usage:
+  civa apply <plan-name> [--yes]
+  civa apply --plan-file <path> [--yes]
+
+Examples:
+  civa apply 20260401-160900-040074544 --yes
+  civa apply --plan-file .civa/runs/20260401-160900-040074544/plan.md --yes`)
+	default:
+		printUsage()
+	}
 }
 
 func componentLabel(value string) string {
@@ -789,6 +1033,13 @@ const (
 
 func isValidSSHAuthMethod(value string) bool {
 	return value == sshAuthMethodKey || value == sshAuthMethodPassword
+}
+
+func validateExistingPlanCommandFlags(cfg config) error {
+	if cfg.Provided.SSHUser || cfg.Provided.SSHPort || cfg.Provided.SSHAuthMethod || cfg.Provided.SSHPassword || cfg.Provided.SSHPrivateKey || cfg.Provided.SSHPublicKey || cfg.Provided.DeployUser || cfg.Provided.Timezone || cfg.Provided.Components || cfg.Provided.TraefikEmail || cfg.Provided.TraefikChallenge || cfg.Provided.TraefikDNSProvider || cfg.Provided.Servers {
+		return fmt.Errorf("preview/apply only accept --plan-file, --yes, --non-interactive, and --help")
+	}
+	return nil
 }
 
 func sshAuthMethodLabel(value string) string {
