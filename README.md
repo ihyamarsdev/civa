@@ -13,12 +13,12 @@
 
 ## Overview
 
-`civa` is a Go-native CLI that interviews the operator for server targets and selected components, stages the embedded Ansible assets for each run, generates inventory and variables, writes a Markdown execution plan, and then optionally runs `ansible-playbook`.
+`civa` is a Go-native CLI that interviews the operator for server targets and selected components, stages the embedded Ansible assets for each run, generates inventory and variables, writes a reusable Markdown execution plan, and then executes that recorded plan when requested.
 
 ## Current Support
 
 - Target families: Debian/Ubuntu and RHEL-compatible distributions such as RHEL, Rocky, AlmaLinux, CentOS, and Oracle Linux
-- Commands: `apply`, `plan`, `preview`, `doctor`, `version`, `help`
+- Commands: `plan start|list|remove`, `preview <nama-plan>`, `apply <nama-plan>`, `doctor`, `uninstall`, `version`, `help`
 - Runtime artifacts: `.civa/runs/<timestamp>/inventory.yml`, `vars.yml`, `plan.md`, and staged embedded Ansible assets
 
 ## Quick Start
@@ -35,7 +35,7 @@ go build -o bin/civa .
 Run an interactive plan:
 
 ```bash
-./bin/civa plan
+./bin/civa plan start
 ```
 
 Check local prerequisites:
@@ -46,10 +46,13 @@ Check local prerequisites:
 
 ## Commands
 
-- `civa apply` — generate artifacts and execute the playbook against the selected servers
-- `civa plan` — generate inventory, vars, and a Markdown plan only
-- `civa preview` — run the playbook in `--check --diff` mode
+- `civa plan start` — generate inventory, vars, auth artifacts, and a Markdown plan only
+- `civa plan list` — show generated plan names under `.civa/runs/`
+- `civa plan remove <nama-plan>` — delete a generated plan and its artifacts
+- `civa preview <nama-plan>` — display an existing generated `plan.md`
+- `civa apply <nama-plan>` — execute the artifacts referenced by an existing generated plan
 - `civa doctor` — validate the local machine and required files
+- `civa uninstall` — remove the installed binary
 - `civa version` — print the current version
 - `civa help` — show usage information
 

@@ -2,9 +2,11 @@
 
 ## Commands
 
-- `civa apply`
-- `civa plan`
-- `civa preview`
+- `civa plan start`
+- `civa plan list`
+- `civa plan remove <nama-plan>`
+- `civa preview <nama-plan>`
+- `civa apply <nama-plan>`
 - `civa doctor`
 - `civa uninstall`
 - `civa version`
@@ -12,7 +14,7 @@
 
 ## Interactive Workflow
 
-When you run `civa apply`, `civa plan`, or `civa preview` without all required flags, `civa` asks for:
+When you run `civa plan start` without all required flags, `civa` asks for:
 
 - selected components
 - number of servers
@@ -24,11 +26,13 @@ When you run `civa apply`, `civa plan`, or `civa preview` without all required f
 - timezone
 - Traefik ACME email and challenge settings when Traefik is selected
 
-Before `apply` runs, `civa` shows a summary of the selected values. Interactive `apply` asks for a final confirmation; `--non-interactive` skips that confirmation.
+`civa preview <nama-plan>` shows an existing `plan.md`. `civa apply <nama-plan>` only executes an existing plan and asks for a final confirmation unless you pass `--yes`.
+
+Generated plan names come from the run directory under `.civa/runs/`, for example `20260401-152334-210329559`. Use `civa plan list` to see available names. `--plan-file` remains available as a manual override, but the normal flow is name-based.
 
 Component selection in interactive mode uses a Charmbracelet Huh multi-select prompt: use the Up and Down arrow keys to move, press Space to select or clear the highlighted component, then press Enter to confirm.
 
-SSH access can use either `--ssh-auth-method key` with `--ssh-private-key`, or `--ssh-auth-method password` with `--ssh-password`. Password-based `preview` and `apply` require `sshpass` on the local machine, and password mode writes a dedicated `auth.yml` file with mode `0600` inside the run directory.
+SSH access can use either `--ssh-auth-method key` with `--ssh-private-key`, or `--ssh-auth-method password` with `--ssh-password`. Password-based plans write a dedicated `auth.yml` file with mode `0600` inside the run directory, and later `apply` executions require `sshpass` on the local machine.
 
 ## Common Examples
 
@@ -38,16 +42,16 @@ Show help:
 ./bin/civa
 ```
 
-Run an interactive apply:
+Run an interactive plan:
 
 ```bash
-./bin/civa apply
+./bin/civa plan start
 ```
 
 Generate a plan for two servers:
 
 ```bash
-./bin/civa plan \
+./bin/civa plan start \
   --non-interactive \
   --server 203.0.113.10,web-01 \
   --server 203.0.113.11,api-01 \
@@ -63,7 +67,7 @@ Generate a plan for two servers:
 Generate a plan with password-based SSH access:
 
 ```bash
-./bin/civa plan \
+./bin/civa plan start \
   --non-interactive \
   --server 203.0.113.12,legacy-01 \
   --ssh-user root \
@@ -76,34 +80,26 @@ Generate a plan with password-based SSH access:
   --components all
 ```
 
-Preview only a subset of components:
+List generated plans:
 
 ```bash
-./bin/civa preview \
-  --non-interactive \
-  --server 203.0.113.10,web-01 \
-  --ssh-user root \
-  --ssh-port 22 \
-  --ssh-auth-method key \
-  --ssh-private-key ~/.ssh/id_rsa \
-  --ssh-public-key ~/.ssh/id_rsa.pub \
-  --components 2,3,4,6
+./bin/civa plan list
 ```
 
-Apply to a Rocky or AlmaLinux target:
+Preview an existing plan:
 
 ```bash
-./bin/civa apply \
-  --non-interactive \
-  --server 198.51.100.21,alma-edge-01 \
-  --ssh-user root \
-  --ssh-port 22 \
-  --ssh-auth-method key \
-  --ssh-private-key ~/.ssh/id_rsa \
-  --ssh-public-key ~/.ssh/id_rsa.pub \
-  --deployer-user deployer \
-  --timezone Asia/Jakarta \
-  --components all \
-  --traefik-email admin@example.com \
-  --traefik-challenge http
+./bin/civa preview 20260401-152334-210329559
+```
+
+Apply an existing plan to a Rocky or AlmaLinux target:
+
+```bash
+./bin/civa apply 20260401-152334-210329559 --yes
+```
+
+Remove a generated plan:
+
+```bash
+./bin/civa plan remove 20260401-152334-210329559 --yes
 ```

@@ -26,12 +26,14 @@ It does not harden servers by itself. Instead, it:
 
 ## Runtime Artifacts
 
-Each run creates a timestamped directory under `.civa/runs/`.
+Each `civa plan start` run creates a timestamped directory under `.civa/runs/`.
 
 Artifacts include:
 
 - `inventory.yml`
 - `vars.yml`
+- `auth.yml` when password-based SSH is used
+- `plan.json` with structured execution metadata
 - `plan.md`
 - `ansible/playbook.yml`
 - `ansible/templates/*`
@@ -49,9 +51,11 @@ These files make it easier to:
 
 ## Execution Modes
 
-- `plan` — generate artifacts only
-- `preview` — run Ansible in `--check --diff`
-- `apply` — execute the playbook normally
+- `plan start` — generate reusable artifacts only
+- `plan list` — enumerate generated plan names from `.civa/runs/`
+- `plan remove <nama-plan>` — remove a generated plan directory and its artifacts
+- `preview <nama-plan>` — display an existing Markdown plan
+- `apply <nama-plan>` — execute the artifacts recorded by an existing plan
 
 ## Safety Model
 
@@ -59,3 +63,4 @@ These files make it easier to:
 - embedded Ansible assets keep release binaries self-contained at runtime
 - playbook support is explicitly gated by supported platform families
 - generated plans provide an operator-readable record before or after execution
+- structured plan metadata keeps `apply` replay independent from Markdown formatting
