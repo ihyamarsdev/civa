@@ -435,14 +435,14 @@ func runDoctor(cfg config) error {
 		failures++
 	}
 
-	if ansible.HasEmbeddedTemplate("templates/traefik-compose.yml.j2") {
+	if ansible.HasEmbeddedTemplate("collections/ansible_collections/civa/traefik/roles/traefik/templates/traefik-compose.yml.j2") {
 		fmt.Println("[ok] embedded Traefik compose template available")
 	} else {
 		fmt.Println("[fail] embedded Traefik compose template missing")
 		failures++
 	}
 
-	if ansible.HasEmbeddedTemplate("templates/fail2ban-jail.local.j2") {
+	if ansible.HasEmbeddedTemplate("collections/ansible_collections/civa/security_firewall/roles/security_firewall/templates/fail2ban-jail.local.j2") {
 		fmt.Println("[ok] embedded Fail2Ban template available")
 	} else {
 		fmt.Println("[fail] embedded Fail2Ban template missing")
@@ -665,11 +665,13 @@ func runAnsible(cfg *config, state *runtimeState) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
+	cmd.Env = append(os.Environ(), "ANSIBLE_COLLECTIONS_PATH="+filepath.Join(filepath.Dir(state.PlaybookFile), "collections"))
 	return cmd.Run()
 }
 
 func buildAnsibleCommand(cfg *config, state *runtimeState) string {
 	parts := []string{
+		"ANSIBLE_COLLECTIONS_PATH=" + filepath.Join(filepath.Dir(state.PlaybookFile), "collections"),
 		"ansible-playbook",
 		"-i", state.InventoryFile,
 		state.PlaybookFile,

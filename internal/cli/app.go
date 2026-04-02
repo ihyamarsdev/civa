@@ -606,7 +606,7 @@ func prepareRuntime(cfg *config) (*runtimeState, error) {
 	}
 	planFile := filepath.Join(generatedDir, "plan.md")
 	metadataFile := planMetadataPath(planFile)
-	playbookFile := filepath.Join(generatedDir, "ansible", "playbook.yml")
+	playbookFile := filepath.Join(generatedDir, "ansible", "main.yml")
 
 	if err := os.MkdirAll(generatedDir, 0o755); err != nil {
 		return nil, err
@@ -979,7 +979,7 @@ func selectedAnsibleTags(cfg config) []string {
 		}
 		tags = append(tags, component)
 	}
-	if cfg.WebServer != webServerNone {
+	if isValidWebServer(cfg.WebServer) && cfg.WebServer != webServerNone {
 		tags = append(tags, cfg.WebServer)
 	}
 	return tags

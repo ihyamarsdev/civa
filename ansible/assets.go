@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 )
 
-//go:embed playbook.yml templates/*.j2
+//go:embed main.yml all:collections
 var files embed.FS
 
 func ReadFile(path string) ([]byte, error) {
@@ -40,7 +40,7 @@ func Materialize(targetDir string) error {
 }
 
 func HasEmbeddedPlaybook() bool {
-	_, err := files.ReadFile("playbook.yml")
+	_, err := files.ReadFile("main.yml")
 	return err == nil
 }
 

@@ -7,7 +7,7 @@
 It does not harden servers by itself. Instead, it:
 
 1. collects operator input in Go
-2. stages the embedded Ansible playbook and templates for the run
+2. stages the embedded Ansible entrypoint and service collections for the run
 3. generates inventory and vars files
 4. writes a Markdown execution plan
 5. optionally runs `ansible-playbook`
@@ -17,8 +17,8 @@ It does not harden servers by itself. Instead, it:
 - `main.go` — CLI entrypoint
 - `internal/cli/` — command parsing, prompts, validation, artifact generation, doctor checks, and ansible execution
 - `ansible/assets.go` — embedded Ansible asset loader for the Go runtime
-- `ansible/playbook.yml` — main playbook
-- `ansible/templates/` — Traefik and Fail2Ban templates
+- `ansible/main.yml` — main playbook entrypoint
+- `ansible/collections/ansible_collections/civa/` — per-service collections split by vendor-specific task files
 - `scripts/install.sh` — one-line installer target
 - `scripts/uninstall.sh` — uninstall wrapper that delegates to `civa uninstall --yes` when available
 - `.github/workflows/release.yml` — automated release workflow
@@ -35,8 +35,8 @@ Artifacts include:
 - `auth.yml` when password-based SSH is used
 - `plan.json` with structured execution metadata
 - `plan.md`
-- `ansible/playbook.yml`
-- `ansible/templates/*`
+- `ansible/main.yml`
+- `ansible/collections/ansible_collections/civa/**`
 
 These files make it easier to:
 

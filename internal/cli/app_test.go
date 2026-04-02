@@ -229,7 +229,7 @@ func TestBuildAnsibleCommandQuotesPathsWithSpaces(t *testing.T) {
 	}
 	state := &runtimeState{
 		InventoryFile: "/tmp/civa test/inventory.yml",
-		PlaybookFile:  "/tmp/civa test/ansible/playbook.yml",
+		PlaybookFile:  "/tmp/civa test/ansible/main.yml",
 		VarsFile:      "/tmp/civa test/vars.yml",
 		AuthFile:      "/tmp/civa test/auth.yml",
 	}
@@ -238,8 +238,11 @@ func TestBuildAnsibleCommandQuotesPathsWithSpaces(t *testing.T) {
 	if !strings.Contains(command, `"/tmp/civa test/inventory.yml"`) {
 		t.Fatalf("expected quoted inventory path, got %s", command)
 	}
-	if !strings.Contains(command, `"/tmp/civa test/ansible/playbook.yml"`) {
+	if !strings.Contains(command, `"/tmp/civa test/ansible/main.yml"`) {
 		t.Fatalf("expected quoted playbook path, got %s", command)
+	}
+	if !strings.Contains(command, `"ANSIBLE_COLLECTIONS_PATH=/tmp/civa test/ansible/collections"`) {
+		t.Fatalf("expected quoted collections path, got %s", command)
 	}
 	if !strings.Contains(command, `@"/tmp/civa test/vars.yml"`) && !strings.Contains(command, `"@/tmp/civa test/vars.yml"`) {
 		t.Fatalf("expected quoted vars path, got %s", command)
@@ -280,10 +283,10 @@ func TestMaterializeAnsibleAssetsWritesEmbeddedFiles(t *testing.T) {
 	}
 
 	paths := []string{
-		filepath.Join(ansibleDir, "playbook.yml"),
-		filepath.Join(ansibleDir, "templates", "traefik.env.j2"),
-		filepath.Join(ansibleDir, "templates", "traefik-compose.yml.j2"),
-		filepath.Join(ansibleDir, "templates", "fail2ban-jail.local.j2"),
+		filepath.Join(ansibleDir, "main.yml"),
+		filepath.Join(ansibleDir, "collections", "ansible_collections", "civa", "traefik", "roles", "traefik", "templates", "traefik.env.j2"),
+		filepath.Join(ansibleDir, "collections", "ansible_collections", "civa", "traefik", "roles", "traefik", "templates", "traefik-compose.yml.j2"),
+		filepath.Join(ansibleDir, "collections", "ansible_collections", "civa", "security_firewall", "roles", "security_firewall", "templates", "fail2ban-jail.local.j2"),
 	}
 
 	for _, path := range paths {
@@ -345,7 +348,7 @@ func TestLoadPlannedRunParsesGeneratedArtifacts(t *testing.T) {
 	inventoryFile := filepath.Join(tempDir, "inventory.yml")
 	varsFile := filepath.Join(tempDir, "vars.yml")
 	authFile := filepath.Join(tempDir, "auth.yml")
-	playbookFile := filepath.Join(tempDir, "ansible", "playbook.yml")
+	playbookFile := filepath.Join(tempDir, "ansible", "main.yml")
 	planFile := filepath.Join(tempDir, "plan.md")
 
 	if err := os.MkdirAll(filepath.Dir(playbookFile), 0o755); err != nil {
@@ -443,7 +446,7 @@ func TestRunApplyFlowRequiresYesWhenNonInteractive(t *testing.T) {
 	metadataPath := planMetadataPath(planPath)
 	inventoryFile := filepath.Join(tempDir, "inventory.yml")
 	varsFile := filepath.Join(tempDir, "vars.yml")
-	playbookFile := filepath.Join(tempDir, "ansible", "playbook.yml")
+	playbookFile := filepath.Join(tempDir, "ansible", "main.yml")
 
 	if err := os.MkdirAll(filepath.Dir(playbookFile), 0o755); err != nil {
 		t.Fatalf("failed to create playbook dir: %v", err)
