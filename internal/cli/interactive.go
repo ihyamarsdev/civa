@@ -101,6 +101,7 @@ func collectInteractiveInputs(cfg *config) error {
 			return err
 		}
 		cfg.WebServer = value
+		cfg.Provided.WebServer = true
 		normalizeWebServerSelection(cfg)
 	}
 
@@ -148,6 +149,7 @@ func collectSetupInputs(cfg *config) error {
 			return err
 		}
 		cfg.Servers = append(cfg.Servers, serverSpec{Address: address})
+		cfg.Provided.Servers = true
 	}
 	if !cfg.Provided.SSHUser {
 		value, err := promptNonEmptyString("Built-in SSH user", cfg.SSHUser)
@@ -155,6 +157,7 @@ func collectSetupInputs(cfg *config) error {
 			return err
 		}
 		cfg.SSHUser = value
+		cfg.Provided.SSHUser = true
 	}
 	if !cfg.Provided.SSHPort {
 		value, err := promptPort("SSH port for the initial connection", cfg.SSHPort)
@@ -162,13 +165,7 @@ func collectSetupInputs(cfg *config) error {
 			return err
 		}
 		cfg.SSHPort = value
-	}
-	if !cfg.Provided.SSHPassword {
-		value, err := promptSSHPassword()
-		if err != nil {
-			return err
-		}
-		cfg.SSHPassword = value
+		cfg.Provided.SSHPort = true
 	}
 	if !cfg.Provided.SSHPublicKey {
 		value, err := promptNonEmptyString("Local SSH public key path to install on the server", cfg.SSHPublicKey)
@@ -176,6 +173,7 @@ func collectSetupInputs(cfg *config) error {
 			return err
 		}
 		cfg.SSHPublicKey = value
+		cfg.Provided.SSHPublicKey = true
 	}
 	return nil
 }

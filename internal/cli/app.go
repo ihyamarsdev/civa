@@ -18,7 +18,7 @@ import (
 	"golang.org/x/term"
 )
 
-const version = "1.1.7"
+const version = "1.1.8"
 
 const (
 	commandApply            = "apply"
@@ -216,7 +216,7 @@ func defaultConfig(command string) config {
 func shouldShowCommandHelp(args []string) bool {
 	if len(args) == 1 {
 		switch args[0] {
-		case commandPlan, commandPreview, commandApply, commandCompletion, commandSetup:
+		case commandPlan, commandPreview, commandApply, commandCompletion:
 			return true
 		}
 	}
@@ -505,6 +505,11 @@ func runSetupFlow(cfg *config) error {
 	fmt.Fprintf(os.Stderr, "SSH user: %s\n", cfg.SSHUser)
 	fmt.Fprintf(os.Stderr, "SSH port: %d\n", cfg.SSHPort)
 	fmt.Fprintf(os.Stderr, "SSH public key: %s\n", cfg.SSHPublicKey)
+	if strings.TrimSpace(cfg.SSHPassword) == "" {
+		fmt.Fprintln(os.Stderr, "Password source: ssh-copy-id will prompt for the server password")
+	} else {
+		fmt.Fprintln(os.Stderr, "Password source: provided via sshpass")
+	}
 
 	return runSSHCopyID(*cfg)
 }
@@ -979,17 +984,16 @@ func validateSetupConfig(cfg *config) error {
 	if cfg.SSHPort < 1 || cfg.SSHPort > 65535 {
 		return fmt.Errorf("--ssh-port must be between 1 and 65535")
 	}
-	if strings.TrimSpace(cfg.SSHPassword) == "" {
-		return fmt.Errorf("--ssh-password must not be empty")
-	}
 	if _, err := os.Stat(cfg.SSHPublicKey); err != nil {
 		return fmt.Errorf("SSH public key not found: %s", cfg.SSHPublicKey)
 	}
 	if _, err := exec.LookPath("ssh-copy-id"); err != nil {
 		return fmt.Errorf("ssh-copy-id is required for civa setup")
 	}
-	if _, err := exec.LookPath("sshpass"); err != nil {
-		return fmt.Errorf("sshpass is required for civa setup")
+	if strings.TrimSpace(cfg.SSHPassword) != "" {
+		if _, err := exec.LookPath("sshpass"); err != nil {
+			return fmt.Errorf("sshpass is required when --ssh-password is provided to civa setup")
+		}
 	}
 	return nil
 }
@@ -1238,11 +1242,14 @@ Examples:
 Required options:
   --server <addr>
   --ssh-user <name>
-  --ssh-password <value>
   --ssh-public-key <path>
+
+Optional:
+  --ssh-password <value>
 
 Examples:
   civa setup --server 203.0.113.10 --ssh-user root --ssh-password 'secret' --ssh-public-key ~/.ssh/id_ed25519.pub
+  civa setup --server 203.0.113.10 --ssh-user root --ssh-public-key ~/.ssh/id_ed25519.pub
   civa setup --server 203.0.113.10 --ssh-user ubuntu --ssh-port 2222 --ssh-password 'secret' --ssh-public-key ~/.ssh/id_ed25519.pub`)
 	default:
 		printUsage()

@@ -64,7 +64,7 @@ Check local prerequisites:
 
 ## Commands
 
-- `civa setup` — install your local public key onto a fresh server with ssh-copy-id using the server's built-in password login
+- `civa setup` — install your local public key onto a fresh server with ssh-copy-id, optionally supplying the password via `sshpass`
 - `civa plan start` — generate inventory, vars, and a Markdown plan only after key-based access is ready
 - `civa plan list` — show generated plan names under `.civa/runs/`
 - `civa plan remove <nama-plan>` — delete a generated plan and its artifacts

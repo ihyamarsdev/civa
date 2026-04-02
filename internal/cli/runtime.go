@@ -397,6 +397,9 @@ func runUninstall(cfg config) error {
 
 func runSSHCopyID(cfg config) error {
 	target := fmt.Sprintf("%s@%s", cfg.SSHUser, cfg.Servers[0].Address)
+	if err := rotateKnownHostsFile(); err != nil {
+		return err
+	}
 	cmd := buildSSHCopyIDCommand(cfg)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -409,18 +412,47 @@ func runSSHCopyID(cfg config) error {
 	return nil
 }
 
+func rotateKnownHostsFile() error {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("failed to resolve home directory for known_hosts rotation: %w", err)
+	}
+	return rotateKnownHostsFileInHome(homeDir)
+}
+
+func rotateKnownHostsFileInHome(homeDir string) error {
+	knownHostsPath := filepath.Join(homeDir, ".ssh", "known_hosts")
+	knownHostsOldPath := filepath.Join(homeDir, ".ssh", "known_hosts.old")
+
+	if _, err := os.Stat(knownHostsPath); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("failed to inspect %s: %w", knownHostsPath, err)
+	}
+
+	if err := os.Rename(knownHostsPath, knownHostsOldPath); err != nil {
+		return fmt.Errorf("failed to move %s to %s: %w", knownHostsPath, knownHostsOldPath, err)
+	}
+
+	fmt.Fprintf(os.Stderr, "Moved %s to %s before running ssh-copy-id\n", knownHostsPath, knownHostsOldPath)
+	return nil
+}
+
 func buildSSHCopyIDCommand(cfg config) *exec.Cmd {
 	target := fmt.Sprintf("%s@%s", cfg.SSHUser, cfg.Servers[0].Address)
 	args := []string{
-		"-e",
-		"ssh-copy-id",
 		"-i", cfg.SSHPublicKey,
 		"-p", strconv.Itoa(cfg.SSHPort),
 		"-o", "StrictHostKeyChecking=accept-new",
 		target,
 	}
 
-	cmd := exec.Command("sshpass", args...)
+	if strings.TrimSpace(cfg.SSHPassword) == "" {
+		return exec.Command("ssh-copy-id", args...)
+	}
+
+	cmd := exec.Command("sshpass", append([]string{"-e", "ssh-copy-id"}, args...)...)
 	cmd.Env = append(os.Environ(), "SSHPASS="+cfg.SSHPassword)
 	return cmd
 }

@@ -45,6 +45,20 @@ func TestFinalizePathsDerivesPublicKeyFromPrivateKey(t *testing.T) {
 	}
 }
 
+func TestFinalizePathsKeepsProvidedPublicKey(t *testing.T) {
+	cfg := &config{
+		SSHPrivateKey: "~/example_key",
+		SSHPublicKey:  "~/custom_key.pub",
+		Provided:      providedFlags{SSHPublicKey: true},
+	}
+	if err := finalizePaths(cfg); err != nil {
+		t.Fatalf("finalizePaths returned error: %v", err)
+	}
+	if !strings.HasSuffix(cfg.SSHPublicKey, "custom_key.pub") {
+		t.Fatalf("expected custom public key path to be preserved, got %s", cfg.SSHPublicKey)
+	}
+}
+
 func TestValidateExecutionConfigRejectsPasswordModeForPlan(t *testing.T) {
 	tempDir := t.TempDir()
 	privateKey := filepath.Join(tempDir, "id_test")
@@ -98,6 +112,50 @@ func TestBuildSSHCopyIDCommand(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("expected SSHPASS environment variable")
+	}
+}
+
+func TestBuildSSHCopyIDCommandWithoutPasswordUsesSSHCopyIDDirectly(t *testing.T) {
+	cfg := config{
+		SSHUser:      "root",
+		SSHPort:      2222,
+		SSHPublicKey: "/tmp/id_test.pub",
+		Servers:      []serverSpec{{Address: "203.0.113.10"}},
+	}
+
+	cmd := buildSSHCopyIDCommand(cfg)
+	if filepath.Base(cmd.Path) != "ssh-copy-id" {
+		t.Fatalf("expected direct ssh-copy-id invocation, got %s", cmd.Path)
+	}
+	if len(cmd.Env) != 0 {
+		t.Fatalf("expected no custom env for direct ssh-copy-id, got %v", cmd.Env)
+	}
+}
+
+func TestRotateKnownHostsFileInHomeMovesKnownHosts(t *testing.T) {
+	homeDir := t.TempDir()
+	sshDir := filepath.Join(homeDir, ".ssh")
+	if err := os.MkdirAll(sshDir, 0o755); err != nil {
+		t.Fatalf("failed to create ssh dir: %v", err)
+	}
+	knownHostsPath := filepath.Join(sshDir, "known_hosts")
+	if err := os.WriteFile(knownHostsPath, []byte("old-host-key\n"), 0o600); err != nil {
+		t.Fatalf("failed to write known_hosts: %v", err)
+	}
+
+	if err := rotateKnownHostsFileInHome(homeDir); err != nil {
+		t.Fatalf("rotateKnownHostsFileInHome returned error: %v", err)
+	}
+
+	if _, err := os.Stat(knownHostsPath); !os.IsNotExist(err) {
+		t.Fatalf("expected known_hosts to be moved away, got err=%v", err)
+	}
+	oldContent, err := os.ReadFile(filepath.Join(sshDir, "known_hosts.old"))
+	if err != nil {
+		t.Fatalf("failed to read known_hosts.old: %v", err)
+	}
+	if string(oldContent) != "old-host-key\n" {
+		t.Fatalf("unexpected known_hosts.old content: %q", string(oldContent))
 	}
 }
 
@@ -173,6 +231,12 @@ func TestPreviewHeaderDependsOnTTY(t *testing.T) {
 
 func TestShouldShowCommandHelpForBarePlanPreviewApply(t *testing.T) {
 	for _, args := range [][]string{{"plan"}, {"preview"}, {"apply"}, {"completion"}, {"setup"}, {"plan", "help"}, {"preview", "--help"}, {"apply", "-h"}, {"setup", "--help"}} {
+		if args[0] == commandSetup && len(args) == 1 {
+			if shouldShowCommandHelp(args) {
+				t.Fatalf("did not expect help for bare setup args %v", args)
+			}
+			continue
+		}
 		if !shouldShowCommandHelp(args) {
 			t.Fatalf("expected help for args %v", args)
 		}
