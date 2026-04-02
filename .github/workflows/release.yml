@@ -21,6 +21,9 @@ jobs:
         run: |
           set -euo pipefail
 
+          notes_file="${RUNNER_TEMP}/release-notes.md"
+          echo "RELEASE_NOTES_FILE=${notes_file}" >> "${GITHUB_ENV}"
+
           current_tag="${GITHUB_REF_NAME}"
           previous_tag="$(git tag --sort=-version:refname | grep '^v' | grep -Fxv "${current_tag}" | head -n 1 || true)"
 
@@ -46,7 +49,7 @@ jobs:
               printf "\n## Full Changelog\n\n"
               printf "https://github.com/%s/compare/%s...%s\n" "${GITHUB_REPOSITORY}" "${previous_tag}" "${current_tag}"
             fi
-          } > release-notes.md
+          } > "${notes_file}"
 
       - name: Set up Go
         uses: actions/setup-go@v6
@@ -64,4 +67,4 @@ jobs:
       - name: Update GitHub release description
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release edit "${GITHUB_REF_NAME}" --notes-file release-notes.md
+        run: gh release edit "${GITHUB_REF_NAME}" --notes-file "${RELEASE_NOTES_FILE}"
