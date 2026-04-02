@@ -18,7 +18,7 @@ import (
 	"golang.org/x/term"
 )
 
-const version = "1.1.5"
+const version = "1.1.6"
 
 const (
 	commandApply     = "apply"
