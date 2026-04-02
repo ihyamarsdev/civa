@@ -395,6 +395,36 @@ func runUninstall(cfg config) error {
 	return nil
 }
 
+func runSSHCopyID(cfg config) error {
+	target := fmt.Sprintf("%s@%s", cfg.SSHUser, cfg.Servers[0].Address)
+	cmd := buildSSHCopyIDCommand(cfg)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Stdin = os.Stdin
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("ssh-copy-id failed for %s: %w", target, err)
+	}
+
+	fmt.Printf("Installed %s on %s\n", cfg.SSHPublicKey, target)
+	return nil
+}
+
+func buildSSHCopyIDCommand(cfg config) *exec.Cmd {
+	target := fmt.Sprintf("%s@%s", cfg.SSHUser, cfg.Servers[0].Address)
+	args := []string{
+		"-e",
+		"ssh-copy-id",
+		"-i", cfg.SSHPublicKey,
+		"-p", strconv.Itoa(cfg.SSHPort),
+		"-o", "StrictHostKeyChecking=accept-new",
+		target,
+	}
+
+	cmd := exec.Command("sshpass", args...)
+	cmd.Env = append(os.Environ(), "SSHPASS="+cfg.SSHPassword)
+	return cmd
+}
+
 func uninstallTargetPathForPath(path string) (string, error) {
 	path = filepath.Clean(path)
 	if filepath.Base(path) != "civa" {

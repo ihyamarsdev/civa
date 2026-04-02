@@ -27,6 +27,7 @@ const (
 	commandCompletion       = "completion"
 	commandCompleteInternal = "__complete"
 	commandDoctor           = "doctor"
+	commandSetup            = "setup"
 	commandUninstall        = "uninstall"
 	commandVersion          = "version"
 	commandHelp             = "help"
@@ -169,6 +170,8 @@ func Run(args []string) error {
 			return err
 		}
 		return runDoctor(cfg)
+	case commandSetup:
+		return runSetupFlow(&cfg)
 	case commandCompletion:
 		return runCompletionCommand(args[1:])
 	case commandUninstall:
@@ -213,14 +216,14 @@ func defaultConfig(command string) config {
 func shouldShowCommandHelp(args []string) bool {
 	if len(args) == 1 {
 		switch args[0] {
-		case commandPlan, commandPreview, commandApply, commandCompletion:
+		case commandPlan, commandPreview, commandApply, commandCompletion, commandSetup:
 			return true
 		}
 	}
 
 	if len(args) == 2 && (args[1] == "help" || args[1] == "--help" || args[1] == "-h") {
 		switch args[0] {
-		case commandPlan, commandPreview, commandApply, commandCompletion:
+		case commandPlan, commandPreview, commandApply, commandCompletion, commandSetup:
 			return true
 		}
 	}
@@ -480,7 +483,35 @@ func runPlanRemoveFlow(cfg *config) error {
 	return removePlan(cfg)
 }
 
+func runSetupFlow(cfg *config) error {
+	if shouldPrompt(cfg) {
+		if err := collectSetupInputs(cfg); err != nil {
+			if errors.Is(err, errUserCancelled) {
+				return nil
+			}
+			return err
+		}
+	}
+
+	if err := finalizePaths(cfg); err != nil {
+		return err
+	}
+	if err := validateSetupConfig(cfg); err != nil {
+		return err
+	}
+
+	printSection("Setup Summary")
+	fmt.Fprintf(os.Stderr, "Server: %s\n", cfg.Servers[0].Address)
+	fmt.Fprintf(os.Stderr, "SSH user: %s\n", cfg.SSHUser)
+	fmt.Fprintf(os.Stderr, "SSH port: %d\n", cfg.SSHPort)
+	fmt.Fprintf(os.Stderr, "SSH public key: %s\n", cfg.SSHPublicKey)
+
+	return runSSHCopyID(*cfg)
+}
+
 func runPlanFlow(cfg *config) error {
+	cfg.SSHAuthMethod = sshAuthMethodKey
+	cfg.SSHPassword = ""
 	if shouldPrompt(cfg) {
 		if err := collectInteractiveInputs(cfg); err != nil {
 			if errors.Is(err, errUserCancelled) {
@@ -787,7 +818,7 @@ func nextArgValue(args []string, index int) (string, int, error) {
 
 func isKnownCommand(command string) bool {
 	switch command {
-	case commandApply, commandPlan, commandPreview, commandDoctor, commandCompletion, commandUninstall, commandVersion, commandHelp:
+	case commandApply, commandPlan, commandPreview, commandDoctor, commandSetup, commandCompletion, commandUninstall, commandVersion, commandHelp:
 		return true
 	default:
 		return false
@@ -807,6 +838,9 @@ func finalizePaths(cfg *config) error {
 	cfg.SSHPrivateKey, err = expandHomePath(cfg.SSHPrivateKey)
 	if err != nil {
 		return err
+	}
+	if !cfg.Provided.SSHPublicKey && cfg.SSHPrivateKey != "" {
+		cfg.SSHPublicKey = cfg.SSHPrivateKey + ".pub"
 	}
 	cfg.SSHPublicKey, err = expandHomePath(cfg.SSHPublicKey)
 	if err != nil {
@@ -890,9 +924,7 @@ func validateExecutionConfig(cfg *config) error {
 	if len(cfg.Servers) == 0 {
 		return fmt.Errorf("at least one --server entry is required")
 	}
-	if !isValidSSHAuthMethod(cfg.SSHAuthMethod) {
-		return fmt.Errorf("--ssh-auth-method must be key or password")
-	}
+	cfg.SSHAuthMethod = sshAuthMethodKey
 	if !isValidWebServer(cfg.WebServer) {
 		return fmt.Errorf("--web-server must be none, traefik, nginx, or caddy")
 	}
@@ -911,20 +943,14 @@ func validateExecutionConfig(cfg *config) error {
 	if len(cfg.Components) == 0 {
 		return fmt.Errorf("at least one component must be selected")
 	}
-	if cfg.SSHAuthMethod == sshAuthMethodKey {
-		if _, err := os.Stat(cfg.SSHPrivateKey); err != nil {
-			return fmt.Errorf("SSH private key not found: %s", cfg.SSHPrivateKey)
-		}
-	} else if strings.TrimSpace(cfg.SSHPassword) == "" {
-		return fmt.Errorf("--ssh-password must not be empty when --ssh-auth-method=password")
+	if cfg.Provided.SSHAuthMethod || cfg.Provided.SSHPassword {
+		return fmt.Errorf("civa plan start only supports SSH key auth; use civa setup to install the public key first")
+	}
+	if _, err := os.Stat(cfg.SSHPrivateKey); err != nil {
+		return fmt.Errorf("SSH private key not found: %s", cfg.SSHPrivateKey)
 	}
 	if _, err := os.Stat(cfg.SSHPublicKey); err != nil {
 		return fmt.Errorf("SSH public key not found: %s", cfg.SSHPublicKey)
-	}
-	if cfg.Command != commandPlan && cfg.SSHAuthMethod == sshAuthMethodPassword {
-		if _, err := exec.LookPath("sshpass"); err != nil {
-			return fmt.Errorf("sshpass is required for password-based SSH in preview/apply")
-		}
 	}
 	if selectedComponentsInclude(cfg.Components, "web_server") && cfg.WebServer == webServerNone {
 		return fmt.Errorf("web server component requires --web-server to be set")
@@ -939,6 +965,31 @@ func validateExecutionConfig(cfg *config) error {
 		if cfg.TraefikChallenge == "dns" && strings.TrimSpace(cfg.TraefikDNSProvider) == "" {
 			return fmt.Errorf("Traefik DNS challenge requires --traefik-dns-provider")
 		}
+	}
+	return nil
+}
+
+func validateSetupConfig(cfg *config) error {
+	if len(cfg.Servers) != 1 {
+		return fmt.Errorf("civa setup requires exactly one --server target")
+	}
+	if strings.TrimSpace(cfg.SSHUser) == "" {
+		return fmt.Errorf("--ssh-user must not be empty")
+	}
+	if cfg.SSHPort < 1 || cfg.SSHPort > 65535 {
+		return fmt.Errorf("--ssh-port must be between 1 and 65535")
+	}
+	if strings.TrimSpace(cfg.SSHPassword) == "" {
+		return fmt.Errorf("--ssh-password must not be empty")
+	}
+	if _, err := os.Stat(cfg.SSHPublicKey); err != nil {
+		return fmt.Errorf("SSH public key not found: %s", cfg.SSHPublicKey)
+	}
+	if _, err := exec.LookPath("ssh-copy-id"); err != nil {
+		return fmt.Errorf("ssh-copy-id is required for civa setup")
+	}
+	if _, err := exec.LookPath("sshpass"); err != nil {
+		return fmt.Errorf("sshpass is required for civa setup")
 	}
 	return nil
 }
@@ -1093,6 +1144,7 @@ func printUsage() {
 		"  plan list                  List generated plans",
 		"  plan remove <plan-name>    Remove a generated plan and its artifacts",
 		"  preview <plan-name>        Show an existing generated plan",
+		"  setup                      Install a public SSH key on a server with ssh-copy-id",
 		"  completion <shell>         Print shell completion for bash, zsh, or fish",
 		"  doctor                     Check whether the local machine is ready to run civa",
 		"  uninstall                  Remove the currently installed civa binary",
@@ -1104,8 +1156,7 @@ func printUsage() {
 		"  --yes, -y                  Skip confirmation prompts for destructive commands",
 		"  --ssh-user <name>          SSH user used to connect to every target server",
 		"  --ssh-port <port>          SSH port used to connect to every target server",
-		"  --ssh-auth-method <mode>   SSH authentication method: key or password",
-		"  --ssh-password <value>     SSH password used when --ssh-auth-method=password",
+		"  --ssh-password <value>     SSH password used by civa setup",
 		"  --web-server <name>        Web server to prepare: traefik, nginx, caddy, or none",
 		"  --ssh-private-key <path>   Local private key path used by Ansible for SSH",
 		"  --ssh-public-key <path>    Local public key path that will be installed for the deploy user",
@@ -1124,6 +1175,7 @@ func printUsage() {
 		"  civa plan start --non-interactive --server 203.0.113.10,web-01 --server 203.0.113.11,api-01 --components 1,2,3,4",
 		"  civa plan list",
 		"  civa preview 20260401-152334-210329559",
+		"  civa setup --server 203.0.113.10 --ssh-user root --ssh-password 'secret' --ssh-public-key ~/.ssh/id_ed25519.pub",
 		"  civa completion bash",
 		"  civa apply 20260401-152334-210329559 --yes",
 		"  civa plan remove 20260401-152334-210329559 --yes",
@@ -1179,6 +1231,19 @@ Examples:
   civa completion bash
   civa completion zsh
   civa completion fish`)
+	case commandSetup:
+		fmt.Println(`Usage:
+  civa setup [options]
+
+Required options:
+  --server <addr>
+  --ssh-user <name>
+  --ssh-password <value>
+  --ssh-public-key <path>
+
+Examples:
+  civa setup --server 203.0.113.10 --ssh-user root --ssh-password 'secret' --ssh-public-key ~/.ssh/id_ed25519.pub
+  civa setup --server 203.0.113.10 --ssh-user ubuntu --ssh-port 2222 --ssh-password 'secret' --ssh-public-key ~/.ssh/id_ed25519.pub`)
 	default:
 		printUsage()
 	}

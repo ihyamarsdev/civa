@@ -46,7 +46,7 @@ func collectInteractiveInputs(cfg *config) error {
 		}
 	}
 
-	if !cfg.Provided.SSHUser || !cfg.Provided.SSHPort || !cfg.Provided.SSHAuthMethod || !cfg.Provided.SSHPassword || !cfg.Provided.SSHPrivateKey || !cfg.Provided.SSHPublicKey {
+	if !cfg.Provided.SSHUser || !cfg.Provided.SSHPort || !cfg.Provided.SSHPrivateKey {
 		printSection("Step 3/6 - SSH Access")
 		if !cfg.Provided.SSHUser {
 			value, err := promptNonEmptyString("SSH user for the initial connection", cfg.SSHUser)
@@ -62,33 +62,12 @@ func collectInteractiveInputs(cfg *config) error {
 			}
 			cfg.SSHPort = value
 		}
-		if !cfg.Provided.SSHAuthMethod {
-			value, err := promptSSHAuthMethod(cfg.SSHAuthMethod)
-			if err != nil {
-				return err
-			}
-			cfg.SSHAuthMethod = value
-		}
-		if cfg.SSHAuthMethod == sshAuthMethodPassword && !cfg.Provided.SSHPassword {
-			value, err := promptSSHPassword()
-			if err != nil {
-				return err
-			}
-			cfg.SSHPassword = value
-		}
-		if cfg.SSHAuthMethod == sshAuthMethodKey && !cfg.Provided.SSHPrivateKey {
+		if !cfg.Provided.SSHPrivateKey {
 			value, err := promptNonEmptyString("Local SSH private key path used by Ansible", cfg.SSHPrivateKey)
 			if err != nil {
 				return err
 			}
 			cfg.SSHPrivateKey = value
-		}
-		if !cfg.Provided.SSHPublicKey {
-			value, err := promptNonEmptyString("Local SSH public key path to install for the deployer user", cfg.SSHPublicKey)
-			if err != nil {
-				return err
-			}
-			cfg.SSHPublicKey = value
 		}
 	}
 
@@ -158,6 +137,46 @@ func collectInteractiveInputs(cfg *config) error {
 		cfg.PlanFile = value
 	}
 
+	return nil
+}
+
+func collectSetupInputs(cfg *config) error {
+	printSection("Setup SSH Access")
+	if len(cfg.Servers) == 0 {
+		address, err := promptNonEmptyString("Server IP or address", "")
+		if err != nil {
+			return err
+		}
+		cfg.Servers = append(cfg.Servers, serverSpec{Address: address})
+	}
+	if !cfg.Provided.SSHUser {
+		value, err := promptNonEmptyString("Built-in SSH user", cfg.SSHUser)
+		if err != nil {
+			return err
+		}
+		cfg.SSHUser = value
+	}
+	if !cfg.Provided.SSHPort {
+		value, err := promptPort("SSH port for the initial connection", cfg.SSHPort)
+		if err != nil {
+			return err
+		}
+		cfg.SSHPort = value
+	}
+	if !cfg.Provided.SSHPassword {
+		value, err := promptSSHPassword()
+		if err != nil {
+			return err
+		}
+		cfg.SSHPassword = value
+	}
+	if !cfg.Provided.SSHPublicKey {
+		value, err := promptNonEmptyString("Local SSH public key path to install on the server", cfg.SSHPublicKey)
+		if err != nil {
+			return err
+		}
+		cfg.SSHPublicKey = value
+	}
 	return nil
 }
 

@@ -35,6 +35,72 @@ func TestIsValidSSHAuthMethod(t *testing.T) {
 	}
 }
 
+func TestFinalizePathsDerivesPublicKeyFromPrivateKey(t *testing.T) {
+	cfg := &config{SSHPrivateKey: "~/example_key"}
+	if err := finalizePaths(cfg); err != nil {
+		t.Fatalf("finalizePaths returned error: %v", err)
+	}
+	if !strings.HasSuffix(cfg.SSHPublicKey, "example_key.pub") {
+		t.Fatalf("expected derived public key path, got %s", cfg.SSHPublicKey)
+	}
+}
+
+func TestValidateExecutionConfigRejectsPasswordModeForPlan(t *testing.T) {
+	tempDir := t.TempDir()
+	privateKey := filepath.Join(tempDir, "id_test")
+	publicKey := privateKey + ".pub"
+	for _, path := range []string{privateKey, publicKey} {
+		if err := os.WriteFile(path, []byte("test"), 0o600); err != nil {
+			t.Fatalf("failed to write %s: %v", path, err)
+		}
+	}
+
+	cfg := &config{
+		SSHUser:       "root",
+		SSHPort:       22,
+		WebServer:     webServerNone,
+		SSHPrivateKey: privateKey,
+		SSHPublicKey:  publicKey,
+		SSHPassword:   "secret",
+		DeployUser:    "deployer",
+		Timezone:      "Asia/Jakarta",
+		Components:    []string{"system_update"},
+		Servers:       []serverSpec{{Address: "203.0.113.10"}},
+		Provided:      providedFlags{SSHPassword: true},
+	}
+
+	err := validateExecutionConfig(cfg)
+	if err == nil || !strings.Contains(err.Error(), "only supports SSH key auth") {
+		t.Fatalf("expected key-only plan validation error, got %v", err)
+	}
+}
+
+func TestBuildSSHCopyIDCommand(t *testing.T) {
+	cfg := config{
+		SSHUser:      "root",
+		SSHPort:      2222,
+		SSHPassword:  "secret",
+		SSHPublicKey: "/tmp/id_test.pub",
+		Servers:      []serverSpec{{Address: "203.0.113.10"}},
+	}
+
+	cmd := buildSSHCopyIDCommand(cfg)
+	gotArgs := strings.Join(cmd.Args, " ")
+	if !strings.Contains(gotArgs, "ssh-copy-id -i /tmp/id_test.pub -p 2222 -o StrictHostKeyChecking=accept-new root@203.0.113.10") {
+		t.Fatalf("unexpected ssh-copy-id args: %s", gotArgs)
+	}
+	found := false
+	for _, env := range cmd.Env {
+		if env == "SSHPASS=secret" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected SSHPASS environment variable")
+	}
+}
+
 func TestNormalizeWebServerSelectionInfersAndAddsWebServerComponent(t *testing.T) {
 	cfg := &config{ComponentsInput: "nginx", Components: []string{"web_server"}}
 	normalizeWebServerSelection(cfg)
@@ -106,7 +172,7 @@ func TestPreviewHeaderDependsOnTTY(t *testing.T) {
 }
 
 func TestShouldShowCommandHelpForBarePlanPreviewApply(t *testing.T) {
-	for _, args := range [][]string{{"plan"}, {"preview"}, {"apply"}, {"completion"}, {"plan", "help"}, {"preview", "--help"}, {"apply", "-h"}} {
+	for _, args := range [][]string{{"plan"}, {"preview"}, {"apply"}, {"completion"}, {"setup"}, {"plan", "help"}, {"preview", "--help"}, {"apply", "-h"}, {"setup", "--help"}} {
 		if !shouldShowCommandHelp(args) {
 			t.Fatalf("expected help for args %v", args)
 		}
@@ -197,6 +263,14 @@ func TestParseArgsSupportsPlanSubcommandsAndPlanNames(t *testing.T) {
 	}
 	if applyCfg.PlanName != "my-plan" {
 		t.Fatalf("unexpected apply plan name: %s", applyCfg.PlanName)
+	}
+
+	setupCfg, err := parseArgs([]string{"setup", "--server", "203.0.113.10", "--ssh-user", "root"})
+	if err != nil {
+		t.Fatalf("parseArgs returned error for setup: %v", err)
+	}
+	if setupCfg.Command != commandSetup || len(setupCfg.Servers) != 1 {
+		t.Fatalf("unexpected setup config: %#v", setupCfg)
 	}
 }
 
