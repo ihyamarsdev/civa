@@ -17,6 +17,37 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Generate release notes from commits
+        run: |
+          set -euo pipefail
+
+          current_tag="${GITHUB_REF_NAME}"
+          previous_tag="$(git tag --sort=-version:refname | grep '^v' | grep -Fxv "${current_tag}" | head -n 1 || true)"
+
+          if [ -n "${previous_tag}" ]; then
+            commit_range="${previous_tag}..${current_tag}"
+          else
+            commit_range="${current_tag}"
+          fi
+
+          mapfile -t commits < <(git log --pretty=format:'%s' "${commit_range}")
+
+          {
+            printf "## What's Changed\n\n"
+            if [ "${#commits[@]}" -eq 0 ]; then
+              printf "- No commit message found for this release.\n"
+            else
+              for commit_message in "${commits[@]}"; do
+                printf -- "- %s\n" "${commit_message}"
+              done
+            fi
+
+            if [ -n "${previous_tag}" ]; then
+              printf "\n## Full Changelog\n\n"
+              printf "https://github.com/%s/compare/%s...%s\n" "${GITHUB_REPOSITORY}" "${previous_tag}" "${current_tag}"
+            fi
+          } > release-notes.md
+
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
@@ -29,3 +60,8 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update GitHub release description
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "${GITHUB_REF_NAME}" --notes-file release-notes.md
