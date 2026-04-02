@@ -106,7 +106,7 @@ func TestPreviewHeaderDependsOnTTY(t *testing.T) {
 }
 
 func TestShouldShowCommandHelpForBarePlanPreviewApply(t *testing.T) {
-	for _, args := range [][]string{{"plan"}, {"preview"}, {"apply"}, {"plan", "help"}, {"preview", "--help"}, {"apply", "-h"}} {
+	for _, args := range [][]string{{"plan"}, {"preview"}, {"apply"}, {"completion"}, {"plan", "help"}, {"preview", "--help"}, {"apply", "-h"}} {
 		if !shouldShowCommandHelp(args) {
 			t.Fatalf("expected help for args %v", args)
 		}
@@ -116,6 +116,45 @@ func TestShouldShowCommandHelpForBarePlanPreviewApply(t *testing.T) {
 		if shouldShowCommandHelp(args) {
 			t.Fatalf("did not expect help for args %v", args)
 		}
+	}
+}
+
+func TestCompletionSuggestionsTopLevelAndValues(t *testing.T) {
+	root := completionSuggestions(nil)
+	if !contains(root, commandPlan) || !contains(root, commandCompletion) {
+		t.Fatalf("unexpected root completion set: %v", root)
+	}
+
+	webServerValues := completionSuggestions([]string{"plan", "start", "--web-server", "c"})
+	if len(webServerValues) != 1 || webServerValues[0] != webServerCaddy {
+		t.Fatalf("unexpected web server value suggestions: %v", webServerValues)
+	}
+}
+
+func TestCompletionSuggestionsIncludeGeneratedPlanNames(t *testing.T) {
+	workingDir := t.TempDir()
+	originalDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working dir: %v", err)
+	}
+	defer func() { _ = os.Chdir(originalDir) }()
+	if err := os.Chdir(workingDir); err != nil {
+		t.Fatalf("failed to chdir: %v", err)
+	}
+
+	for _, planName := range []string{"20260101-010101-000000001", "20260101-010102-000000002"} {
+		planPath := planPathForName(planName)
+		if err := os.MkdirAll(filepath.Dir(planPath), 0o755); err != nil {
+			t.Fatalf("failed to create plan dir: %v", err)
+		}
+		if err := os.WriteFile(planPath, []byte("# plan\n"), 0o644); err != nil {
+			t.Fatalf("failed to write plan: %v", err)
+		}
+	}
+
+	suggestions := completionSuggestions([]string{commandPreview, "20260101-010101"})
+	if !contains(suggestions, "20260101-010101-000000001") {
+		t.Fatalf("expected generated plan name suggestion, got %v", suggestions)
 	}
 }
 

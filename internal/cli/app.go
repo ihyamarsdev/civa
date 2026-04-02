@@ -21,13 +21,15 @@ import (
 const version = "1.1.6"
 
 const (
-	commandApply     = "apply"
-	commandPlan      = "plan"
-	commandPreview   = "preview"
-	commandDoctor    = "doctor"
-	commandUninstall = "uninstall"
-	commandVersion   = "version"
-	commandHelp      = "help"
+	commandApply            = "apply"
+	commandPlan             = "plan"
+	commandPreview          = "preview"
+	commandCompletion       = "completion"
+	commandCompleteInternal = "__complete"
+	commandDoctor           = "doctor"
+	commandUninstall        = "uninstall"
+	commandVersion          = "version"
+	commandHelp             = "help"
 
 	defaultSSHUser            = "root"
 	defaultSSHPort            = 22
@@ -137,6 +139,14 @@ func Run(args []string) error {
 		return nil
 	}
 
+	if args[0] == commandCompleteInternal {
+		return runHiddenCompletion(args[1:])
+	}
+
+	if args[0] == commandCompletion {
+		return runCompletionCommand(args[1:])
+	}
+
 	if shouldShowCommandHelp(args) {
 		printCommandUsage(args[0])
 		return nil
@@ -159,6 +169,8 @@ func Run(args []string) error {
 			return err
 		}
 		return runDoctor(cfg)
+	case commandCompletion:
+		return runCompletionCommand(args[1:])
 	case commandUninstall:
 		return runUninstall(cfg)
 	case commandPlan:
@@ -201,14 +213,14 @@ func defaultConfig(command string) config {
 func shouldShowCommandHelp(args []string) bool {
 	if len(args) == 1 {
 		switch args[0] {
-		case commandPlan, commandPreview, commandApply:
+		case commandPlan, commandPreview, commandApply, commandCompletion:
 			return true
 		}
 	}
 
 	if len(args) == 2 && (args[1] == "help" || args[1] == "--help" || args[1] == "-h") {
 		switch args[0] {
-		case commandPlan, commandPreview, commandApply:
+		case commandPlan, commandPreview, commandApply, commandCompletion:
 			return true
 		}
 	}
@@ -775,7 +787,7 @@ func nextArgValue(args []string, index int) (string, int, error) {
 
 func isKnownCommand(command string) bool {
 	switch command {
-	case commandApply, commandPlan, commandPreview, commandDoctor, commandUninstall, commandVersion, commandHelp:
+	case commandApply, commandPlan, commandPreview, commandDoctor, commandCompletion, commandUninstall, commandVersion, commandHelp:
 		return true
 	default:
 		return false
@@ -1081,6 +1093,7 @@ func printUsage() {
 		"  plan list                  List generated plans",
 		"  plan remove <plan-name>    Remove a generated plan and its artifacts",
 		"  preview <plan-name>        Show an existing generated plan",
+		"  completion <shell>         Print shell completion for bash, zsh, or fish",
 		"  doctor                     Check whether the local machine is ready to run civa",
 		"  uninstall                  Remove the currently installed civa binary",
 		"  version                    Show the civa version",
@@ -1111,6 +1124,7 @@ func printUsage() {
 		"  civa plan start --non-interactive --server 203.0.113.10,web-01 --server 203.0.113.11,api-01 --components 1,2,3,4",
 		"  civa plan list",
 		"  civa preview 20260401-152334-210329559",
+		"  civa completion bash",
 		"  civa apply 20260401-152334-210329559 --yes",
 		"  civa plan remove 20260401-152334-210329559 --yes",
 		"  civa uninstall --yes",
@@ -1152,6 +1166,19 @@ Examples:
 Examples:
   civa apply 20260401-160900-040074544 --yes
   civa apply --plan-file .civa/runs/20260401-160900-040074544/plan.md --yes`)
+	case commandCompletion:
+		fmt.Println(`Usage:
+  civa completion <shell>
+
+Supported shells:
+  bash
+  zsh
+  fish
+
+Examples:
+  civa completion bash
+  civa completion zsh
+  civa completion fish`)
 	default:
 		printUsage()
 	}
