@@ -11,6 +11,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/glamour"
+	"github.com/charmbracelet/glamour/styles"
+	glowutils "github.com/charmbracelet/glow/v2/utils"
+	"github.com/charmbracelet/lipgloss"
 	"golang.org/x/term"
 )
 
@@ -526,13 +530,64 @@ func runPreviewFlow(cfg *config) error {
 		return fmt.Errorf("failed to read plan file %s: %w", planPath, err)
 	}
 
-	fmt.Printf("Plan file: %s\n\n", planPath)
-	fmt.Print(string(content))
-	if len(content) == 0 || content[len(content)-1] != '\n' {
+	isTTY := term.IsTerminal(int(os.Stdout.Fd()))
+	if header := previewHeader(planPath, isTTY); header != "" {
+		fmt.Print(header)
+	}
+
+	rendered, err := renderPreviewMarkdown(planPath, content, isTTY)
+	if err != nil {
+		return err
+	}
+	fmt.Print(rendered)
+	if rendered == "" || rendered[len(rendered)-1] != '\n' {
 		fmt.Println()
 	}
 
 	return nil
+}
+
+func previewHeader(planPath string, isTTY bool) string {
+	if !isTTY {
+		return ""
+	}
+
+	return fmt.Sprintf("Plan file: %s\n\n", planPath)
+}
+
+func renderPreviewMarkdown(planPath string, content []byte, isTTY bool) (string, error) {
+	style := styles.AutoStyle
+	if !isTTY {
+		style = styles.NoTTYStyle
+	}
+
+	width := 80
+	if isTTY {
+		if detectedWidth, _, err := term.GetSize(int(os.Stdout.Fd())); err == nil && detectedWidth > 0 {
+			width = detectedWidth
+			if width > 120 {
+				width = 120
+			}
+		}
+	}
+
+	renderer, err := glamour.NewTermRenderer(
+		glamour.WithColorProfile(lipgloss.ColorProfile()),
+		glowutils.GlamourStyle(style, false),
+		glamour.WithWordWrap(width),
+		glamour.WithBaseURL(""),
+		glamour.WithPreservedNewLines(),
+	)
+	if err != nil {
+		return "", fmt.Errorf("failed to initialize glow renderer for %s: %w", planPath, err)
+	}
+
+	rendered, err := renderer.Render(string(glowutils.RemoveFrontmatter(content)))
+	if err != nil {
+		return "", fmt.Errorf("failed to render preview for %s: %w", planPath, err)
+	}
+
+	return rendered, nil
 }
 
 func runApplyFlow(cfg *config) error {

@@ -73,6 +73,38 @@ func TestParseServerSpecSupportsHostname(t *testing.T) {
 	}
 }
 
+func TestRenderPreviewMarkdownUsesPlainFallbackForNonTTY(t *testing.T) {
+	rendered, err := renderPreviewMarkdown("plan.md", []byte("# Hello\n\nBody text\n"), false)
+	if err != nil {
+		t.Fatalf("renderPreviewMarkdown returned error: %v", err)
+	}
+	if !strings.Contains(rendered, "Hello") || !strings.Contains(rendered, "Body text") {
+		t.Fatalf("unexpected rendered output: %q", rendered)
+	}
+}
+
+func TestRenderPreviewMarkdownRemovesFrontmatter(t *testing.T) {
+	rendered, err := renderPreviewMarkdown("plan.md", []byte("---\ntitle: Demo\n---\n# Hello\n"), false)
+	if err != nil {
+		t.Fatalf("renderPreviewMarkdown returned error: %v", err)
+	}
+	if strings.Contains(rendered, "title: Demo") {
+		t.Fatalf("expected frontmatter to be removed, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "Hello") {
+		t.Fatalf("expected heading to remain, got %q", rendered)
+	}
+}
+
+func TestPreviewHeaderDependsOnTTY(t *testing.T) {
+	if header := previewHeader("plan.md", false); header != "" {
+		t.Fatalf("expected no header for non-tty, got %q", header)
+	}
+	if header := previewHeader("plan.md", true); !strings.Contains(header, "Plan file: plan.md") {
+		t.Fatalf("expected plan header for tty, got %q", header)
+	}
+}
+
 func TestShouldShowCommandHelpForBarePlanPreviewApply(t *testing.T) {
 	for _, args := range [][]string{{"plan"}, {"preview"}, {"apply"}, {"plan", "help"}, {"preview", "--help"}, {"apply", "-h"}} {
 		if !shouldShowCommandHelp(args) {
