@@ -552,6 +552,8 @@ func writeInventory(cfg *config, state *runtimeState) error {
 	var builder strings.Builder
 	usedAliases := make(map[string]int, len(cfg.Servers))
 	builder.WriteString("all:\n")
+	builder.WriteString("  vars:\n")
+	builder.WriteString("    ansible_python_interpreter: auto_silent\n")
 	builder.WriteString("  children:\n")
 	builder.WriteString("    civa_targets:\n")
 	builder.WriteString("      hosts:\n")
@@ -729,6 +731,201 @@ func runAnsible(cfg *config, state *runtimeState) error {
 	cmd.Stdin = os.Stdin
 	cmd.Env = append(os.Environ(), "ANSIBLE_COLLECTIONS_PATH="+filepath.Join(filepath.Dir(state.PlaybookFile), "collections"))
 	return cmd.Run()
+}
+
+func syncSSHConfigAfterApply(cfg *config, state *runtimeState) error {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("failed to resolve home directory for SSH config sync: %w", err)
+	}
+	return syncSSHConfigAfterApplyInHome(cfg, state, homeDir)
+}
+
+func syncSSHConfigAfterApplyInHome(_ *config, state *runtimeState, homeDir string) error {
+	if _, err := ensureUserCivaDirectoryInHome(homeDir); err != nil {
+		return err
+	}
+
+	entries, err := parseSSHConfigHostsFromInventory(state.InventoryFile)
+	if err != nil {
+		return err
+	}
+	if len(entries) == 0 {
+		return nil
+	}
+
+	sshDir := filepath.Join(homeDir, ".ssh")
+	if err := os.MkdirAll(sshDir, 0o755); err != nil {
+		return fmt.Errorf("failed to create SSH directory %s: %w", sshDir, err)
+	}
+
+	sshConfigPath := filepath.Join(sshDir, "config")
+	existingContent, err := os.ReadFile(sshConfigPath)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to read SSH config %s: %w", sshConfigPath, err)
+	}
+
+	updatedContent := string(existingContent)
+	for _, entry := range entries {
+		updatedContent = upsertManagedSSHConfigEntry(updatedContent, entry)
+	}
+
+	if string(existingContent) == updatedContent {
+		return nil
+	}
+
+	if err := os.WriteFile(sshConfigPath, []byte(updatedContent), 0o600); err != nil {
+		return fmt.Errorf("failed to write SSH config %s: %w", sshConfigPath, err)
+	}
+
+	fmt.Fprintf(os.Stderr, "Updated SSH config with %d server entrie(s): %s\n", len(entries), sshConfigPath)
+	return nil
+}
+
+func ensureUserCivaDirectoryInHome(homeDir string) (string, error) {
+	userCivaDir := filepath.Join(homeDir, ".civa")
+	if err := os.MkdirAll(userCivaDir, 0o755); err != nil {
+		return "", fmt.Errorf("failed to create user civa directory %s: %w", userCivaDir, err)
+	}
+	return userCivaDir, nil
+}
+
+type sshConfigEntry struct {
+	Alias        string
+	HostName     string
+	User         string
+	Port         int
+	IdentityFile string
+}
+
+func parseSSHConfigHostsFromInventory(inventoryPath string) ([]sshConfigEntry, error) {
+	content, err := os.ReadFile(inventoryPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read inventory for SSH config sync %s: %w", inventoryPath, err)
+	}
+
+	lines := strings.Split(string(content), "\n")
+	entries := []sshConfigEntry{}
+	var current *sshConfigEntry
+
+	flushCurrent := func() {
+		if current == nil {
+			return
+		}
+		if strings.TrimSpace(current.Alias) != "" && strings.TrimSpace(current.HostName) != "" {
+			if current.Port == 0 {
+				current.Port = defaultSSHPort
+			}
+			entries = append(entries, *current)
+		}
+		current = nil
+	}
+
+	for _, rawLine := range lines {
+		line := strings.TrimRight(rawLine, "\r")
+
+		if strings.HasPrefix(line, "        ") && !strings.HasPrefix(line, "          ") {
+			trimmed := strings.TrimSpace(line)
+			if strings.HasSuffix(trimmed, ":") {
+				alias := strings.TrimSuffix(trimmed, ":")
+				if alias != "hosts" && alias != "vars" && alias != "children" && alias != "all" && alias != "civa_targets" {
+					flushCurrent()
+					current = &sshConfigEntry{Alias: alias, Port: defaultSSHPort}
+					continue
+				}
+			}
+		}
+
+		if current == nil {
+			continue
+		}
+
+		trimmed := strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(trimmed, "ansible_host:"):
+			current.HostName = parseInventoryScalarValue(strings.TrimPrefix(trimmed, "ansible_host:"))
+		case strings.HasPrefix(trimmed, "ansible_user:"):
+			current.User = parseInventoryScalarValue(strings.TrimPrefix(trimmed, "ansible_user:"))
+		case strings.HasPrefix(trimmed, "ansible_port:"):
+			portValue := parseInventoryScalarValue(strings.TrimPrefix(trimmed, "ansible_port:"))
+			if parsedPort, convErr := strconv.Atoi(portValue); convErr == nil {
+				current.Port = parsedPort
+			}
+		case strings.HasPrefix(trimmed, "ansible_ssh_private_key_file:"):
+			current.IdentityFile = parseInventoryScalarValue(strings.TrimPrefix(trimmed, "ansible_ssh_private_key_file:"))
+		}
+	}
+
+	flushCurrent()
+
+	if len(entries) == 0 {
+		return nil, fmt.Errorf("no hosts found in inventory for SSH config sync: %s", inventoryPath)
+	}
+
+	return entries, nil
+}
+
+func parseInventoryScalarValue(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if unquoted, err := strconv.Unquote(trimmed); err == nil {
+		return unquoted
+	}
+	return trimmed
+}
+
+func upsertManagedSSHConfigEntry(existing string, entry sshConfigEntry) string {
+	cleaned := removeManagedSSHConfigEntry(existing, entry.Alias)
+	if strings.TrimSpace(cleaned) != "" && !strings.HasSuffix(cleaned, "\n") {
+		cleaned += "\n"
+	}
+	if strings.TrimSpace(cleaned) != "" {
+		cleaned += "\n"
+	}
+	return cleaned + buildManagedSSHConfigEntry(entry)
+}
+
+func removeManagedSSHConfigEntry(content, alias string) string {
+	startMarker := "# civa-managed-start " + alias
+	endMarker := "# civa-managed-end " + alias
+
+	for {
+		start := strings.Index(content, startMarker)
+		if start == -1 {
+			break
+		}
+
+		endOffset := strings.Index(content[start:], endMarker)
+		if endOffset == -1 {
+			break
+		}
+
+		end := start + endOffset + len(endMarker)
+		for end < len(content) && (content[end] == '\r' || content[end] == '\n') {
+			end++
+		}
+		content = content[:start] + content[end:]
+	}
+
+	return strings.TrimRight(content, "\n")
+}
+
+func buildManagedSSHConfigEntry(entry sshConfigEntry) string {
+	var builder strings.Builder
+	fmt.Fprintf(&builder, "# civa-managed-start %s\n", entry.Alias)
+	fmt.Fprintf(&builder, "Host %s\n", entry.Alias)
+	fmt.Fprintf(&builder, "  HostName %s\n", entry.HostName)
+	if strings.TrimSpace(entry.User) != "" {
+		fmt.Fprintf(&builder, "  User %s\n", entry.User)
+	}
+	if entry.Port > 0 {
+		fmt.Fprintf(&builder, "  Port %d\n", entry.Port)
+	}
+	if strings.TrimSpace(entry.IdentityFile) != "" {
+		fmt.Fprintf(&builder, "  IdentityFile %s\n", entry.IdentityFile)
+		builder.WriteString("  IdentitiesOnly yes\n")
+	}
+	fmt.Fprintf(&builder, "# civa-managed-end %s\n", entry.Alias)
+	return builder.String()
 }
 
 func buildAnsibleCommand(cfg *config, state *runtimeState) string {

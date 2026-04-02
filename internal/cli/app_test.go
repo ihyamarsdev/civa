@@ -529,6 +529,9 @@ func TestWriteInventoryUsesPasswordForPasswordAuth(t *testing.T) {
 	}
 
 	inventory := string(content)
+	if !strings.Contains(inventory, "ansible_python_interpreter: auto_silent") {
+		t.Fatalf("expected auto_silent python interpreter discovery in inventory, got %s", inventory)
+	}
 	if strings.Contains(inventory, "ansible_ssh_private_key_file") {
 		t.Fatalf("did not expect key auth in password inventory, got %s", inventory)
 	}
@@ -549,6 +552,38 @@ func TestWriteInventoryUsesPasswordForPasswordAuth(t *testing.T) {
 	authVars := string(authContent)
 	if !strings.Contains(authVars, `ansible_password: "super-secret"`) {
 		t.Fatalf("expected password auth in auth file, got %s", authVars)
+	}
+}
+
+func TestWriteInventoryUsesPrivateKeyForKeyAuth(t *testing.T) {
+	tempDir := t.TempDir()
+	cfg := &config{
+		SSHAuthMethod: sshAuthMethodKey,
+		SSHPrivateKey: "/tmp/id_ed25519",
+		SSHUser:       "ubuntu",
+		SSHPort:       2222,
+		Servers: []serverSpec{{
+			Address:  "203.0.113.20",
+			Hostname: "app-01",
+		}},
+	}
+	state := &runtimeState{InventoryFile: filepath.Join(tempDir, "inventory.yml")}
+
+	if err := writeInventory(cfg, state); err != nil {
+		t.Fatalf("writeInventory returned error: %v", err)
+	}
+
+	content, err := os.ReadFile(state.InventoryFile)
+	if err != nil {
+		t.Fatalf("failed to read inventory: %v", err)
+	}
+
+	inventory := string(content)
+	if !strings.Contains(inventory, "ansible_python_interpreter: auto_silent") {
+		t.Fatalf("expected auto_silent python interpreter discovery in inventory, got %s", inventory)
+	}
+	if !strings.Contains(inventory, `ansible_ssh_private_key_file: "/tmp/id_ed25519"`) {
+		t.Fatalf("expected private key in key-auth inventory, got %s", inventory)
 	}
 }
 
@@ -683,5 +718,119 @@ func TestRunApplyFlowRequiresYesWhenNonInteractive(t *testing.T) {
 	err := runApplyFlow(&config{Command: commandApply, NonInteractive: true, PlanInputFile: planPath})
 	if err == nil || !strings.Contains(err.Error(), "requires --yes") {
 		t.Fatalf("expected --yes gate error, got %v", err)
+	}
+}
+
+func TestEnsureUserCivaDirectoryInHomeCreatesDotCiva(t *testing.T) {
+	homeDir := t.TempDir()
+	created, err := ensureUserCivaDirectoryInHome(homeDir)
+	if err != nil {
+		t.Fatalf("ensureUserCivaDirectoryInHome returned error: %v", err)
+	}
+
+	if created != filepath.Join(homeDir, ".civa") {
+		t.Fatalf("unexpected civa directory path: %s", created)
+	}
+	if info, statErr := os.Stat(created); statErr != nil {
+		t.Fatalf("expected created civa directory, got error: %v", statErr)
+	} else if !info.IsDir() {
+		t.Fatalf("expected %s to be a directory", created)
+	}
+}
+
+func TestParseSSHConfigHostsFromInventory(t *testing.T) {
+	tempDir := t.TempDir()
+	inventoryPath := filepath.Join(tempDir, "inventory.yml")
+	inventory := strings.Join([]string{
+		"all:",
+		"  vars:",
+		"    ansible_python_interpreter: auto_silent",
+		"  children:",
+		"    civa_targets:",
+		"      hosts:",
+		"        app-01:",
+		"          ansible_host: \"203.0.113.10\"",
+		"          ansible_user: \"deployer\"",
+		"          ansible_port: 2222",
+		"          ansible_ssh_private_key_file: \"/tmp/id_ed25519\"",
+		"        db-01:",
+		"          ansible_host: \"203.0.113.20\"",
+		"          ansible_user: \"deployer\"",
+		"          ansible_port: 22",
+	}, "\n") + "\n"
+	if err := os.WriteFile(inventoryPath, []byte(inventory), 0o600); err != nil {
+		t.Fatalf("failed to write inventory: %v", err)
+	}
+
+	entries, err := parseSSHConfigHostsFromInventory(inventoryPath)
+	if err != nil {
+		t.Fatalf("parseSSHConfigHostsFromInventory returned error: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(entries))
+	}
+	if entries[0].Alias != "app-01" || entries[0].HostName != "203.0.113.10" || entries[0].User != "deployer" || entries[0].Port != 2222 || entries[0].IdentityFile != "/tmp/id_ed25519" {
+		t.Fatalf("unexpected first entry: %#v", entries[0])
+	}
+	if entries[1].Alias != "db-01" || entries[1].HostName != "203.0.113.20" || entries[1].Port != 22 {
+		t.Fatalf("unexpected second entry: %#v", entries[1])
+	}
+}
+
+func TestSyncSSHConfigAfterApplyInHomeUpdatesManagedEntries(t *testing.T) {
+	homeDir := t.TempDir()
+	inventoryPath := filepath.Join(t.TempDir(), "inventory.yml")
+	inventory := strings.Join([]string{
+		"all:",
+		"  children:",
+		"    civa_targets:",
+		"      hosts:",
+		"        web-01:",
+		"          ansible_host: \"203.0.113.50\"",
+		"          ansible_user: \"root\"",
+		"          ansible_port: 22",
+	}, "\n") + "\n"
+	if err := os.WriteFile(inventoryPath, []byte(inventory), 0o600); err != nil {
+		t.Fatalf("failed to write inventory: %v", err)
+	}
+
+	sshDir := filepath.Join(homeDir, ".ssh")
+	if err := os.MkdirAll(sshDir, 0o755); err != nil {
+		t.Fatalf("failed to create ssh dir: %v", err)
+	}
+	sshConfigPath := filepath.Join(sshDir, "config")
+	initial := strings.Join([]string{
+		"Host github.com",
+		"  User git",
+		"",
+		"# civa-managed-start web-01",
+		"Host web-01",
+		"  HostName 198.51.100.10",
+		"  User root",
+		"  Port 22",
+		"# civa-managed-end web-01",
+	}, "\n") + "\n"
+	if err := os.WriteFile(sshConfigPath, []byte(initial), 0o600); err != nil {
+		t.Fatalf("failed to write initial ssh config: %v", err)
+	}
+
+	state := &runtimeState{InventoryFile: inventoryPath}
+	if err := syncSSHConfigAfterApplyInHome(&config{}, state, homeDir); err != nil {
+		t.Fatalf("syncSSHConfigAfterApplyInHome returned error: %v", err)
+	}
+
+	content, err := os.ReadFile(sshConfigPath)
+	if err != nil {
+		t.Fatalf("failed to read ssh config: %v", err)
+	}
+	updated := string(content)
+	if strings.Count(updated, "# civa-managed-start web-01") != 1 {
+		t.Fatalf("expected exactly one managed web-01 block, got:\n%s", updated)
+	}
+	if !strings.Contains(updated, "HostName 203.0.113.50") {
+		t.Fatalf("expected updated host address in ssh config, got:\n%s", updated)
+	}
+	if _, err := os.Stat(filepath.Join(homeDir, ".civa")); err != nil {
+		t.Fatalf("expected ~/.civa to be created, got error: %v", err)
 	}
 }

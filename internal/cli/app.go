@@ -18,7 +18,7 @@ import (
 	"golang.org/x/term"
 )
 
-const version = "1.1.8"
+const version = "1.1.9"
 
 const (
 	commandApply            = "apply"
@@ -690,6 +690,9 @@ func runApplyFlow(cfg *config) error {
 		return err
 	}
 	state.appendCompletedPhase("ansible-playbook execution")
+	if err := syncSSHConfigAfterApply(loadedCfg, state); err != nil {
+		return err
+	}
 	showExecutionSummary(loadedCfg, state)
 	return nil
 }
@@ -799,6 +802,11 @@ func executeRuntime(cfg *config, state *runtimeState) error {
 		}
 		if err := runAnsible(cfg, state); err != nil {
 			return err
+		}
+		if cfg.Command == commandApply {
+			if err := syncSSHConfigAfterApply(cfg, state); err != nil {
+				return err
+			}
 		}
 	}
 
