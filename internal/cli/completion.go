@@ -12,6 +12,7 @@ var completionCommands = []string{
 	commandApply,
 	commandPlan,
 	commandPreview,
+	commandSetup,
 	commandDoctor,
 	commandUninstall,
 	commandVersion,
@@ -20,7 +21,6 @@ var completionCommands = []string{
 }
 
 var planSubcommands = []string{planActionStart, planActionList, planActionRemove, commandHelp}
-var sshAuthMethods = []string{sshAuthMethodKey, sshAuthMethodPassword}
 var webServerValues = []string{webServerNone, webServerTraefik, webServerNginx, webServerCaddy}
 var traefikChallengeValues = []string{"http", "dns"}
 var componentCompletionValues = []string{"all", "1", "2", "3", "4", "5", "6", "7", "8", "system_update", "user_management", "ssh_hardening", "security_firewall", "system_config", "dependencies", "containerization", "web_server", "traefik", "nginx", "caddy"}
@@ -84,6 +84,8 @@ func completionSuggestions(words []string) []string {
 		return completePreview(words)
 	case commandApply:
 		return completeApply(words)
+	case commandSetup:
+		return completeSetup(words)
 	case commandCompletion:
 		return completeCompletionCommand(words)
 	default:
@@ -116,11 +118,23 @@ func completePlan(words []string) []string {
 }
 
 func completePlanStart(words []string, current string) []string {
-	flagSuggestions := []string{"--help", "--non-interactive", "--ssh-user", "--ssh-port", "--ssh-auth-method", "--ssh-password", "--web-server", "--ssh-private-key", "--ssh-public-key", "--deployer-user", "--timezone", "--components", "--server", "--traefik-email", "--traefik-challenge", "--traefik-dns-provider", "--output"}
+	flagSuggestions := []string{"--help", "--non-interactive", "--ssh-user", "--ssh-port", "--web-server", "--ssh-private-key", "--ssh-public-key", "--deployer-user", "--timezone", "--components", "--server", "--traefik-email", "--traefik-challenge", "--traefik-dns-provider", "--output"}
 	if strings.HasPrefix(current, "-") || previousWordExpectsValue(words) {
 		return filterByPrefix(flagSuggestions, current)
 	}
 	return flagSuggestions
+}
+
+func completeSetup(words []string) []string {
+	current := words[len(words)-1]
+	flags := []string{"--help", "--non-interactive", "--ssh-user", "--ssh-port", "--ssh-password", "--ssh-public-key", "--server"}
+	if len(words) == 1 {
+		return flags
+	}
+	if strings.HasPrefix(current, "-") || previousWordExpectsValue(words) {
+		return filterByPrefix(flags, current)
+	}
+	return flags
 }
 
 func completePlanRemove(words []string, current string) []string {
@@ -170,8 +184,6 @@ func completeCommonFlags(words []string, current string) []string {
 
 func completionValuesForFlag(flag string) ([]string, bool) {
 	switch flag {
-	case "--ssh-auth-method":
-		return sshAuthMethods, true
 	case "--web-server":
 		return webServerValues, true
 	case "--traefik-challenge":

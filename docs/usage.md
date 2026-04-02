@@ -7,6 +7,7 @@
 - `civa plan remove <nama-plan>`
 - `civa preview <nama-plan>`
 - `civa apply <nama-plan>`
+- `civa setup`
 - `civa completion <shell>`
 - `civa doctor`
 - `civa uninstall`
@@ -21,8 +22,8 @@ When you run `civa plan start` without all required flags, `civa` asks for:
 - number of servers
 - server IPs or hostnames
 - optional target hostnames
-- SSH user, port, and authentication method
-- local SSH password or private key, plus the public key to install for the deployer user
+- SSH user and port
+- local SSH private key path
 - deployer username
 - timezone
 - web server choice (`none`, `traefik`, `nginx`, or `caddy`) when the web server component is enabled
@@ -34,7 +35,9 @@ Generated plan names come from the run directory under `.civa/runs/`, for exampl
 
 Component selection in interactive mode uses a Charmbracelet Huh multi-select prompt: use the Up and Down arrow keys to move, press Space to select or clear the highlighted component, then press Enter to confirm.
 
-SSH access can use either `--ssh-auth-method key` with `--ssh-private-key`, or `--ssh-auth-method password` with `--ssh-password`. Password-based plans write a dedicated `auth.yml` file with mode `0600` inside the run directory, and later `apply` executions require `sshpass` on the local machine.
+`civa plan start` assumes SSH key access and only needs the local SSH private key path. The matching public key path is derived automatically unless you override it explicitly.
+
+Use `civa setup` to install your local public key onto a fresh VPS with its built-in user and password. The setup command uses `sshpass -e ssh-copy-id`, so `ssh-copy-id` and `sshpass` must be available locally. For first contact it uses `StrictHostKeyChecking=accept-new`, which is convenient but still a trust-on-first-use trade-off.
 
 Use `--web-server none|traefik|nginx|caddy` to choose which web server to prepare. The default web server remains `traefik` when the `web_server` component is selected and no explicit choice is provided.
 
@@ -69,20 +72,15 @@ Generate a plan for two servers:
   --components all
 ```
 
-Generate a plan with password-based SSH access:
+Install your public key on a fresh server before planning:
 
 ```bash
-./bin/civa plan start \
-  --non-interactive \
-  --server 203.0.113.12,legacy-01 \
+./bin/civa setup \
+  --server 203.0.113.12 \
   --ssh-user root \
   --ssh-port 22 \
-  --ssh-auth-method password \
   --ssh-password 'super-secret-password' \
-  --ssh-public-key ~/.ssh/id_rsa.pub \
-  --deployer-user deployer \
-  --timezone Asia/Jakarta \
-  --components all
+  --ssh-public-key ~/.ssh/id_rsa.pub
 ```
 
 List generated plans:

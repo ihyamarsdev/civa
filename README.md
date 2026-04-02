@@ -18,7 +18,7 @@
 ## Current Support
 
 - Target families: Debian/Ubuntu and RHEL-compatible distributions such as RHEL, Rocky, AlmaLinux, CentOS, and Oracle Linux
-- Commands: `plan start|list|remove`, `preview <nama-plan>`, `apply <nama-plan>`, `completion <shell>`, `doctor`, `uninstall`, `version`, `help`
+- Commands: `setup`, `plan start|list|remove`, `preview <nama-plan>`, `apply <nama-plan>`, `completion <shell>`, `doctor`, `uninstall`, `version`, `help`
 - Runtime artifacts: `.civa/runs/<timestamp>/inventory.yml`, `vars.yml`, `plan.md`, and staged embedded Ansible assets
 
 ## Quick Start
@@ -32,10 +32,28 @@ go build -o bin/civa .
 ./bin/civa help
 ```
 
+Install your public key on a fresh server:
+
+```bash
+./bin/civa setup --server 203.0.113.10 --ssh-user root --ssh-password 'secret' --ssh-public-key ~/.ssh/id_ed25519.pub
+```
+
 Run an interactive plan:
 
 ```bash
 ./bin/civa plan start
+```
+
+Bootstrap a fresh server for key-based access:
+
+```bash
+./bin/civa setup --server 203.0.113.10 --ssh-user root --ssh-password 'secret' --ssh-public-key ~/.ssh/id_rsa.pub
+```
+
+Then generate a key-based plan:
+
+```bash
+./bin/civa plan start --ssh-private-key ~/.ssh/id_rsa
 ```
 
 Check local prerequisites:
@@ -46,7 +64,8 @@ Check local prerequisites:
 
 ## Commands
 
-- `civa plan start` — generate inventory, vars, auth artifacts, and a Markdown plan only
+- `civa setup` — install your local public key onto a fresh server with ssh-copy-id using the server's built-in password login
+- `civa plan start` — generate inventory, vars, and a Markdown plan only after key-based access is ready
 - `civa plan list` — show generated plan names under `.civa/runs/`
 - `civa plan remove <nama-plan>` — delete a generated plan and its artifacts
 - `civa preview <nama-plan>` — display an existing generated `plan.md`

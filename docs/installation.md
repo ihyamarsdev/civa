@@ -10,10 +10,12 @@ Local machine requirements:
 - `python` or `python3`
 - `tar`
 - `curl` or `wget`
-- a valid SSH public key to install for the deployer user
-- a valid SSH private key when using `--ssh-auth-method key`
+- a valid SSH public key to install for `civa setup`
+- a valid SSH private key for `civa plan start`
 
-If you plan to connect to the initial VPS login with a password instead of an SSH key, install `sshpass` on the local machine as well.
+If you plan to use `civa setup` against a fresh server that still needs password login, install `sshpass` and `ssh-copy-id` on the local machine as well.
+
+`civa setup` is the password-based bootstrap step. `civa plan start` is key-only and expects that your public key has already been installed on the server.
 
 ## Option 1: Build From Source
 
@@ -90,6 +92,8 @@ Both scripts honor `INSTALL_DIR`, so you can install or remove `civa` from a cus
 ```bash
 civa help
 civa version
-civa doctor --ssh-auth-method password --ssh-password 'super-secret-password' --ssh-public-key ~/.ssh/id_rsa.pub
+civa setup --server 203.0.113.10 --ssh-user root --ssh-password 'super-secret-password' --ssh-public-key ~/.ssh/id_rsa.pub
 civa doctor --ssh-private-key ~/.ssh/id_rsa --ssh-public-key ~/.ssh/id_rsa.pub
 ```
+
+`civa setup` runs `sshpass -e ssh-copy-id` and uses `StrictHostKeyChecking=accept-new` on the first connection for convenience. That makes first-time setup smoother, but it is still a trust-on-first-use trade-off compared with pre-verifying the host key yourself.
