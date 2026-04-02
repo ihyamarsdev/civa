@@ -1,0 +1,5 @@
+---
+- name: Install RHEL dependency packages
+  ansible.builtin.dnf:
+    name: "{{ civa_dependency_packages }}"
+    state: present

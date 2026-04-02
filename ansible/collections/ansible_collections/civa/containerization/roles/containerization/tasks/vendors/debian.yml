@@ -1,0 +1,31 @@
+---
+- name: Install Docker apt prerequisites
+  ansible.builtin.apt:
+    name: "{{ civa_docker_prerequisites }}"
+    state: present
+
+- name: Ensure the Docker apt keyring directory exists
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Install the official Docker GPG key
+  ansible.builtin.get_url:
+    url: https://download.docker.com/linux/{{ ansible_facts.distribution | lower }}/gpg
+    dest: /etc/apt/keyrings/docker.asc
+    mode: '0644'
+
+- name: Configure the official Docker apt repository
+  ansible.builtin.apt_repository:
+    repo: "deb [arch={{ civa_docker_arch }} signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/{{ ansible_facts.distribution | lower }} {{ ansible_facts.distribution_release }} stable"
+    filename: docker
+    state: present
+    update_cache: true
+
+- name: Install Docker packages on Debian-family targets
+  ansible.builtin.apt:
+    name: "{{ civa_docker_packages }}"
+    state: present

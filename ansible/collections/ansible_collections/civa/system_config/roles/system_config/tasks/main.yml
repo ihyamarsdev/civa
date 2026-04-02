@@ -1,0 +1,50 @@
+---
+- name: Set the target hostname when one is supplied
+  ansible.builtin.hostname:
+    name: "{{ civa_target_hostname }}"
+  when: civa_target_hostname is defined
+
+- name: Read the current timezone
+  ansible.builtin.command: timedatectl show -p Timezone --value
+  register: civa_current_timezone
+  changed_when: false
+
+- name: Apply the requested timezone
+  ansible.builtin.command: "timedatectl set-timezone {{ civa_timezone }}"
+  when: civa_current_timezone.stdout != civa_timezone
+
+- name: Check whether the swap file already exists
+  ansible.builtin.stat:
+    path: "{{ civa_swap_file }}"
+  register: civa_swap_stat
+
+- name: Create the swap file when missing
+  ansible.builtin.command: "fallocate -l {{ civa_swap_size }} {{ civa_swap_file }}"
+  when: not civa_swap_stat.stat.exists
+
+- name: Secure the swap file permissions
+  ansible.builtin.file:
+    path: "{{ civa_swap_file }}"
+    owner: root
+    group: root
+    mode: '0600'
+  when: not civa_swap_stat.stat.exists
+
+- name: Format the swap file
+  ansible.builtin.command: "mkswap {{ civa_swap_file }}"
+  when: not civa_swap_stat.stat.exists
+
+- name: Persist the swap file in fstab
+  ansible.builtin.lineinfile:
+    path: /etc/fstab
+    regexp: '^{{ civa_swap_file | regex_escape }}\s+'
+    line: "{{ civa_swap_file }} none swap sw 0 0"
+
+- name: Gather active swap devices
+  ansible.builtin.command: swapon --show=NAME --noheadings
+  register: civa_swap_active
+  changed_when: false
+
+- name: Enable the swap file when needed
+  ansible.builtin.command: "swapon {{ civa_swap_file }}"
+  when: civa_swap_file not in civa_swap_active.stdout

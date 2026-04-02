@@ -1,0 +1,5 @@
+---
+- name: Install Debian dependency packages
+  ansible.builtin.apt:
+    name: "{{ civa_dependency_packages }}"
+    state: present

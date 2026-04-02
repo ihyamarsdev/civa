@@ -1,0 +1,19 @@
+---
+- name: Install Docker dnf prerequisites
+  ansible.builtin.dnf:
+    name: "{{ civa_docker_prerequisites }}"
+    state: present
+
+- name: Configure the official Docker yum repository
+  ansible.builtin.yum_repository:
+    name: docker-ce-stable
+    description: Docker CE Stable Repository
+    baseurl: "https://download.docker.com/linux/{{ civa_docker_repo_os }}/$releasever/$basearch/stable"
+    enabled: true
+    gpgcheck: true
+    gpgkey: "https://download.docker.com/linux/{{ civa_docker_repo_os }}/gpg"
+
+- name: Install Docker packages on RHEL-family targets
+  ansible.builtin.dnf:
+    name: "{{ civa_docker_packages }}"
+    state: present

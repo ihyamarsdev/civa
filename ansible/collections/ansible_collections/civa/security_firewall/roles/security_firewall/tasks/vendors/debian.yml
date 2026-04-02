@@ -1,0 +1,25 @@
+---
+- name: Set UFW default incoming policy to deny
+  ansible.builtin.command: ufw default deny incoming
+  register: civa_ufw_deny
+  changed_when: "'Default incoming policy changed' in civa_ufw_deny.stdout or 'Default incoming policy changed' in civa_ufw_deny.stderr"
+
+- name: Set UFW default outgoing policy to allow
+  ansible.builtin.command: ufw default allow outgoing
+  register: civa_ufw_allow
+  changed_when: "'Default outgoing policy changed' in civa_ufw_allow.stdout or 'Default outgoing policy changed' in civa_ufw_allow.stderr"
+
+- name: Allow essential firewall ports
+  ansible.builtin.command: "ufw allow {{ item }}/tcp"
+  loop: "{{ civa_firewall_ports }}"
+  register: civa_ufw_rules
+  changed_when: "'Skipping adding existing rule' not in civa_ufw_rules.stdout and 'Skipping adding existing rule' not in civa_ufw_rules.stderr"
+
+- name: Check whether UFW is already active
+  ansible.builtin.command: ufw status
+  register: civa_ufw_status
+  changed_when: false
+
+- name: Enable UFW if needed
+  when: "'Status: active' not in civa_ufw_status.stdout"
+  ansible.builtin.command: ufw --force enable

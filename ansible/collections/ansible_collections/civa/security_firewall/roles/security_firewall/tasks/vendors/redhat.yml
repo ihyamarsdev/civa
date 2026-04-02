@@ -1,0 +1,20 @@
+---
+- name: Install EPEL release on RHEL-family targets
+  ansible.builtin.dnf:
+    name: epel-release
+    state: present
+
+- name: Ensure firewalld is enabled and running
+  ansible.builtin.service:
+    name: firewalld
+    state: started
+    enabled: true
+
+- name: Allow essential firewalld ports permanently
+  ansible.builtin.command: "firewall-cmd --permanent --add-port={{ item }}/tcp"
+  loop: "{{ civa_firewall_ports }}"
+  register: civa_firewalld_rules
+  changed_when: "'ALREADY_ENABLED' not in civa_firewalld_rules.stdout and 'ALREADY_ENABLED' not in civa_firewalld_rules.stderr"
+
+- name: Reload firewalld when rules change
+  ansible.builtin.command: firewall-cmd --reload

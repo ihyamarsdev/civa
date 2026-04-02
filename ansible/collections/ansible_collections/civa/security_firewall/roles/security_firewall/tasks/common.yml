@@ -1,0 +1,19 @@
+---
+- name: Install security packages
+  ansible.builtin.package:
+    name: "{{ civa_security_packages }}"
+    state: present
+
+- name: Write the Fail2Ban jail configuration
+  ansible.builtin.template:
+    src: fail2ban-jail.local.j2
+    dest: /etc/fail2ban/jail.local
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Ensure Fail2Ban is enabled and running
+  ansible.builtin.service:
+    name: fail2ban
+    state: started
+    enabled: true

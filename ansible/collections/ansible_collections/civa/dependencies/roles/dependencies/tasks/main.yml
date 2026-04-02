@@ -1,0 +1,8 @@
+---
+- name: Install Debian dependency packages
+  when: civa_is_debian
+  ansible.builtin.include_tasks: vendors/debian.yml
+
+- name: Install RedHat dependency packages
+  when: civa_is_rhel
+  ansible.builtin.include_tasks: vendors/redhat.yml

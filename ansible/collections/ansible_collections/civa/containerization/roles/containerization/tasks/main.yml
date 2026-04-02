@@ -1,0 +1,20 @@
+---
+- name: Apply Debian containerization tasks
+  when: civa_is_debian
+  ansible.builtin.include_tasks: vendors/debian.yml
+
+- name: Apply RedHat containerization tasks
+  when: civa_is_rhel
+  ansible.builtin.include_tasks: vendors/redhat.yml
+
+- name: Ensure Docker is enabled and running
+  ansible.builtin.service:
+    name: docker
+    state: started
+    enabled: true
+
+- name: Add the deployer user to the docker group
+  ansible.builtin.user:
+    name: "{{ civa_deployer_user }}"
+    groups: docker
+    append: true
