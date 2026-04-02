@@ -1,0 +1,8 @@
+---
+- name: Apply Debian-family system updates
+  when: civa_is_debian
+  ansible.builtin.include_tasks: vendors/debian.yml
+
+- name: Apply RedHat-family system updates
+  when: civa_is_rhel
+  ansible.builtin.include_tasks: vendors/redhat.yml

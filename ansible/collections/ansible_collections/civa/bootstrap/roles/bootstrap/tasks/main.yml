@@ -1,0 +1,60 @@
+---
+- name: Ensure the target distribution is supported
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.os_family == 'Debian' or ansible_facts.distribution in ['RedHat', 'Rocky', 'AlmaLinux', 'CentOS', 'OracleLinux']
+    fail_msg: civa Ansible bootstrap currently supports Debian/Ubuntu and RHEL-compatible targets such as RHEL, Rocky, AlmaLinux, CentOS, and Oracle Linux.
+
+- name: Resolve common civa defaults
+  ansible.builtin.set_fact:
+    civa_is_debian: "{{ ansible_facts.os_family == 'Debian' }}"
+    civa_is_rhel: "{{ ansible_facts.os_family == 'RedHat' }}"
+    civa_admin_group: "{{ 'sudo' if ansible_facts.os_family == 'Debian' else 'wheel' }}"
+    civa_ssh_service_name: "{{ 'ssh' if ansible_facts.os_family == 'Debian' else 'sshd' }}"
+    civa_firewall_backend: "{{ 'ufw' if ansible_facts.os_family == 'Debian' else 'firewalld' }}"
+    civa_common_dependency_packages:
+      - git
+      - curl
+      - wget
+      - htop
+      - vim
+      - unzip
+      - jq
+      - net-tools
+    civa_firewall_ports:
+      - 22
+      - 80
+      - 443
+    civa_docker_arch_map:
+      x86_64: amd64
+      aarch64: arm64
+      armv7l: armhf
+    civa_docker_packages:
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+      - docker-buildx-plugin
+      - docker-compose-plugin
+    civa_caddy_debian_prerequisites:
+      - debian-keyring
+      - debian-archive-keyring
+      - apt-transport-https
+      - curl
+      - gnupg
+
+- name: Resolve Docker apt architecture
+  ansible.builtin.set_fact:
+    civa_docker_arch: "{{ civa_docker_arch_map.get(ansible_facts.architecture, 'amd64') }}"
+
+- name: Load Debian defaults
+  when: civa_is_debian
+  ansible.builtin.include_tasks: vendors/debian.yml
+
+- name: Load RedHat defaults
+  when: civa_is_rhel
+  ansible.builtin.include_tasks: vendors/redhat.yml
+
+- name: Ensure sudo is installed before user management
+  ansible.builtin.package:
+    name: sudo
+    state: present

@@ -1,0 +1,11 @@
+---
+- name: Set Debian-family defaults
+  ansible.builtin.set_fact:
+    civa_dependency_packages: "{{ civa_common_dependency_packages }}"
+    civa_security_packages:
+      - ufw
+      - fail2ban
+    civa_docker_prerequisites:
+      - ca-certificates
+      - curl
+      - gnupg

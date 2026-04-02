@@ -1,0 +1,33 @@
+---
+- name: Create the deployer user
+  ansible.builtin.user:
+    name: "{{ civa_deployer_user }}"
+    shell: /bin/bash
+    create_home: true
+    groups: "{{ civa_admin_group }}"
+    append: true
+
+- name: Allow passwordless sudo for the deployer user
+  ansible.builtin.copy:
+    dest: "/etc/sudoers.d/{{ civa_deployer_user }}"
+    content: "{{ civa_deployer_user }} ALL=(ALL) NOPASSWD:ALL\n"
+    owner: root
+    group: root
+    mode: '0440'
+    validate: 'visudo -cf %s'
+
+- name: Ensure the deployer SSH directory exists
+  ansible.builtin.file:
+    path: "/home/{{ civa_deployer_user }}/.ssh"
+    state: directory
+    owner: "{{ civa_deployer_user }}"
+    group: "{{ civa_deployer_user }}"
+    mode: '0700'
+
+- name: Install the operator public key for the deployer user
+  ansible.builtin.copy:
+    dest: "/home/{{ civa_deployer_user }}/.ssh/authorized_keys"
+    content: "{{ lookup('file', civa_public_key_path) | trim }}\n"
+    owner: "{{ civa_deployer_user }}"
+    group: "{{ civa_deployer_user }}"
+    mode: '0600'

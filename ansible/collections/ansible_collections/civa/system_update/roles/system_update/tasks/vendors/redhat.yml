@@ -1,0 +1,6 @@
+---
+- name: Update and upgrade RHEL-family packages
+  ansible.builtin.dnf:
+    name: '*'
+    state: latest
+    update_cache: true

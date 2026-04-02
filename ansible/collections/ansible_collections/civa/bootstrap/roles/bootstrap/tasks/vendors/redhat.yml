@@ -1,0 +1,12 @@
+---
+- name: Set RedHat-family defaults
+  ansible.builtin.set_fact:
+    civa_dependency_packages: "{{ civa_common_dependency_packages }}"
+    civa_security_packages:
+      - firewalld
+      - fail2ban
+    civa_docker_prerequisites:
+      - dnf-plugins-core
+      - ca-certificates
+      - curl
+    civa_docker_repo_os: "{{ 'rhel' if ansible_facts.distribution == 'RedHat' else 'centos' }}"
