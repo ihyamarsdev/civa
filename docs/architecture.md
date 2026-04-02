@@ -32,7 +32,6 @@ Artifacts include:
 
 - `inventory.yml`
 - `vars.yml`
-- `auth.yml` when password-based SSH is used
 - `plan.json` with structured execution metadata
 - `plan.md`
 - `ansible/main.yml`
@@ -64,3 +63,4 @@ These files make it easier to:
 - playbook support is explicitly gated by supported platform families
 - generated plans provide an operator-readable record before or after execution
 - structured plan metadata keeps `apply` replay independent from Markdown formatting
+- `civa setup` handles password-based key installation before planning, so generated plans now assume SSH key access
