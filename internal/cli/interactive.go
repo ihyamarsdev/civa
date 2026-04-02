@@ -113,9 +113,20 @@ func collectInteractiveInputs(cfg *config) error {
 	if err := resolveConfigComponents(cfg); err != nil {
 		return err
 	}
+	normalizeWebServerSelection(cfg)
 
-	if selectedComponentsInclude(cfg.Components, "traefik") {
-		printSection("Step 6/6 - Traefik")
+	if selectedComponentsInclude(cfg.Components, "web_server") && !cfg.Provided.WebServer {
+		printSection("Step 6/6 - Web Server")
+		value, err := promptWebServer(cfg.WebServer)
+		if err != nil {
+			return err
+		}
+		cfg.WebServer = value
+		normalizeWebServerSelection(cfg)
+	}
+
+	if cfg.WebServer == webServerTraefik {
+		printSection("Step 7/7 - Traefik")
 		if !cfg.Provided.TraefikEmail {
 			value, err := promptNonEmptyString("ACME email for Traefik", cfg.TraefikEmail)
 			if err != nil {
@@ -310,6 +321,23 @@ func promptChallengeType(defaultValue string) (string, error) {
 		Options(
 			huh.NewOption("http", "http"),
 			huh.NewOption("dns", "dns"),
+		).
+		Value(&value)
+	if err := field.Run(); err != nil {
+		return "", normalizePromptError(err)
+	}
+	return value, nil
+}
+
+func promptWebServer(defaultValue string) (string, error) {
+	value := defaultValue
+	field := huh.NewSelect[string]().
+		Title("Web server to prepare").
+		Options(
+			huh.NewOption("None", webServerNone),
+			huh.NewOption("Traefik", webServerTraefik),
+			huh.NewOption("Nginx", webServerNginx),
+			huh.NewOption("Caddy", webServerCaddy),
 		).
 		Value(&value)
 	if err := field.Run(); err != nil {

@@ -35,6 +35,33 @@ func TestIsValidSSHAuthMethod(t *testing.T) {
 	}
 }
 
+func TestNormalizeWebServerSelectionInfersAndAddsWebServerComponent(t *testing.T) {
+	cfg := &config{ComponentsInput: "nginx", Components: []string{"web_server"}}
+	normalizeWebServerSelection(cfg)
+	if cfg.WebServer != webServerNginx {
+		t.Fatalf("unexpected inferred web server: %s", cfg.WebServer)
+	}
+
+	cfg = &config{WebServer: webServerCaddy, Provided: providedFlags{WebServer: true}, Components: []string{"system_update"}}
+	normalizeWebServerSelection(cfg)
+	if !selectedComponentsInclude(cfg.Components, "web_server") {
+		t.Fatalf("expected explicit web server to add web_server component, got %v", cfg.Components)
+	}
+
+	cfg = &config{WebServer: webServerNone, Provided: providedFlags{WebServer: true}, Components: []string{"system_update", "web_server"}}
+	normalizeWebServerSelection(cfg)
+	if selectedComponentsInclude(cfg.Components, "web_server") {
+		t.Fatalf("expected web_server component to be removed for none, got %v", cfg.Components)
+	}
+}
+
+func TestSelectedAnsibleTagsUsesConcreteWebServerTag(t *testing.T) {
+	tags := selectedAnsibleTags(config{Components: []string{"system_update", "web_server"}, WebServer: webServerCaddy})
+	if strings.Join(tags, ",") != "system_update,caddy" {
+		t.Fatalf("unexpected ansible tags: %v", tags)
+	}
+}
+
 func TestParseServerSpecSupportsHostname(t *testing.T) {
 	server, err := parseServerSpec("203.0.113.10,web-01")
 	if err != nil {

@@ -16,6 +16,7 @@ import (
 )
 
 type plannedRunMetadata struct {
+	WebServer     string   `json:"webServer"`
 	SSHAuthMethod string   `json:"sshAuthMethod"`
 	SSHUser       string   `json:"sshUser"`
 	SSHPort       int      `json:"sshPort"`
@@ -206,6 +207,7 @@ func loadPlannedRunMetadata(planPath string) (*plannedRunMetadata, error) {
 
 func metadataToPlannedRun(metadata *plannedRunMetadata) (*config, *runtimeState, error) {
 	loadedCfg := defaultConfig(commandApply)
+	loadedCfg.WebServer = metadata.WebServer
 	loadedCfg.SSHAuthMethod = metadata.SSHAuthMethod
 	loadedCfg.SSHUser = metadata.SSHUser
 	loadedCfg.SSHPort = metadata.SSHPort
@@ -275,6 +277,18 @@ func loadPlannedRunFromMarkdown(planPath string) (*config, *runtimeState, error)
 
 		if section == "mode" {
 			switch {
+			case strings.HasPrefix(trimmed, "- Web server: "):
+				server := strings.TrimPrefix(trimmed, "- Web server: ")
+				switch strings.ToLower(server) {
+				case "traefik":
+					loadedCfg.WebServer = webServerTraefik
+				case "nginx":
+					loadedCfg.WebServer = webServerNginx
+				case "caddy":
+					loadedCfg.WebServer = webServerCaddy
+				default:
+					loadedCfg.WebServer = webServerNone
+				}
 			case strings.HasPrefix(trimmed, "- SSH auth method: "):
 				method := strings.TrimPrefix(trimmed, "- SSH auth method: ")
 				if strings.EqualFold(method, "password") {
@@ -508,6 +522,7 @@ func writeAuthFile(cfg *config, state *runtimeState) error {
 
 func writePlanMetadata(cfg *config, state *runtimeState) error {
 	metadata := plannedRunMetadata{
+		WebServer:     cfg.WebServer,
 		SSHAuthMethod: cfg.SSHAuthMethod,
 		SSHUser:       cfg.SSHUser,
 		SSHPort:       cfg.SSHPort,
@@ -539,6 +554,7 @@ func writeVarsFile(cfg *config, state *runtimeState) error {
 	content := fmt.Sprintf(
 		"civa_deployer_user: %q\n"+
 			"civa_public_key_path: %q\n"+
+			"civa_web_server: %q\n"+
 			"civa_timezone: %q\n"+
 			"civa_swap_size: %q\n"+
 			"civa_swap_file: %q\n"+
@@ -547,6 +563,7 @@ func writeVarsFile(cfg *config, state *runtimeState) error {
 			"civa_traefik_dns_provider: %q\n",
 		cfg.DeployUser,
 		cfg.SSHPublicKey,
+		cfg.WebServer,
 		cfg.Timezone,
 		cfg.SwapSize,
 		"/swapfile",
@@ -576,6 +593,7 @@ func writePlanFile(cfg *config, state *runtimeState) error {
 		"# civa Run Plan\n\n"+
 			"## Mode\n\n"+
 			"- Command: %s\n"+
+			"- Web server: %s\n"+
 			"- SSH auth method: %s\n"+
 			"- SSH user: %s\n"+
 			"- SSH port: %d\n"+
@@ -595,6 +613,7 @@ func writePlanFile(cfg *config, state *runtimeState) error {
 			"## Notes\n\n%s\n\n"+
 			"## Command\n\n```bash\n%s\n```\n",
 		cfg.Command,
+		webServerLabel(cfg.WebServer),
 		sshAuthMethodLabel(cfg.SSHAuthMethod),
 		cfg.SSHUser,
 		cfg.SSHPort,
@@ -634,8 +653,9 @@ func runAnsible(cfg *config, state *runtimeState) error {
 	if state.AuthFile != "" {
 		args = append(args, "-e", "@"+state.AuthFile)
 	}
-	if len(cfg.Components) > 0 {
-		args = append(args, "--tags", strings.Join(cfg.Components, ","))
+	tags := selectedAnsibleTags(*cfg)
+	if len(tags) > 0 {
+		args = append(args, "--tags", strings.Join(tags, ","))
 	}
 	if cfg.Command == commandPreview {
 		args = append(args, "--check", "--diff")
@@ -658,8 +678,9 @@ func buildAnsibleCommand(cfg *config, state *runtimeState) string {
 	if state.AuthFile != "" {
 		parts = append(parts, "-e", "@"+state.AuthFile)
 	}
-	if len(cfg.Components) > 0 {
-		parts = append(parts, "--tags", strings.Join(cfg.Components, ","))
+	tags := selectedAnsibleTags(*cfg)
+	if len(tags) > 0 {
+		parts = append(parts, "--tags", strings.Join(tags, ","))
 	}
 	if cfg.Command == commandPreview {
 		parts = append(parts, "--check", "--diff")
@@ -747,6 +768,7 @@ func logLine(message string) {
 func printConfigurationSummary(cfg *config) {
 	printSection("Run Summary")
 	fmt.Fprintf(os.Stderr, "Command: %s\n", cfg.Command)
+	fmt.Fprintf(os.Stderr, "Web server: %s\n", webServerLabel(cfg.WebServer))
 	fmt.Fprintf(os.Stderr, "SSH auth method: %s\n", sshAuthMethodLabel(cfg.SSHAuthMethod))
 	fmt.Fprintf(os.Stderr, "SSH user: %s\n", cfg.SSHUser)
 	fmt.Fprintf(os.Stderr, "SSH port: %d\n", cfg.SSHPort)
@@ -766,7 +788,7 @@ func printConfigurationSummary(cfg *config) {
 			fmt.Fprintf(os.Stderr, "- %s\n", server.Address)
 		}
 	}
-	if selectedComponentsInclude(cfg.Components, "traefik") {
+	if cfg.WebServer == webServerTraefik {
 		fmt.Fprintf(os.Stderr, "Traefik ACME email: %s\n", cfg.TraefikEmail)
 		fmt.Fprintf(os.Stderr, "Traefik challenge: %s\n", cfg.TraefikChallenge)
 		if cfg.TraefikChallenge == "dns" {

@@ -28,6 +28,7 @@ const (
 	defaultSSHUser            = "root"
 	defaultSSHPort            = 22
 	defaultSSHAuthMethod      = sshAuthMethodKey
+	defaultWebServer          = webServerNone
 	defaultSSHPrivateKey      = "~/.ssh/id_ed25519"
 	defaultSSHPublicKey       = "~/.ssh/id_ed25519.pub"
 	defaultDeployUser         = "deployer"
@@ -59,6 +60,7 @@ type providedFlags struct {
 	SSHPort            bool
 	SSHAuthMethod      bool
 	SSHPassword        bool
+	WebServer          bool
 	SSHPrivateKey      bool
 	SSHPublicKey       bool
 	DeployUser         bool
@@ -83,6 +85,7 @@ type config struct {
 	SSHPort            int
 	SSHAuthMethod      string
 	SSHPassword        string
+	WebServer          string
 	SSHPrivateKey      string
 	SSHPublicKey       string
 	DeployUser         string
@@ -121,7 +124,7 @@ var componentOptions = []componentOption{
 	{Number: 5, Value: "system_config", Label: "System Config", Description: "Apply timezone and swap configuration"},
 	{Number: 6, Value: "dependencies", Label: "Dependencies", Description: "Install git, curl, wget, htop, vim, unzip, jq, and net-tools"},
 	{Number: 7, Value: "containerization", Label: "Containerization", Description: "Install Docker Engine and Compose plugin"},
-	{Number: 8, Value: "traefik", Label: "Reverse Proxy (Traefik)", Description: "Prepare /opt/traefik, Docker network, compose, and ACME env"},
+	{Number: 8, Value: "web_server", Label: "Web Server", Description: "Prepare Traefik, Nginx, or Caddy"},
 }
 
 func Run(args []string) error {
@@ -179,6 +182,7 @@ func defaultConfig(command string) config {
 		SSHUser:            defaultSSHUser,
 		SSHPort:            defaultSSHPort,
 		SSHAuthMethod:      defaultSSHAuthMethod,
+		WebServer:          defaultWebServer,
 		SSHPrivateKey:      defaultSSHPrivateKey,
 		SSHPublicKey:       defaultSSHPublicKey,
 		DeployUser:         defaultDeployUser,
@@ -308,6 +312,17 @@ func parseArgs(args []string) (config, error) {
 		case strings.HasPrefix(arg, "--ssh-password="):
 			cfg.SSHPassword = strings.TrimPrefix(arg, "--ssh-password=")
 			cfg.Provided.SSHPassword = true
+		case arg == "--web-server":
+			value, nextIndex, err := nextArgValue(args, i)
+			if err != nil {
+				return config{}, err
+			}
+			cfg.WebServer = strings.ToLower(value)
+			cfg.Provided.WebServer = true
+			i = nextIndex
+		case strings.HasPrefix(arg, "--web-server="):
+			cfg.WebServer = strings.ToLower(strings.TrimPrefix(arg, "--web-server="))
+			cfg.Provided.WebServer = true
 		case arg == "--ssh-public-key":
 			value, nextIndex, err := nextArgValue(args, i)
 			if err != nil {
@@ -466,6 +481,7 @@ func runPlanFlow(cfg *config) error {
 	if err := resolveConfigComponents(cfg); err != nil {
 		return err
 	}
+	normalizeWebServerSelection(cfg)
 
 	if err := validateExecutionConfig(cfg); err != nil {
 		return err
@@ -757,12 +773,61 @@ func resolveConfigComponents(cfg *config) error {
 	return nil
 }
 
+func normalizeWebServerSelection(cfg *config) {
+	inferredWebServer := inferWebServerFromComponentsInput(cfg.ComponentsInput)
+	hasWebServer := selectedComponentsInclude(cfg.Components, "web_server")
+
+	if !cfg.Provided.WebServer {
+		switch {
+		case inferredWebServer != "":
+			cfg.WebServer = inferredWebServer
+		case hasWebServer:
+			cfg.WebServer = webServerTraefik
+		default:
+			cfg.WebServer = webServerNone
+		}
+	}
+
+	if cfg.WebServer != webServerNone && !hasWebServer {
+		cfg.Components = append(cfg.Components, "web_server")
+		hasWebServer = true
+	}
+
+	if cfg.WebServer == webServerNone && hasWebServer {
+		filtered := cfg.Components[:0]
+		for _, component := range cfg.Components {
+			if component != "web_server" {
+				filtered = append(filtered, component)
+			}
+		}
+		cfg.Components = filtered
+	}
+}
+
+func inferWebServerFromComponentsInput(raw string) string {
+	tokens := strings.Split(strings.NewReplacer(";", ",", " ", ",").Replace(strings.TrimSpace(raw)), ",")
+	for _, token := range tokens {
+		switch normalizeComponentToken(token) {
+		case webServerTraefik:
+			return webServerTraefik
+		case webServerNginx:
+			return webServerNginx
+		case webServerCaddy:
+			return webServerCaddy
+		}
+	}
+	return ""
+}
+
 func validateExecutionConfig(cfg *config) error {
 	if len(cfg.Servers) == 0 {
 		return fmt.Errorf("at least one --server entry is required")
 	}
 	if !isValidSSHAuthMethod(cfg.SSHAuthMethod) {
 		return fmt.Errorf("--ssh-auth-method must be key or password")
+	}
+	if !isValidWebServer(cfg.WebServer) {
+		return fmt.Errorf("--web-server must be none, traefik, nginx, or caddy")
 	}
 	if cfg.SSHPort < 1 || cfg.SSHPort > 65535 {
 		return fmt.Errorf("--ssh-port must be between 1 and 65535")
@@ -794,7 +859,10 @@ func validateExecutionConfig(cfg *config) error {
 			return fmt.Errorf("sshpass is required for password-based SSH in preview/apply")
 		}
 	}
-	if selectedComponentsInclude(cfg.Components, "traefik") {
+	if selectedComponentsInclude(cfg.Components, "web_server") && cfg.WebServer == webServerNone {
+		return fmt.Errorf("web server component requires --web-server to be set")
+	}
+	if cfg.WebServer == webServerTraefik {
 		if strings.TrimSpace(cfg.TraefikEmail) == "" {
 			return fmt.Errorf("Traefik requires a non-empty ACME email")
 		}
@@ -877,8 +945,8 @@ func componentTokenToValue(token string) (string, error) {
 		return "dependencies", nil
 	case "7", "containerization", "docker":
 		return "containerization", nil
-	case "8", "traefik", "reverse-proxy", "reverse-proxy-traefik":
-		return "traefik", nil
+	case "8", "web-server", "webserver", "reverse-proxy", "reverse-proxy-traefik", "traefik", "nginx", "caddy":
+		return "web_server", nil
 	default:
 		return "", fmt.Errorf("unknown component selection: %s", token)
 	}
@@ -901,6 +969,20 @@ func defaultComponentValues() []string {
 
 func selectedComponentsInclude(components []string, needle string) bool {
 	return slices.Contains(components, needle)
+}
+
+func selectedAnsibleTags(cfg config) []string {
+	tags := make([]string, 0, len(cfg.Components)+1)
+	for _, component := range cfg.Components {
+		if component == "web_server" {
+			continue
+		}
+		tags = append(tags, component)
+	}
+	if cfg.WebServer != webServerNone {
+		tags = append(tags, cfg.WebServer)
+	}
+	return tags
 }
 
 func expandHomePath(path string) (string, error) {
@@ -934,49 +1016,52 @@ func planMetadataPath(planPath string) string {
 }
 
 func printUsage() {
-	const usage = `Usage:
-  civa <command> [options]
+	lines := []string{
+		"Usage:",
+		"  civa <command> [options]",
+		"",
+		"Commands:",
+		"  apply <plan-name>          Execute an existing generated plan",
+		"  plan start                 Generate inventory, vars, and the execution plan only",
+		"  plan list                  List generated plans",
+		"  plan remove <plan-name>    Remove a generated plan and its artifacts",
+		"  preview <plan-name>        Show an existing generated plan",
+		"  doctor                     Check whether the local machine is ready to run civa",
+		"  uninstall                  Remove the currently installed civa binary",
+		"  version                    Show the civa version",
+		"  help                       Show this help message",
+		"",
+		"Options:",
+		"  --non-interactive          Disable prompts and rely on provided flags",
+		"  --yes, -y                  Skip confirmation prompts for destructive commands",
+		"  --ssh-user <name>          SSH user used to connect to every target server",
+		"  --ssh-port <port>          SSH port used to connect to every target server",
+		"  --ssh-auth-method <mode>   SSH authentication method: key or password",
+		"  --ssh-password <value>     SSH password used when --ssh-auth-method=password",
+		"  --web-server <name>        Web server to prepare: traefik, nginx, caddy, or none",
+		"  --ssh-private-key <path>   Local private key path used by Ansible for SSH",
+		"  --ssh-public-key <path>    Local public key path that will be installed for the deploy user",
+		"  --deployer-user <name>     User created and configured on the target servers",
+		"  --timezone <tz>            Timezone applied to the target servers",
+		"  --components <list>        Components to run: all or a comma list such as 1,2,4 or docker,traefik",
+		"  --plan-file <path>         Existing plan file override used by preview or apply",
+		"  --server <addr[,hostname]> Add a target server; hostname is optional and becomes the server hostname",
+		"  --traefik-email <email>    Email used by Let's Encrypt ACME",
+		"  --traefik-challenge <type> Traefik challenge type: http or dns",
+		"  --traefik-dns-provider <id> DNS provider name used when challenge type is dns",
+		"  --output <path>            Extra exported Markdown copy for plan start",
+		"  --help                     Show this help message",
+		"",
+		"Examples:",
+		"  civa plan start --non-interactive --server 203.0.113.10,web-01 --server 203.0.113.11,api-01 --components 1,2,3,4",
+		"  civa plan list",
+		"  civa preview 20260401-152334-210329559",
+		"  civa apply 20260401-152334-210329559 --yes",
+		"  civa plan remove 20260401-152334-210329559 --yes",
+		"  civa uninstall --yes",
+	}
 
-Commands:
-	  apply <plan-name>            Execute an existing generated plan
-	  plan start                   Generate inventory, vars, and the execution plan only
-	  plan list                    List generated plans
-	  plan remove <plan-name>      Remove a generated plan and its artifacts
-	  preview <plan-name>          Show an existing generated plan
-	  doctor                       Check whether the local machine is ready to run civa
-	  uninstall                    Remove the currently installed civa binary
-	  version                      Show the civa version
-  help                         Show this help message
-
-Options:
-	  --non-interactive            Disable prompts and rely on provided flags
-	  --yes, -y                    Skip confirmation prompts for destructive commands
-	  --ssh-user <name>            SSH user used to connect to every target server
-  --ssh-port <port>            SSH port used to connect to every target server
-  --ssh-auth-method <mode>     SSH authentication method: key or password
-  --ssh-password <value>       SSH password used when --ssh-auth-method=password
-  --ssh-private-key <path>     Local private key path used by Ansible for SSH
-  --ssh-public-key <path>      Local public key path that will be installed for the deploy user
-  --deployer-user <name>       User created and configured on the target servers
-  --timezone <tz>              Timezone applied to the target servers
-	  --components <list>          Components to run: all or a comma list such as 1,2,4 or docker,traefik
-	  --plan-file <path>           Existing plan file override used by preview or apply
-	  --server <addr[,hostname]>   Add a target server; hostname is optional and becomes the server hostname
-  --traefik-email <email>      Email used by Let's Encrypt ACME
-  --traefik-challenge <type>   Traefik challenge type: http or dns
-  --traefik-dns-provider <id>  DNS provider name used when challenge type is dns
-  --output <path>              Extra exported Markdown copy for plan start
-  --help                       Show this help message
-
-Examples:
-	  civa plan start --non-interactive --server 203.0.113.10,web-01 --server 203.0.113.11,api-01 --components 1,2,3,4
-	  civa plan list
-	  civa preview 20260401-152334-210329559
-	  civa apply 20260401-152334-210329559 --yes
-	  civa plan remove 20260401-152334-210329559 --yes
-	  civa uninstall --yes`
-
-	fmt.Println(usage)
+	fmt.Println(strings.Join(lines, "\n"))
 }
 
 func printCommandUsage(command string) {
@@ -1035,8 +1120,32 @@ func isValidSSHAuthMethod(value string) bool {
 	return value == sshAuthMethodKey || value == sshAuthMethodPassword
 }
 
+const (
+	webServerNone    = "none"
+	webServerTraefik = "traefik"
+	webServerNginx   = "nginx"
+	webServerCaddy   = "caddy"
+)
+
+func isValidWebServer(value string) bool {
+	return value == webServerNone || value == webServerTraefik || value == webServerNginx || value == webServerCaddy
+}
+
+func webServerLabel(value string) string {
+	switch value {
+	case webServerTraefik:
+		return "Traefik"
+	case webServerNginx:
+		return "Nginx"
+	case webServerCaddy:
+		return "Caddy"
+	default:
+		return "None"
+	}
+}
+
 func validateExistingPlanCommandFlags(cfg config) error {
-	if cfg.Provided.SSHUser || cfg.Provided.SSHPort || cfg.Provided.SSHAuthMethod || cfg.Provided.SSHPassword || cfg.Provided.SSHPrivateKey || cfg.Provided.SSHPublicKey || cfg.Provided.DeployUser || cfg.Provided.Timezone || cfg.Provided.Components || cfg.Provided.TraefikEmail || cfg.Provided.TraefikChallenge || cfg.Provided.TraefikDNSProvider || cfg.Provided.Servers {
+	if cfg.Provided.SSHUser || cfg.Provided.SSHPort || cfg.Provided.SSHAuthMethod || cfg.Provided.SSHPassword || cfg.Provided.WebServer || cfg.Provided.SSHPrivateKey || cfg.Provided.SSHPublicKey || cfg.Provided.DeployUser || cfg.Provided.Timezone || cfg.Provided.Components || cfg.Provided.TraefikEmail || cfg.Provided.TraefikChallenge || cfg.Provided.TraefikDNSProvider || cfg.Provided.Servers {
 		return fmt.Errorf("preview/apply only accept --plan-file, --yes, --non-interactive, and --help")
 	}
 	return nil
