@@ -24,6 +24,7 @@ When you run `civa plan start` without all required flags, `civa` asks for:
 - local SSH password or private key, plus the public key to install for the deployer user
 - deployer username
 - timezone
+- web server choice (`none`, `traefik`, `nginx`, or `caddy`) when the web server component is enabled
 - Traefik ACME email and challenge settings when Traefik is selected
 
 `civa preview <nama-plan>` shows an existing `plan.md`. `civa apply <nama-plan>` only executes an existing plan and asks for a final confirmation unless you pass `--yes`.
@@ -33,6 +34,8 @@ Generated plan names come from the run directory under `.civa/runs/`, for exampl
 Component selection in interactive mode uses a Charmbracelet Huh multi-select prompt: use the Up and Down arrow keys to move, press Space to select or clear the highlighted component, then press Enter to confirm.
 
 SSH access can use either `--ssh-auth-method key` with `--ssh-private-key`, or `--ssh-auth-method password` with `--ssh-password`. Password-based plans write a dedicated `auth.yml` file with mode `0600` inside the run directory, and later `apply` executions require `sshpass` on the local machine.
+
+Use `--web-server none|traefik|nginx|caddy` to choose which web server to prepare. The default web server remains `traefik` when the `web_server` component is selected and no explicit choice is provided.
 
 ## Common Examples
 
@@ -57,6 +60,7 @@ Generate a plan for two servers:
   --server 203.0.113.11,api-01 \
   --ssh-user root \
   --ssh-port 22 \
+  --web-server nginx \
   --ssh-private-key ~/.ssh/id_rsa \
   --ssh-public-key ~/.ssh/id_rsa.pub \
   --deployer-user deployer \

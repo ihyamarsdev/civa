@@ -11,7 +11,7 @@
 5. `system_config`
 6. `dependencies`
 7. `containerization`
-8. `traefik`
+8. `web_server`
 
 ## What Each Component Does
 
@@ -57,14 +57,15 @@
 - enable and start the Docker service
 - add the deployer user to the `docker` group
 
-### `traefik`
+### `web_server`
 
-- create `/opt/traefik`
-- create the external Docker network `proxy`
-- generate `.env` and `docker-compose.yml`
-- prepare Traefik v3 with ACME HTTP or DNS challenge settings
+- select one web server to prepare: `traefik`, `nginx`, or `caddy`
+- `traefik` creates `/opt/traefik`, the external Docker network `proxy`, and the Traefik files
+- `nginx` installs and starts the system nginx service
+- `caddy` installs and starts the system caddy service using the official repo flow
 
 ## Notes
 
 - Task execution order remains safe and deterministic even when only some components are selected.
 - `traefik` prepares files and Docker resources, but does not automatically run `docker compose up`.
+- only one web server choice is active per generated plan.
