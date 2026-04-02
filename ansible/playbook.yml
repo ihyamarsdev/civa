@@ -38,6 +38,12 @@
       - containerd.io
       - docker-buildx-plugin
       - docker-compose-plugin
+    civa_caddy_debian_prerequisites:
+      - debian-keyring
+      - debian-archive-keyring
+      - apt-transport-https
+      - curl
+      - gnupg
     civa_docker_arch_map:
       x86_64: amd64
       aarch64: arm64
@@ -442,3 +448,90 @@
             owner: root
             group: root
             mode: '0644'
+
+    - name: Web Server (Nginx)
+      tags:
+        - nginx
+      block:
+        - name: Install Nginx on Debian-family targets
+          when: civa_is_debian
+          ansible.builtin.apt:
+            name: nginx
+            state: present
+            update_cache: true
+
+        - name: Install Nginx on RHEL-family targets
+          when: civa_is_rhel
+          ansible.builtin.dnf:
+            name: nginx
+            state: present
+
+        - name: Ensure Nginx is enabled and running
+          ansible.builtin.service:
+            name: nginx
+            state: started
+            enabled: true
+
+    - name: Web Server (Caddy)
+      tags:
+        - caddy
+      block:
+        - name: Install Debian prerequisites for the Caddy repo
+          when: civa_is_debian
+          ansible.builtin.apt:
+            name: "{{ civa_caddy_debian_prerequisites }}"
+            state: present
+            update_cache: true
+
+        - name: Download the Caddy signing key
+          when: civa_is_debian
+          ansible.builtin.get_url:
+            url: https://dl.cloudsmith.io/public/caddy/stable/gpg.key
+            dest: /usr/share/keyrings/caddy-stable-archive-keyring.asc
+            mode: '0644'
+
+        - name: Convert the Caddy signing key to gpg format
+          when: civa_is_debian
+          ansible.builtin.command:
+            cmd: gpg --dearmor --yes -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg /usr/share/keyrings/caddy-stable-archive-keyring.asc
+          args:
+            creates: /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+
+        - name: Download the Caddy apt source list
+          when: civa_is_debian
+          ansible.builtin.get_url:
+            url: https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt
+            dest: /etc/apt/sources.list.d/caddy-stable.list
+            mode: '0644'
+
+        - name: Install Caddy on Debian-family targets
+          when: civa_is_debian
+          ansible.builtin.apt:
+            name: caddy
+            state: present
+            update_cache: true
+
+        - name: Install the COPR plugin on RHEL-family targets
+          when: civa_is_rhel
+          ansible.builtin.dnf:
+            name: dnf-plugins-core
+            state: present
+
+        - name: Enable the Caddy COPR repository
+          when: civa_is_rhel
+          ansible.builtin.command:
+            cmd: dnf -y copr enable @caddy/caddy
+          args:
+            creates: /etc/yum.repos.d/_copr:copr.fedorainfracloud.org:group_caddy:caddy.repo
+
+        - name: Install Caddy on RHEL-family targets
+          when: civa_is_rhel
+          ansible.builtin.dnf:
+            name: caddy
+            state: present
+
+        - name: Ensure Caddy is enabled and running
+          ansible.builtin.service:
+            name: caddy
+            state: started
+            enabled: true
