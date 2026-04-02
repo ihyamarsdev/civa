@@ -21,6 +21,7 @@ var completionCommands = []string{
 }
 
 var planSubcommands = []string{planActionStart, planActionList, planActionRemove, commandHelp}
+var doctorSubcommands = []string{doctorActionFix, commandHelp}
 var webServerValues = []string{webServerNone, webServerTraefik, webServerNginx, webServerCaddy}
 var traefikChallengeValues = []string{"http", "dns"}
 var componentCompletionValues = []string{"all", "1", "2", "3", "4", "5", "6", "7", "8", "system_update", "user_management", "ssh_hardening", "security_firewall", "system_config", "dependencies", "containerization", "web_server", "traefik", "nginx", "caddy"}
@@ -80,6 +81,8 @@ func completionSuggestions(words []string) []string {
 	switch words[0] {
 	case commandPlan:
 		return completePlan(words)
+	case commandDoctor:
+		return completeDoctor(words)
 	case commandPreview:
 		return completePreview(words)
 	case commandApply:
@@ -91,6 +94,19 @@ func completionSuggestions(words []string) []string {
 	default:
 		return completeCommonFlags(words, current)
 	}
+}
+
+func completeDoctor(words []string) []string {
+	current := words[len(words)-1]
+	if len(words) == 1 {
+		return doctorSubcommands
+	}
+
+	if len(words) == 2 && !contains(doctorSubcommands, words[1]) {
+		return filterByPrefix(doctorSubcommands, current)
+	}
+
+	return filterByPrefix([]string{"--help"}, current)
 }
 
 func completePlan(words []string) []string {

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -471,73 +472,27 @@ func materializeAnsibleAssets(ansibleDir string) error {
 }
 
 func runDoctor(cfg config) error {
-	failures := 0
-
 	printSection("civa Doctor")
 	fmt.Printf("Version: %s\n", version)
 
-	if _, err := exec.LookPath("ansible-playbook"); err == nil {
-		fmt.Println("[ok] ansible-playbook found")
-	} else {
-		fmt.Println("[fail] ansible-playbook not found")
-		failures++
-	}
+	requirements := doctorRequirements()
+	results := checkDoctorRequirements(requirements)
+	failures := printDoctorResults(results)
 
-	if pythonCommand, err := detectPythonCommand(); err == nil {
-		fmt.Printf("[ok] %s found\n", pythonCommand)
-	} else {
-		fmt.Println("[fail] python or python3 not found")
-		failures++
-	}
-
-	if ansible.HasEmbeddedPlaybook() {
-		fmt.Println("[ok] embedded Ansible playbook available")
-	} else {
-		fmt.Println("[fail] embedded Ansible playbook missing")
-		failures++
-	}
-
-	if ansible.HasEmbeddedTemplate("collections/ansible_collections/civa/traefik/roles/traefik/templates/traefik-compose.yml.j2") {
-		fmt.Println("[ok] embedded Traefik compose template available")
-	} else {
-		fmt.Println("[fail] embedded Traefik compose template missing")
-		failures++
-	}
-
-	if ansible.HasEmbeddedTemplate("collections/ansible_collections/civa/security_firewall/roles/security_firewall/templates/fail2ban-jail.local.j2") {
-		fmt.Println("[ok] embedded Fail2Ban template available")
-	} else {
-		fmt.Println("[fail] embedded Fail2Ban template missing")
-		failures++
-	}
-
-	if cfg.SSHAuthMethod == sshAuthMethodKey {
-		if _, err := os.Stat(cfg.SSHPrivateKey); err == nil {
-			fmt.Printf("[ok] SSH private key found: %s\n", cfg.SSHPrivateKey)
-		} else {
-			fmt.Printf("[fail] SSH private key not found: %s\n", cfg.SSHPrivateKey)
-			failures++
+	if cfg.DoctorAction == doctorActionFix {
+		if failures == 0 {
+			fmt.Println("Doctor fix summary: nothing to install, local machine is already ready")
+			return nil
 		}
-	} else {
-		if _, err := exec.LookPath("sshpass"); err == nil {
-			fmt.Println("[ok] sshpass found for password-based SSH")
-		} else {
-			fmt.Println("[fail] sshpass not found for password-based SSH")
-			failures++
-		}
-		if strings.TrimSpace(cfg.SSHPassword) != "" {
-			fmt.Println("[ok] SSH password provided")
-		} else {
-			fmt.Println("[fail] SSH password not provided")
-			failures++
-		}
-	}
 
-	if _, err := os.Stat(cfg.SSHPublicKey); err == nil {
-		fmt.Printf("[ok] SSH public key found: %s\n", cfg.SSHPublicKey)
-	} else {
-		fmt.Printf("[fail] SSH public key not found: %s\n", cfg.SSHPublicKey)
-		failures++
+		fmt.Println("Attempting to install or update missing dependencies...")
+		if err := runDoctorFix(requirements); err != nil {
+			return fmt.Errorf("doctor fix failed: %w", err)
+		}
+
+		fmt.Println("Re-checking dependencies after fix...")
+		results = checkDoctorRequirements(requirements)
+		failures = printDoctorResults(results)
 	}
 
 	if failures > 0 {
@@ -546,6 +501,217 @@ func runDoctor(cfg config) error {
 
 	fmt.Println("Doctor summary: local machine looks ready to run civa")
 	return nil
+}
+
+type doctorRequirement struct {
+	Name           string
+	Command        string
+	VersionArgs    []string
+	MinimumVersion string
+}
+
+type doctorResult struct {
+	Requirement doctorRequirement
+	Found       bool
+	Version     string
+	VersionOK   bool
+	Error       error
+}
+
+func doctorRequirements() []doctorRequirement {
+	return []doctorRequirement{
+		{Name: "go", Command: "go", VersionArgs: []string{"version"}, MinimumVersion: "1.26"},
+		{Name: "ansible-playbook", Command: "ansible-playbook", VersionArgs: []string{"--version"}, MinimumVersion: "2.20"},
+		{Name: "python", Command: "python3", VersionArgs: []string{"--version"}, MinimumVersion: "3.10"},
+	}
+}
+
+func checkDoctorRequirements(requirements []doctorRequirement) []doctorResult {
+	results := make([]doctorResult, 0, len(requirements))
+	for _, req := range requirements {
+		result := doctorResult{Requirement: req}
+
+		if _, err := exec.LookPath(req.Command); err != nil {
+			result.Error = err
+			results = append(results, result)
+			continue
+		}
+
+		output, err := runCommandOutput(req.Command, req.VersionArgs...)
+		if err != nil {
+			result.Error = err
+			results = append(results, result)
+			continue
+		}
+
+		version := extractFirstSemver(output)
+		if version == "" {
+			result.Error = fmt.Errorf("unable to parse version from %s output", req.Command)
+			results = append(results, result)
+			continue
+		}
+
+		result.Found = true
+		result.Version = version
+		result.VersionOK = versionAtLeast(version, req.MinimumVersion)
+		if !result.VersionOK {
+			result.Error = fmt.Errorf("version %s is lower than required %s", version, req.MinimumVersion)
+		}
+		results = append(results, result)
+	}
+
+	return results
+}
+
+func printDoctorResults(results []doctorResult) int {
+	failures := 0
+	for _, result := range results {
+		if result.Found && result.VersionOK {
+			fmt.Printf("[ok] %s %s found (required >= %s)\n", result.Requirement.Name, result.Version, result.Requirement.MinimumVersion)
+			continue
+		}
+
+		failures++
+		if result.Found {
+			fmt.Printf("[fail] %s %s is below required >= %s\n", result.Requirement.Name, result.Version, result.Requirement.MinimumVersion)
+		} else {
+			fmt.Printf("[fail] %s not found (required >= %s)\n", result.Requirement.Name, result.Requirement.MinimumVersion)
+		}
+	}
+
+	return failures
+}
+
+func runDoctorFix(requirements []doctorRequirement) error {
+	manager, err := detectPackageManager()
+	if err != nil {
+		return err
+	}
+
+	packages := doctorPackagesForManager(manager)
+	if len(packages) == 0 {
+		return fmt.Errorf("no packages configured for package manager %s", manager)
+	}
+
+	fmt.Printf("Using package manager: %s\n", manager)
+
+	switch manager {
+	case "apt-get":
+		if err := runInstallCommand("sudo", "apt-get", "update"); err != nil {
+			return err
+		}
+		args := append([]string{"apt-get", "install", "-y"}, packages...)
+		if err := runInstallCommand("sudo", args...); err != nil {
+			return err
+		}
+	case "dnf":
+		args := append([]string{"dnf", "install", "-y"}, packages...)
+		if err := runInstallCommand("sudo", args...); err != nil {
+			return err
+		}
+	case "yum":
+		args := append([]string{"yum", "install", "-y"}, packages...)
+		if err := runInstallCommand("sudo", args...); err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("unsupported package manager for doctor fix: %s", manager)
+	}
+
+	_ = requirements
+	return nil
+}
+
+func detectPackageManager() (string, error) {
+	for _, manager := range []string{"apt-get", "dnf", "yum"} {
+		if _, err := exec.LookPath(manager); err == nil {
+			return manager, nil
+		}
+	}
+
+	return "", fmt.Errorf("doctor fix supports apt-get, dnf, or yum only")
+}
+
+func doctorPackagesForManager(manager string) []string {
+	switch manager {
+	case "apt-get":
+		return []string{"golang-go", "ansible", "python3"}
+	case "dnf", "yum":
+		return []string{"golang", "ansible", "python3"}
+	default:
+		return nil
+	}
+}
+
+func runInstallCommand(name string, args ...string) error {
+	cmd := exec.Command(name, args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Stdin = os.Stdin
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed command %s %s: %w", name, strings.Join(args, " "), err)
+	}
+	return nil
+}
+
+func runCommandOutput(name string, args ...string) (string, error) {
+	cmd := exec.Command(name, args...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("failed command %s %s: %w", name, strings.Join(args, " "), err)
+	}
+	return string(output), nil
+}
+
+func extractFirstSemver(text string) string {
+	re := regexp.MustCompile(`\d+\.\d+(?:\.\d+)?`)
+	match := re.FindString(text)
+	return strings.TrimSpace(match)
+}
+
+func versionAtLeast(actual, minimum string) bool {
+	actualParts := parseVersionParts(actual)
+	minimumParts := parseVersionParts(minimum)
+	maxParts := len(actualParts)
+	if len(minimumParts) > maxParts {
+		maxParts = len(minimumParts)
+	}
+
+	for i := 0; i < maxParts; i++ {
+		actualPart := 0
+		if i < len(actualParts) {
+			actualPart = actualParts[i]
+		}
+
+		minimumPart := 0
+		if i < len(minimumParts) {
+			minimumPart = minimumParts[i]
+		}
+
+		if actualPart > minimumPart {
+			return true
+		}
+		if actualPart < minimumPart {
+			return false
+		}
+	}
+
+	return true
+}
+
+func parseVersionParts(version string) []int {
+	trimmed := strings.TrimSpace(version)
+	segments := strings.Split(trimmed, ".")
+	parts := make([]int, 0, len(segments))
+	for _, segment := range segments {
+		value, err := strconv.Atoi(segment)
+		if err != nil {
+			parts = append(parts, 0)
+			continue
+		}
+		parts = append(parts, value)
+	}
+	return parts
 }
 
 func writeInventory(cfg *config, state *runtimeState) error {

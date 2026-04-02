@@ -48,6 +48,8 @@ const (
 	planActionStart           = "start"
 	planActionList            = "list"
 	planActionRemove          = "remove"
+	doctorActionCheck         = "check"
+	doctorActionFix           = "fix"
 )
 
 type serverSpec struct {
@@ -85,6 +87,7 @@ type providedFlags struct {
 type config struct {
 	Command            string
 	PlanAction         string
+	DoctorAction       string
 	PlanName           string
 	AssumeYes          bool
 	NonInteractive     bool
@@ -166,9 +169,6 @@ func Run(args []string) error {
 		fmt.Printf("civa %s\n", version)
 		return nil
 	case commandDoctor:
-		if err := finalizePaths(&cfg); err != nil {
-			return err
-		}
 		return runDoctor(cfg)
 	case commandSetup:
 		return runSetupFlow(&cfg)
@@ -198,6 +198,7 @@ func defaultConfig(command string) config {
 	return config{
 		Command:            command,
 		PlanAction:         planActionStart,
+		DoctorAction:       doctorActionCheck,
 		SSHUser:            defaultSSHUser,
 		SSHPort:            defaultSSHPort,
 		SSHAuthMethod:      defaultSSHAuthMethod,
@@ -223,7 +224,7 @@ func shouldShowCommandHelp(args []string) bool {
 
 	if len(args) == 2 && (args[1] == "help" || args[1] == "--help" || args[1] == "-h") {
 		switch args[0] {
-		case commandPlan, commandPreview, commandApply, commandCompletion, commandSetup:
+		case commandPlan, commandPreview, commandApply, commandCompletion, commandSetup, commandDoctor:
 			return true
 		}
 	}
@@ -252,6 +253,21 @@ func parseArgs(args []string) (config, error) {
 				startIndex = 2
 			default:
 				return config{}, fmt.Errorf("unknown plan subcommand: %s", args[1])
+			}
+		}
+	}
+
+	if command == commandDoctor {
+		if len(args) > 1 && !strings.HasPrefix(args[1], "-") {
+			switch args[1] {
+			case doctorActionFix:
+				cfg.DoctorAction = doctorActionFix
+				startIndex = 2
+			case doctorActionCheck:
+				cfg.DoctorAction = doctorActionCheck
+				startIndex = 2
+			default:
+				return config{}, fmt.Errorf("unknown doctor subcommand: %s", args[1])
 			}
 		}
 	}
@@ -1158,7 +1174,7 @@ func printUsage() {
 		"  preview <plan-name>        Show an existing generated plan",
 		"  setup                      Install a public SSH key on a server with ssh-copy-id",
 		"  completion <shell>         Print shell completion for bash, zsh, or fish",
-		"  doctor                     Check whether the local machine is ready to run civa",
+		"  doctor [fix]               Check or install local dependencies for civa",
 		"  uninstall                  Remove the currently installed civa binary",
 		"  version                    Show the civa version",
 		"  help                       Show this help message",
@@ -1188,6 +1204,8 @@ func printUsage() {
 		"  civa plan list",
 		"  civa preview 20260401-152334-210329559",
 		"  civa setup --server 203.0.113.10 --ssh-user root --ssh-password 'secret' --ssh-public-key ~/.ssh/id_ed25519.pub",
+		"  civa doctor",
+		"  civa doctor fix",
 		"  civa completion bash",
 		"  civa apply 20260401-152334-210329559 --yes",
 		"  civa plan remove 20260401-152334-210329559 --yes",
@@ -1243,6 +1261,22 @@ Examples:
   civa completion bash
   civa completion zsh
   civa completion fish`)
+	case commandDoctor:
+		fmt.Println(`Usage:
+  civa doctor
+  civa doctor fix
+
+Subcommands:
+  fix                          Install or update required local dependencies
+
+Required minimum versions:
+  go >= 1.26
+  ansible-playbook >= 2.20
+  python3 (or python) >= 3.10
+
+Examples:
+  civa doctor
+  civa doctor fix`)
 	case commandSetup:
 		fmt.Println(`Usage:
   civa setup [options]

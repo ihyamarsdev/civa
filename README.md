@@ -59,7 +59,8 @@ Then generate a key-based plan:
 Check local prerequisites:
 
 ```bash
-./bin/civa doctor --ssh-private-key ~/.ssh/id_rsa --ssh-public-key ~/.ssh/id_rsa.pub
+./bin/civa doctor
+./bin/civa doctor fix
 ```
 
 ## Commands
@@ -70,7 +71,8 @@ Check local prerequisites:
 - `civa plan remove <nama-plan>` — delete a generated plan and its artifacts
 - `civa preview <nama-plan>` — display an existing generated `plan.md`
 - `civa apply <nama-plan>` — execute the artifacts referenced by an existing generated plan
-- `civa doctor` — validate the local machine and required files
+- `civa doctor` — validate local Go, Ansible, and Python requirements
+- `civa doctor fix` — install or update missing local doctor dependencies
 - `civa uninstall` — remove the installed binary
 - `civa version` — print the current version
 - `civa help` — show usage information

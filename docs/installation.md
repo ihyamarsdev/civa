@@ -93,7 +93,8 @@ Both scripts honor `INSTALL_DIR`, so you can install or remove `civa` from a cus
 civa help
 civa version
 civa setup --server 203.0.113.10 --ssh-user root --ssh-password 'super-secret-password' --ssh-public-key ~/.ssh/id_rsa.pub
-civa doctor --ssh-private-key ~/.ssh/id_rsa --ssh-public-key ~/.ssh/id_rsa.pub
+civa doctor
+civa doctor fix
 ```
 
 When `--ssh-password` is provided, `civa setup` runs `sshpass -e ssh-copy-id`. Without `--ssh-password`, it runs `ssh-copy-id` directly and lets that tool prompt for the password in your terminal. In both cases it uses `StrictHostKeyChecking=accept-new` on the first connection for convenience, which is still a trust-on-first-use trade-off compared with pre-verifying the host key yourself.

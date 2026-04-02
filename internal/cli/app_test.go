@@ -259,6 +259,11 @@ func TestCompletionSuggestionsTopLevelAndValues(t *testing.T) {
 	if len(webServerValues) != 1 || webServerValues[0] != webServerCaddy {
 		t.Fatalf("unexpected web server value suggestions: %v", webServerValues)
 	}
+
+	doctorSuggestions := completionSuggestions([]string{"doctor", "f"})
+	if len(doctorSuggestions) != 1 || doctorSuggestions[0] != doctorActionFix {
+		t.Fatalf("unexpected doctor suggestions: %v", doctorSuggestions)
+	}
 }
 
 func TestCompletionSuggestionsIncludeGeneratedPlanNames(t *testing.T) {
@@ -335,6 +340,64 @@ func TestParseArgsSupportsPlanSubcommandsAndPlanNames(t *testing.T) {
 	}
 	if setupCfg.Command != commandSetup || len(setupCfg.Servers) != 1 {
 		t.Fatalf("unexpected setup config: %#v", setupCfg)
+	}
+
+	doctorCfg, err := parseArgs([]string{"doctor"})
+	if err != nil {
+		t.Fatalf("parseArgs returned error for doctor: %v", err)
+	}
+	if doctorCfg.DoctorAction != doctorActionCheck {
+		t.Fatalf("unexpected doctor default action: %s", doctorCfg.DoctorAction)
+	}
+
+	doctorFixCfg, err := parseArgs([]string{"doctor", "fix"})
+	if err != nil {
+		t.Fatalf("parseArgs returned error for doctor fix: %v", err)
+	}
+	if doctorFixCfg.DoctorAction != doctorActionFix {
+		t.Fatalf("unexpected doctor fix action: %s", doctorFixCfg.DoctorAction)
+	}
+
+	if _, err := parseArgs([]string{"doctor", "repair"}); err == nil {
+		t.Fatal("expected unknown doctor subcommand error")
+	}
+}
+
+func TestDoctorVersionParsingAndComparison(t *testing.T) {
+	if got := extractFirstSemver("go version go1.26.1 linux/amd64"); got != "1.26.1" {
+		t.Fatalf("unexpected go semver extraction: %s", got)
+	}
+	if got := extractFirstSemver("ansible-playbook [core 2.20.0]\n"); got != "2.20.0" {
+		t.Fatalf("unexpected ansible semver extraction: %s", got)
+	}
+	if got := extractFirstSemver("Python 3.12.3"); got != "3.12.3" {
+		t.Fatalf("unexpected python semver extraction: %s", got)
+	}
+
+	if !versionAtLeast("1.26.0", "1.26") {
+		t.Fatal("expected 1.26.0 >= 1.26")
+	}
+	if !versionAtLeast("2.20.1", "2.20") {
+		t.Fatal("expected 2.20.1 >= 2.20")
+	}
+	if versionAtLeast("3.9.18", "3.10") {
+		t.Fatal("expected 3.9.18 < 3.10")
+	}
+}
+
+func TestDoctorPackagesForManager(t *testing.T) {
+	aptPackages := strings.Join(doctorPackagesForManager("apt-get"), ",")
+	if aptPackages != "golang-go,ansible,python3" {
+		t.Fatalf("unexpected apt packages: %s", aptPackages)
+	}
+
+	dnfPackages := strings.Join(doctorPackagesForManager("dnf"), ",")
+	if dnfPackages != "golang,ansible,python3" {
+		t.Fatalf("unexpected dnf packages: %s", dnfPackages)
+	}
+
+	if len(doctorPackagesForManager("apk")) != 0 {
+		t.Fatal("expected unsupported package manager to return no packages")
 	}
 }
 

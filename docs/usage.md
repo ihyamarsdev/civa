@@ -10,6 +10,7 @@
 - `civa setup`
 - `civa completion <shell>`
 - `civa doctor`
+- `civa doctor fix`
 - `civa uninstall`
 - `civa version`
 - `civa help`
