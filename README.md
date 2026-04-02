@@ -1,6 +1,6 @@
-# civa
+# CIVA
 
-`civa` is an interactive Ansible-based CLI for bootstrapping one or more servers with a consistent baseline: system updates, deploy user setup, SSH hardening, firewalling, Docker, and Traefik preparation.
+`civa` stands for `CLI Interactive VPS Automation`. It is an interactive VPS automation CLI built on top of Ansible and helps operators bootstrap one or more servers with a consistent baseline: system updates, deploy user setup, SSH hardening, firewalling, Docker, and web-server preparation.
 
 ## Table of Contents
 
@@ -13,12 +13,12 @@
 
 ## Overview
 
-`civa` is a Go-native CLI that interviews the operator for server targets and selected components, stages the embedded Ansible assets for each run, generates inventory and variables, writes a reusable Markdown execution plan, and then executes that recorded plan when requested.
+`civa` is a Go-native implementation of `CLI Interactive VPS Automation`: it interviews the operator for server targets and selected components, stages the embedded Ansible assets for each run, generates inventory and variables, writes a reusable Markdown execution plan, and then executes that recorded plan when requested.
 
 ## Current Support
 
 - Target families: Debian/Ubuntu and RHEL-compatible distributions such as RHEL, Rocky, AlmaLinux, CentOS, and Oracle Linux
-- Commands: `plan start|list|remove`, `preview <nama-plan>`, `apply <nama-plan>`, `doctor`, `uninstall`, `version`, `help`
+- Commands: `plan start|list|remove`, `preview <nama-plan>`, `apply <nama-plan>`, `completion <shell>`, `doctor`, `uninstall`, `version`, `help`
 - Runtime artifacts: `.civa/runs/<timestamp>/inventory.yml`, `vars.yml`, `plan.md`, and staged embedded Ansible assets
 
 ## Quick Start
@@ -55,6 +55,8 @@ Check local prerequisites:
 - `civa uninstall` — remove the installed binary
 - `civa version` — print the current version
 - `civa help` — show usage information
+
+Shell completion scripts are available via `civa completion bash|zsh|fish`.
 
 Running `civa` without arguments shows help.
 

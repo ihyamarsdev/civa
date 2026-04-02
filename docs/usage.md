@@ -7,6 +7,7 @@
 - `civa plan remove <nama-plan>`
 - `civa preview <nama-plan>`
 - `civa apply <nama-plan>`
+- `civa completion <shell>`
 - `civa doctor`
 - `civa uninstall`
 - `civa version`
@@ -106,4 +107,23 @@ Remove a generated plan:
 
 ```bash
 ./bin/civa plan remove 20260401-152334-210329559 --yes
+```
+
+Print a completion script for Bash:
+
+```bash
+./bin/civa completion bash
+```
+
+Activate shell completion examples:
+
+```bash
+# Bash
+./bin/civa completion bash > ~/.local/share/bash-completion/completions/civa
+
+# Zsh
+./bin/civa completion zsh > ~/.zfunc/_civa
+
+# Fish
+./bin/civa completion fish > ~/.config/fish/completions/civa.fish
 ```
