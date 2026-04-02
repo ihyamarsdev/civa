@@ -1,0 +1,16 @@
+---
+- name: Install the COPR plugin on RHEL-family targets
+  ansible.builtin.dnf:
+    name: dnf-plugins-core
+    state: present
+
+- name: Enable the Caddy COPR repository
+  ansible.builtin.command:
+    cmd: dnf -y copr enable @caddy/caddy
+  args:
+    creates: /etc/yum.repos.d/_copr:copr.fedorainfracloud.org:group_caddy:caddy.repo
+
+- name: Install Caddy on RHEL-family targets
+  ansible.builtin.dnf:
+    name: caddy
+    state: present

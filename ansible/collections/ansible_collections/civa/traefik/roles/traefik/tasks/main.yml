@@ -1,0 +1,46 @@
+---
+- name: Ensure the Traefik base directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  loop:
+    - /opt/traefik
+    - /opt/traefik/letsencrypt
+
+- name: Ensure the ACME storage file exists
+  ansible.builtin.copy:
+    dest: /opt/traefik/letsencrypt/acme.json
+    content: ''
+    owner: root
+    group: root
+    mode: '0600'
+    force: false
+
+- name: Check whether the proxy network already exists
+  ansible.builtin.command: docker network inspect proxy
+  register: civa_proxy_network
+  changed_when: false
+  failed_when: false
+
+- name: Create the proxy Docker network when missing
+  ansible.builtin.command: docker network create proxy
+  when: civa_proxy_network.rc != 0
+
+- name: Write the Traefik environment file
+  ansible.builtin.template:
+    src: traefik.env.j2
+    dest: /opt/traefik/.env
+    owner: root
+    group: root
+    mode: '0600'
+
+- name: Write the Traefik docker-compose file
+  ansible.builtin.template:
+    src: traefik-compose.yml.j2
+    dest: /opt/traefik/docker-compose.yml
+    owner: root
+    group: root
+    mode: '0644'

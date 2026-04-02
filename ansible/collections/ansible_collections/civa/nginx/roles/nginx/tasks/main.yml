@@ -1,0 +1,19 @@
+---
+- name: Install Nginx on Debian-family targets
+  when: civa_is_debian
+  ansible.builtin.apt:
+    name: nginx
+    state: present
+    update_cache: true
+
+- name: Install Nginx on RHEL-family targets
+  when: civa_is_rhel
+  ansible.builtin.dnf:
+    name: nginx
+    state: present
+
+- name: Ensure Nginx is enabled and running
+  ansible.builtin.service:
+    name: nginx
+    state: started
+    enabled: true

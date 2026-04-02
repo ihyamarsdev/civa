@@ -1,0 +1,30 @@
+---
+- name: Install Debian prerequisites for the Caddy repo
+  ansible.builtin.apt:
+    name: "{{ civa_caddy_debian_prerequisites }}"
+    state: present
+    update_cache: true
+
+- name: Download the Caddy signing key
+  ansible.builtin.get_url:
+    url: https://dl.cloudsmith.io/public/caddy/stable/gpg.key
+    dest: /usr/share/keyrings/caddy-stable-archive-keyring.asc
+    mode: '0644'
+
+- name: Convert the Caddy signing key to gpg format
+  ansible.builtin.command:
+    cmd: gpg --dearmor --yes -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg /usr/share/keyrings/caddy-stable-archive-keyring.asc
+  args:
+    creates: /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+
+- name: Download the Caddy apt source list
+  ansible.builtin.get_url:
+    url: https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt
+    dest: /etc/apt/sources.list.d/caddy-stable.list
+    mode: '0644'
+
+- name: Install Caddy on Debian-family targets
+  ansible.builtin.apt:
+    name: caddy
+    state: present
+    update_cache: true

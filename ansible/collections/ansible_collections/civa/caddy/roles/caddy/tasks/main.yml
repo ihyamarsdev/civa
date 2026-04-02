@@ -1,0 +1,14 @@
+---
+- name: Apply Debian Caddy tasks
+  when: civa_is_debian
+  ansible.builtin.include_tasks: vendors/debian.yml
+
+- name: Apply RedHat Caddy tasks
+  when: civa_is_rhel
+  ansible.builtin.include_tasks: vendors/redhat.yml
+
+- name: Ensure Caddy is enabled and running
+  ansible.builtin.service:
+    name: caddy
+    state: started
+    enabled: true
