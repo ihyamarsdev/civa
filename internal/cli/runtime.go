@@ -16,9 +16,9 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 
-	"github.com/schollz/progressbar/v3"
+	"github.com/charmbracelet/bubbles/progress"
+	tea "github.com/charmbracelet/bubbletea"
 	"golang.org/x/term"
 )
 
@@ -965,7 +965,7 @@ func runAnsible(cfg *config, state *runtimeState) error {
 
 	cmd := exec.Command("ansible-playbook", args...)
 	cmd.Stdin = os.Stdin
-	cmd.Env = append(os.Environ(), "ANSIBLE_COLLECTIONS_PATH="+filepath.Join(filepath.Dir(state.PlaybookFile), "collections"))
+	cmd.Env = append(os.Environ(), "ANSIBLE_ROLES_PATH="+filepath.Join(filepath.Dir(state.PlaybookFile), "roles"))
 
 	progressController := newAnsibleProgressBarController(*cfg)
 	if progressController == nil {
@@ -997,11 +997,11 @@ func runAnsible(cfg *config, state *runtimeState) error {
 
 	go func() {
 		defer wg.Done()
-		errCh <- captureCommandOutput(stdoutPipe, stdoutBuffer)
+		errCh <- captureCommandOutput(stdoutPipe, stdoutBuffer, progressController.ObserveOutputLine)
 	}()
 	go func() {
 		defer wg.Done()
-		errCh <- captureCommandOutput(stderrPipe, stderrBuffer)
+		errCh <- captureCommandOutput(stderrPipe, stderrBuffer, progressController.ObserveOutputLine)
 	}()
 
 	waitErr := cmd.Wait()
@@ -1023,13 +1023,15 @@ func runAnsible(cfg *config, state *runtimeState) error {
 }
 
 type ansibleProgressBarController struct {
-	bar      *progressbar.ProgressBar
-	stopCh   chan struct{}
-	doneCh   chan struct{}
-	stopped  sync.Once
-	success  bool
-	ticker   time.Duration
-	maxTicks int
+	program         *tea.Program
+	doneCh          chan struct{}
+	stopped         sync.Once
+	desc            string
+	mu              sync.Mutex
+	discoveredTasks int
+	completedTasks  int
+	activeTask      bool
+	currentTask     string
 }
 
 func newAnsibleProgressBarController(cfg config) *ansibleProgressBarController {
@@ -1037,24 +1039,9 @@ func newAnsibleProgressBarController(cfg config) *ansibleProgressBarController {
 		return nil
 	}
 
-	bar := progressbar.NewOptions(
-		100,
-		progressbar.OptionSetWriter(os.Stderr),
-		progressbar.OptionSetDescription(ansibleProgressDescription(cfg)),
-		progressbar.OptionSetWidth(24),
-		progressbar.OptionSetPredictTime(false),
-		progressbar.OptionSetElapsedTime(false),
-		progressbar.OptionSetRenderBlankState(true),
-		progressbar.OptionClearOnFinish(),
-		progressbar.OptionShowCount(),
-	)
-
 	return &ansibleProgressBarController{
-		bar:      bar,
-		stopCh:   make(chan struct{}),
-		doneCh:   make(chan struct{}),
-		ticker:   120 * time.Millisecond,
-		maxTicks: 100,
+		doneCh: make(chan struct{}),
+		desc:   ansibleProgressDescription(cfg),
 	}
 }
 
@@ -1063,27 +1050,13 @@ func (c *ansibleProgressBarController) Start() {
 		return
 	}
 
-	if err := c.bar.RenderBlank(); err != nil {
-		return
-	}
+	model := newAnsibleProgressModel(c.desc)
+	program := tea.NewProgram(model, tea.WithOutput(os.Stderr), tea.WithInput(nil))
+	c.program = program
 
 	go func() {
-		ticker := time.NewTicker(c.ticker)
-		defer ticker.Stop()
 		defer close(c.doneCh)
-
-		for {
-			select {
-			case <-ticker.C:
-				if c.bar.IsFinished() {
-					c.bar.Reset()
-					_ = c.bar.RenderBlank()
-				}
-				_ = c.bar.Add(1)
-			case <-c.stopCh:
-				return
-			}
-		}
+		_, _ = program.Run()
 	}()
 }
 
@@ -1092,22 +1065,236 @@ func (c *ansibleProgressBarController) Stop(success bool) {
 		return
 	}
 
-	c.success = success
 	c.stopped.Do(func() {
-		close(c.stopCh)
-		<-c.doneCh
 		if success {
-			_ = c.bar.Finish()
-		} else {
-			_ = c.bar.Clear()
+			c.finalizeSuccessProgress()
 		}
-		_, _ = fmt.Fprintln(os.Stderr)
+
+		if c.program != nil {
+			c.program.Send(ansibleProgressStopMsg{success: success})
+		}
+		<-c.doneCh
+		if !success {
+			_, _ = fmt.Fprint(os.Stderr, "\r\033[K\n")
+		}
 	})
 }
 
-func captureCommandOutput(source io.Reader, target io.Writer) error {
-	_, err := io.Copy(target, source)
-	return err
+func (c *ansibleProgressBarController) ObserveOutputLine(line string) {
+	if c == nil {
+		return
+	}
+
+	normalized := normalizeAnsibleOutputLine(line)
+	if normalized == "" {
+		return
+	}
+
+	if taskName, ok := parseAnsibleTaskHeader(normalized); ok {
+		c.recordTaskStart(taskName)
+		return
+	}
+
+	if isAnsiblePlayRecapHeader(normalized) {
+		c.recordPlayRecap()
+	}
+}
+
+func (c *ansibleProgressBarController) recordTaskStart(taskName string) {
+	c.mu.Lock()
+	if c.activeTask {
+		c.completedTasks++
+	}
+	c.discoveredTasks++
+	c.activeTask = true
+	c.currentTask = taskName
+	completed := c.completedTasks
+	total := c.discoveredTasks
+	c.mu.Unlock()
+
+	c.sendProgressUpdate(completed, total, taskName)
+}
+
+func (c *ansibleProgressBarController) recordPlayRecap() {
+	c.mu.Lock()
+	if c.activeTask {
+		c.completedTasks++
+		c.activeTask = false
+	}
+	if c.discoveredTasks == 0 {
+		c.discoveredTasks = 1
+	}
+	if c.completedTasks < c.discoveredTasks {
+		c.completedTasks = c.discoveredTasks
+	}
+	completed := c.completedTasks
+	total := c.discoveredTasks
+	taskName := c.currentTask
+	c.mu.Unlock()
+
+	c.sendProgressUpdate(completed, total, taskName)
+}
+
+func (c *ansibleProgressBarController) finalizeSuccessProgress() {
+	c.mu.Lock()
+	if c.activeTask {
+		c.completedTasks++
+		c.activeTask = false
+	}
+	if c.discoveredTasks == 0 {
+		c.discoveredTasks = 1
+	}
+	if c.completedTasks < c.discoveredTasks {
+		c.completedTasks = c.discoveredTasks
+	}
+	completed := c.completedTasks
+	total := c.discoveredTasks
+	taskName := c.currentTask
+	c.mu.Unlock()
+
+	c.sendProgressUpdate(completed, total, taskName)
+}
+
+func (c *ansibleProgressBarController) sendProgressUpdate(completed, total int, taskName string) {
+	if c.program == nil {
+		return
+	}
+
+	c.program.Send(ansibleProgressUpdateMsg{
+		completed: completed,
+		total:     total,
+		taskName:  taskName,
+	})
+}
+
+var (
+	ansiEscapePattern     = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
+	ansibleTaskHeaderLine = regexp.MustCompile(`^TASK \[(.+)\] \*+$`)
+	ansiblePlayRecapLine  = regexp.MustCompile(`^PLAY RECAP \*+$`)
+)
+
+func normalizeAnsibleOutputLine(line string) string {
+	withoutANSI := ansiEscapePattern.ReplaceAllString(line, "")
+	withoutCarriage := strings.ReplaceAll(withoutANSI, "\r", "")
+	return strings.TrimSpace(withoutCarriage)
+}
+
+func parseAnsibleTaskHeader(line string) (string, bool) {
+	matches := ansibleTaskHeaderLine.FindStringSubmatch(line)
+	if len(matches) != 2 {
+		return "", false
+	}
+
+	task := strings.TrimSpace(matches[1])
+	if task == "" {
+		return "", false
+	}
+
+	return task, true
+}
+
+func isAnsiblePlayRecapHeader(line string) bool {
+	return ansiblePlayRecapLine.MatchString(line)
+}
+
+type ansibleProgressUpdateMsg struct {
+	completed int
+	total     int
+	taskName  string
+}
+
+type ansibleProgressStopMsg struct {
+	success bool
+}
+
+type ansibleProgressModel struct {
+	bar       progress.Model
+	desc      string
+	completed int
+	total     int
+	taskName  string
+	done      bool
+	success   bool
+}
+
+func newAnsibleProgressModel(desc string) ansibleProgressModel {
+	bar := progress.New(progress.WithWidth(24))
+
+	return ansibleProgressModel{
+		bar:       bar,
+		desc:      desc,
+		completed: 0,
+		total:     1,
+	}
+}
+
+func (m ansibleProgressModel) Init() tea.Cmd {
+	return nil
+}
+
+func (m ansibleProgressModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case ansibleProgressUpdateMsg:
+		if m.done {
+			return m, nil
+		}
+		m.completed = max(msg.completed, 0)
+		m.total = max(msg.total, 1)
+		m.taskName = strings.TrimSpace(msg.taskName)
+		return m, nil
+	case ansibleProgressStopMsg:
+		m.done = true
+		m.success = msg.success
+		return m, tea.Quit
+	}
+
+	return m, nil
+}
+
+func (m ansibleProgressModel) View() string {
+	if m.done {
+		if m.success {
+			return fmt.Sprintf("%s %s\n", m.desc, m.bar.ViewAs(1))
+		}
+		return ""
+	}
+
+	percentage := float64(m.completed) / float64(m.total)
+	if percentage < 0 {
+		percentage = 0
+	}
+	if percentage > 1 {
+		percentage = 1
+	}
+
+	taskSuffix := ""
+	if m.taskName != "" {
+		taskSuffix = " • " + m.taskName
+	}
+
+	return fmt.Sprintf("%s %s%s", m.desc, m.bar.ViewAs(percentage), taskSuffix)
+}
+
+func captureCommandOutput(source io.Reader, target io.Writer, onLine func(string)) error {
+	scanner := bufio.NewScanner(source)
+	buffer := make([]byte, 0, 64*1024)
+	scanner.Buffer(buffer, 1024*1024)
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if _, err := target.Write([]byte(line + "\n")); err != nil {
+			return err
+		}
+		if onLine != nil {
+			onLine(line)
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func ansibleProgressDescription(cfg config) string {
@@ -1330,7 +1517,7 @@ func buildManagedSSHConfigEntry(entry sshConfigEntry) string {
 
 func buildAnsibleCommand(cfg *config, state *runtimeState) string {
 	parts := []string{
-		"ANSIBLE_COLLECTIONS_PATH=" + filepath.Join(filepath.Dir(state.PlaybookFile), "collections"),
+		"ANSIBLE_ROLES_PATH=" + filepath.Join(filepath.Dir(state.PlaybookFile), "roles"),
 		"ansible-playbook",
 		"-i", state.InventoryFile,
 		state.PlaybookFile,

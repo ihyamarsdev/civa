@@ -3,21 +3,11 @@
   hosts: civa_targets
   become: true
   gather_facts: true
-  collections:
-    - civa.bootstrap
-    - civa.system_update
-    - civa.user_management
-    - civa.ssh_hardening
-    - civa.security_firewall
-    - civa.system_config
-    - civa.dependencies
-    - civa.containerization
-    - civa.webserver
-
   roles:
     - role: bootstrap
       tags:
         - always
+        - bootstrap
     - role: system_update
       tags:
         - system_update
@@ -33,18 +23,20 @@
     - role: system_config
       tags:
         - system_config
-    - role: dependencies
+    - role: system_dependencies
       tags:
         - dependencies
-    - role: containerization
+        - system_dependencies
+    - role: system_containerization
       tags:
         - containerization
-    - role: traefik
+        - system_containerization
+    - role: web_server_traefik
       tags:
-        - traefik
-    - role: nginx
+        - web_server_traefik
+    - role: web_server_nginx
       tags:
-        - nginx
-    - role: caddy
+        - web_server_nginx
+    - role: web_server_caddy
       tags:
-        - caddy
+        - web_server_caddy

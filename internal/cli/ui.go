@@ -5,8 +5,26 @@ import (
 	"os"
 	"strings"
 
-	"github.com/alperdrsnn/clime"
+	"github.com/charmbracelet/lipgloss"
 	"golang.org/x/term"
+)
+
+var (
+	sectionTitleStyle = lipgloss.NewStyle().
+				Bold(true).
+				Border(lipgloss.NormalBorder()).
+				BorderForeground(lipgloss.Color("14")).
+				Foreground(lipgloss.Color("14")).
+				Padding(0, 1)
+
+	outputBlockStyle = lipgloss.NewStyle().
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(lipgloss.Color("12")).
+				Padding(0, 1)
+
+	outputBlockTitleStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("12"))
 )
 
 type outputBlock struct {
@@ -27,14 +45,7 @@ func renderSectionTitle(title string, styled bool) string {
 		return fmt.Sprintf("\n== %s ==\n----------------------------------------", title)
 	}
 
-	return clime.NewBox().
-		WithStyle(clime.BoxStyleBold).
-		WithBorderColor(clime.CyanColor).
-		WithTitleColor(clime.CyanColor).
-		WithPadding(0).
-		AutoSize(true).
-		AddLine(title).
-		Render()
+	return sectionTitleStyle.Render(title)
 }
 
 func renderOutputBlock(block outputBlock, styled bool) string {
@@ -45,20 +56,16 @@ func renderOutputBlock(block outputBlock, styled bool) string {
 		return block.Title + ":\n" + strings.Join(block.Lines, "\n")
 	}
 
-	box := clime.NewBox().
-		WithTitle(block.Title).
-		WithStyle(clime.BoxStyleRounded).
-		WithBorderColor(clime.BlueColor).
-		WithTitleColor(clime.BlueColor).
-		WithPadding(1)
-
+	title := outputBlockTitleStyle.Render(block.Title)
+	body := " "
 	if len(block.Lines) == 0 {
-		box.AddLine(" ")
+		body = " "
 	} else {
-		box.AddLines(block.Lines...)
+		body = strings.Join(block.Lines, "\n")
 	}
 
-	return box.Render()
+	content := lipgloss.JoinVertical(lipgloss.Left, title, body)
+	return outputBlockStyle.Render(content)
 }
 
 func renderOutputBlocks(blocks []outputBlock, styled bool) string {

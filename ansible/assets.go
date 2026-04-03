@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 )
 
-//go:embed main.yml all:collections
+//go:embed main.yml all:roles
 var files embed.FS
 
 func ReadFile(path string) ([]byte, error) {

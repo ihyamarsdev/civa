@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -181,8 +182,15 @@ func TestNormalizeWebServerSelectionInfersAndAddsWebServerComponent(t *testing.T
 
 func TestSelectedAnsibleTagsUsesConcreteWebServerTag(t *testing.T) {
 	tags := selectedAnsibleTags(config{Components: []string{"system_update", "web_server"}, WebServer: webServerCaddy})
-	if strings.Join(tags, ",") != "system_update,caddy" {
+	if strings.Join(tags, ",") != "system_update,web_server_caddy" {
 		t.Fatalf("unexpected ansible tags: %v", tags)
+	}
+}
+
+func TestSelectedAnsibleTagsNormalizesNonWebServerComponentTags(t *testing.T) {
+	tags := selectedAnsibleTags(config{Components: []string{"dependencies", "containerization"}})
+	if strings.Join(tags, ",") != "system_dependencies,system_containerization" {
+		t.Fatalf("unexpected normalized ansible tags: %v", tags)
 	}
 }
 
@@ -561,8 +569,8 @@ func TestBuildAnsibleCommandQuotesPathsWithSpaces(t *testing.T) {
 	if !strings.Contains(command, `"/tmp/civa test/ansible/main.yml"`) {
 		t.Fatalf("expected quoted playbook path, got %s", command)
 	}
-	if !strings.Contains(command, `"ANSIBLE_COLLECTIONS_PATH=/tmp/civa test/ansible/collections"`) {
-		t.Fatalf("expected quoted collections path, got %s", command)
+	if !strings.Contains(command, `"ANSIBLE_ROLES_PATH=/tmp/civa test/ansible/roles"`) {
+		t.Fatalf("expected quoted roles path, got %s", command)
 	}
 	if !strings.Contains(command, `@"/tmp/civa test/vars.yml"`) && !strings.Contains(command, `"@/tmp/civa test/vars.yml"`) {
 		t.Fatalf("expected quoted vars path, got %s", command)
@@ -624,6 +632,88 @@ func TestShouldUseAnsibleProgressBar(t *testing.T) {
 	}
 }
 
+func TestObserveOutputLineTracksAnsibleTasks(t *testing.T) {
+	controller := &ansibleProgressBarController{}
+
+	controller.ObserveOutputLine("TASK [Gathering Facts] *********************************************************")
+
+	if controller.discoveredTasks != 1 {
+		t.Fatalf("expected discovered tasks to be 1, got %d", controller.discoveredTasks)
+	}
+	if controller.completedTasks != 0 {
+		t.Fatalf("expected completed tasks to be 0, got %d", controller.completedTasks)
+	}
+	if !controller.activeTask {
+		t.Fatal("expected active task to be true")
+	}
+	if controller.currentTask != "Gathering Facts" {
+		t.Fatalf("unexpected current task: %s", controller.currentTask)
+	}
+
+	controller.ObserveOutputLine("TASK [Install Docker] **********************************************************")
+
+	if controller.discoveredTasks != 2 {
+		t.Fatalf("expected discovered tasks to be 2, got %d", controller.discoveredTasks)
+	}
+	if controller.completedTasks != 1 {
+		t.Fatalf("expected completed tasks to be 1, got %d", controller.completedTasks)
+	}
+	if controller.currentTask != "Install Docker" {
+		t.Fatalf("unexpected current task after second task: %s", controller.currentTask)
+	}
+
+	controller.ObserveOutputLine("PLAY RECAP *********************************************************************")
+
+	if controller.discoveredTasks != 2 {
+		t.Fatalf("expected discovered tasks to remain 2 after recap, got %d", controller.discoveredTasks)
+	}
+	if controller.completedTasks != 2 {
+		t.Fatalf("expected completed tasks to be 2 after recap, got %d", controller.completedTasks)
+	}
+	if controller.activeTask {
+		t.Fatal("expected active task to be false after recap")
+	}
+}
+
+func TestObserveOutputLineSupportsANSIWrappedTaskHeader(t *testing.T) {
+	controller := &ansibleProgressBarController{}
+
+	controller.ObserveOutputLine("\x1b[0;32mTASK [Configure firewall] **************************************\x1b[0m")
+
+	if controller.discoveredTasks != 1 {
+		t.Fatalf("expected ansi task line to be parsed, discovered=%d", controller.discoveredTasks)
+	}
+	if controller.currentTask != "Configure firewall" {
+		t.Fatalf("unexpected parsed task name from ansi line: %s", controller.currentTask)
+	}
+}
+
+func TestCaptureCommandOutputWritesAndReportsLines(t *testing.T) {
+	var target bytes.Buffer
+	var observed []string
+
+	err := captureCommandOutput(strings.NewReader("line-1\nline-2\n"), &target, func(line string) {
+		observed = append(observed, line)
+	})
+	if err != nil {
+		t.Fatalf("captureCommandOutput returned error: %v", err)
+	}
+
+	if got := target.String(); got != "line-1\nline-2\n" {
+		t.Fatalf("unexpected captured output: %q", got)
+	}
+
+	expected := []string{"line-1", "line-2"}
+	if len(observed) != len(expected) {
+		t.Fatalf("unexpected observed line count: got=%d expected=%d", len(observed), len(expected))
+	}
+	for i := range expected {
+		if observed[i] != expected[i] {
+			t.Fatalf("unexpected observed line at %d: got=%q expected=%q", i, observed[i], expected[i])
+		}
+	}
+}
+
 func TestReviewScopeSummary(t *testing.T) {
 	cfg := config{Components: []string{"system_update", "web_server"}, WebServer: webServerTraefik}
 	if got := reviewScopeSummary(cfg); got != "system_update, web_server(traefik)" {
@@ -672,7 +762,7 @@ func TestExecutionSummaryLinesForApplyReview(t *testing.T) {
 		"Review mode: ansible-playbook executed with --check --diff (server changes were not applied)",
 		"Review scope: system_update, web_server(traefik)",
 		"Target hosts: 1 host(s): web-01",
-		"Selected ansible tags: system_update, traefik",
+		"Selected ansible tags: system_update, web_server_traefik",
 		"SSH auth mode: SSH key auth",
 		"Result: apply review completed and the current server state was checked against the saved plan.",
 	}
@@ -713,9 +803,9 @@ func TestMaterializeAnsibleAssetsWritesEmbeddedFiles(t *testing.T) {
 
 	paths := []string{
 		filepath.Join(ansibleDir, "main.yml"),
-		filepath.Join(ansibleDir, "collections", "ansible_collections", "civa", "webserver", "roles", "traefik", "templates", "traefik.env.j2"),
-		filepath.Join(ansibleDir, "collections", "ansible_collections", "civa", "webserver", "roles", "traefik", "templates", "traefik-compose.yml.j2"),
-		filepath.Join(ansibleDir, "collections", "ansible_collections", "civa", "security_firewall", "roles", "security_firewall", "templates", "fail2ban-jail.local.j2"),
+		filepath.Join(ansibleDir, "roles", "web_server_traefik", "templates", "traefik.env.j2"),
+		filepath.Join(ansibleDir, "roles", "web_server_traefik", "templates", "traefik-compose.yml.j2"),
+		filepath.Join(ansibleDir, "roles", "security_firewall", "templates", "fail2ban-jail.local.j2"),
 	}
 
 	for _, path := range paths {

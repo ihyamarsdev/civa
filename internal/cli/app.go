@@ -1196,12 +1196,36 @@ func selectedAnsibleTags(cfg config) []string {
 		if component == "web_server" {
 			continue
 		}
-		tags = append(tags, component)
+		tags = append(tags, normalizedComponentTag(component))
 	}
-	if isValidWebServer(cfg.WebServer) && cfg.WebServer != webServerNone {
-		tags = append(tags, cfg.WebServer)
+	if webServerTag := normalizedWebServerTag(cfg.WebServer); webServerTag != "" {
+		tags = append(tags, webServerTag)
 	}
 	return tags
+}
+
+func normalizedComponentTag(component string) string {
+	switch component {
+	case "dependencies":
+		return "system_dependencies"
+	case "containerization":
+		return "system_containerization"
+	default:
+		return component
+	}
+}
+
+func normalizedWebServerTag(server string) string {
+	switch server {
+	case webServerTraefik:
+		return "web_server_traefik"
+	case webServerNginx:
+		return "web_server_nginx"
+	case webServerCaddy:
+		return "web_server_caddy"
+	default:
+		return ""
+	}
 }
 
 func expandHomePath(path string) (string, error) {

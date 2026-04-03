@@ -18,7 +18,7 @@ It does not harden servers by itself. Instead, it:
 - `internal/cli/` — command parsing, prompts, validation, artifact generation, doctor checks, and ansible execution
 - `ansible/assets.go` — embedded Ansible asset loader for the Go runtime
 - `ansible/main.yml` — main playbook entrypoint
-- `ansible/collections/ansible_collections/civa/` — service collections, including the unified `webserver` collection for Traefik, Nginx, and Caddy
+- `ansible/roles/` — provision roles grouped in a simple flat layout (bootstrap, base hardening, and web server roles such as Traefik, Nginx, and Caddy)
 - `scripts/install.sh` — one-line installer target
 - `scripts/uninstall.sh` — uninstall wrapper that delegates to `civa uninstall --yes` when available
 - `.github/workflows/release.yml` — automated release workflow
@@ -35,7 +35,7 @@ Artifacts include:
 - `plan.json` with structured execution metadata
 - `plan.md`
 - `ansible/main.yml`
-- `ansible/collections/ansible_collections/civa/**`
+- `ansible/roles/**`
 
 These files make it easier to:
 
