@@ -18,8 +18,8 @@
 ## Current Support
 
 - Target families: Debian/Ubuntu and RHEL-compatible distributions such as RHEL, Rocky, AlmaLinux, CentOS, and Oracle Linux
-- Commands: `setup`, `plan start|list|remove`, `preview <nama-plan>`, `apply <nama-plan>`, `completion <shell>`, `doctor`, `uninstall`, `version`, `help`
-- Runtime artifacts: `.civa/runs/<timestamp>/inventory.yml`, `vars.yml`, `plan.md`, and staged embedded Ansible assets
+- Commands: `setup`, `plan start|list|remove`, `preview <nama-plan>`, `apply <nama-plan>`, `apply review <nama-plan>`, `completion <shell>`, `doctor`, `uninstall`, `version`, `help`
+- Runtime artifacts: `~/.civa/runs/<timestamp>/inventory.yml`, `vars.yml`, `plan.md`, and staged embedded Ansible assets
 
 ## Quick Start
 
@@ -67,10 +67,11 @@ Check local prerequisites:
 
 - `civa setup` — install your local public key onto a fresh server with ssh-copy-id, optionally supplying the password via `sshpass`
 - `civa plan start` — generate inventory, vars, and a Markdown plan only after key-based access is ready
-- `civa plan list` — show generated plan names under `.civa/runs/`
+- `civa plan list` — show generated plan names under `~/.civa/runs/`
 - `civa plan remove <nama-plan>` — delete a generated plan and its artifacts
 - `civa preview <nama-plan>` — display an existing generated `plan.md`
 - `civa apply <nama-plan>` — execute the artifacts referenced by an existing generated plan
+- `civa apply review <nama-plan>` — verify an applied plan with Ansible check mode (`--check --diff`)
 - `civa doctor` — validate local Go, Ansible, and Python requirements
 - `civa doctor fix` — install or update missing local doctor dependencies
 - `civa uninstall` — remove the installed binary

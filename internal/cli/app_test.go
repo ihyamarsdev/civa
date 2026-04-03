@@ -229,6 +229,26 @@ func TestPreviewHeaderDependsOnTTY(t *testing.T) {
 	}
 }
 
+func TestRenderSectionTitlePlainFallback(t *testing.T) {
+	rendered := renderSectionTitle("Execution Summary", false)
+	if !strings.Contains(rendered, "== Execution Summary ==") {
+		t.Fatalf("expected plain section fallback, got %q", rendered)
+	}
+}
+
+func TestRenderOutputBlocksPlainFallback(t *testing.T) {
+	rendered := renderOutputBlocks([]outputBlock{
+		{Title: "Usage", Lines: []string{"civa apply <plan-name>"}},
+		{Title: "Examples", Lines: []string{"civa apply demo --yes"}},
+	}, false)
+	if !strings.Contains(rendered, "Usage:\nciva apply <plan-name>") {
+		t.Fatalf("expected usage block in fallback output, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "Examples:\nciva apply demo --yes") {
+		t.Fatalf("expected examples block in fallback output, got %q", rendered)
+	}
+}
+
 func TestShouldShowCommandHelpForBarePlanPreviewApply(t *testing.T) {
 	for _, args := range [][]string{{"plan"}, {"preview"}, {"apply"}, {"completion"}, {"setup"}, {"plan", "help"}, {"preview", "--help"}, {"apply", "-h"}, {"setup", "--help"}} {
 		if args[0] == commandSetup && len(args) == 1 {
@@ -264,10 +284,16 @@ func TestCompletionSuggestionsTopLevelAndValues(t *testing.T) {
 	if len(doctorSuggestions) != 1 || doctorSuggestions[0] != doctorActionFix {
 		t.Fatalf("unexpected doctor suggestions: %v", doctorSuggestions)
 	}
+
+	applySuggestions := completionSuggestions([]string{"apply", "r"})
+	if !contains(applySuggestions, applyActionReview) {
+		t.Fatalf("expected apply review suggestion, got %v", applySuggestions)
+	}
 }
 
 func TestCompletionSuggestionsIncludeGeneratedPlanNames(t *testing.T) {
 	workingDir := t.TempDir()
+	t.Setenv("HOME", workingDir)
 	originalDir, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("failed to get working dir: %v", err)
@@ -332,6 +358,20 @@ func TestParseArgsSupportsPlanSubcommandsAndPlanNames(t *testing.T) {
 	}
 	if applyCfg.PlanName != "my-plan" {
 		t.Fatalf("unexpected apply plan name: %s", applyCfg.PlanName)
+	}
+	if applyCfg.ApplyAction != applyActionExecute {
+		t.Fatalf("unexpected default apply action: %s", applyCfg.ApplyAction)
+	}
+
+	applyReviewCfg, err := parseArgs([]string{"apply", "review", "my-plan"})
+	if err != nil {
+		t.Fatalf("parseArgs returned error for apply review: %v", err)
+	}
+	if applyReviewCfg.PlanName != "my-plan" {
+		t.Fatalf("unexpected apply review plan name: %s", applyReviewCfg.PlanName)
+	}
+	if applyReviewCfg.ApplyAction != applyActionReview {
+		t.Fatalf("unexpected apply review action: %s", applyReviewCfg.ApplyAction)
 	}
 
 	setupCfg, err := parseArgs([]string{"setup", "--server", "203.0.113.10", "--ssh-user", "root"})
@@ -465,11 +505,19 @@ func TestShouldPromptApplyConfirmationRespectsNonInteractive(t *testing.T) {
 	if !shouldPromptApplyConfirmation(config{Command: commandApply, NonInteractive: false}) {
 		t.Fatal("expected interactive apply to prompt for confirmation")
 	}
+
+	if shouldPromptApplyConfirmation(config{Command: commandApply, ApplyAction: applyActionReview, NonInteractive: false}) {
+		t.Fatal("expected apply review to skip confirmation prompt")
+	}
 }
 
 func TestValidateExistingPlanCommandFlagsRejectsPlanGenerationFlags(t *testing.T) {
 	if err := validateExistingPlanCommandFlags(config{Provided: providedFlags{Servers: true}}); err == nil {
 		t.Fatal("expected preview/apply validation to reject server flags")
+	}
+
+	if err := validateExistingPlanCommandFlags(config{Provided: providedFlags{PlanFile: true}}); err == nil {
+		t.Fatal("expected preview/apply validation to reject --output flag")
 	}
 
 	if err := validateExistingPlanCommandFlags(config{Provided: providedFlags{PlanInputFile: true}}); err != nil {
@@ -527,6 +575,115 @@ func TestBuildAnsibleCommandQuotesPathsWithSpaces(t *testing.T) {
 	}
 }
 
+func TestBuildAnsibleCommandIncludesCheckModeForApplyReview(t *testing.T) {
+	cfg := &config{
+		Command:     commandApply,
+		ApplyAction: applyActionReview,
+	}
+	state := &runtimeState{
+		InventoryFile: "/tmp/inventory.yml",
+		PlaybookFile:  "/tmp/ansible/main.yml",
+		VarsFile:      "/tmp/vars.yml",
+	}
+
+	command := buildAnsibleCommand(cfg, state)
+	if !strings.Contains(command, "--check --diff") {
+		t.Fatalf("expected check mode flags in apply review command, got %s", command)
+	}
+}
+
+func TestAnsibleProgressDescription(t *testing.T) {
+	if got := ansibleProgressDescription(config{Command: commandApply, ApplyAction: applyActionExecute}); got != "Running ansible-playbook" {
+		t.Fatalf("unexpected apply progress description: %q", got)
+	}
+
+	if got := ansibleProgressDescription(config{Command: commandApply, ApplyAction: applyActionReview}); got != "Reviewing server state" {
+		t.Fatalf("unexpected apply review progress description: %q", got)
+	}
+}
+
+func TestShouldUseAnsibleProgressBar(t *testing.T) {
+	if !shouldUseAnsibleProgressBar(config{Command: commandApply}, true, true) {
+		t.Fatal("expected interactive apply to use progress bar")
+	}
+
+	if !shouldUseAnsibleProgressBar(config{Command: commandApply, ApplyAction: applyActionReview}, true, true) {
+		t.Fatal("expected interactive apply review to use progress bar")
+	}
+
+	if shouldUseAnsibleProgressBar(config{Command: commandPreview}, true, true) {
+		t.Fatal("expected preview to skip progress bar")
+	}
+
+	if shouldUseAnsibleProgressBar(config{Command: commandApply}, false, true) {
+		t.Fatal("expected non-tty stdout to skip progress bar")
+	}
+
+	if shouldUseAnsibleProgressBar(config{Command: commandApply}, true, false) {
+		t.Fatal("expected non-tty stderr to skip progress bar")
+	}
+}
+
+func TestReviewScopeSummary(t *testing.T) {
+	cfg := config{Components: []string{"system_update", "web_server"}, WebServer: webServerTraefik}
+	if got := reviewScopeSummary(cfg); got != "system_update, web_server(traefik)" {
+		t.Fatalf("unexpected review scope summary: %s", got)
+	}
+}
+
+func TestExecutionSummaryLinesForApplyReview(t *testing.T) {
+	tempDir := t.TempDir()
+	inventoryPath := filepath.Join(tempDir, "inventory.yml")
+	inventory := strings.Join([]string{
+		"all:",
+		"  children:",
+		"    civa_targets:",
+		"      hosts:",
+		"        web-01:",
+		"          ansible_host: \"203.0.113.50\"",
+		"          ansible_user: \"root\"",
+		"          ansible_port: 22",
+	}, "\n") + "\n"
+	if err := os.WriteFile(inventoryPath, []byte(inventory), 0o600); err != nil {
+		t.Fatalf("failed to write inventory: %v", err)
+	}
+
+	cfg := &config{
+		Command:       commandApply,
+		ApplyAction:   applyActionReview,
+		SSHAuthMethod: sshAuthMethodKey,
+		Components:    []string{"system_update", "web_server"},
+		WebServer:     webServerTraefik,
+	}
+	state := &runtimeState{
+		InventoryFile:   inventoryPath,
+		VarsFile:        filepath.Join(tempDir, "vars.yml"),
+		PlanFile:        filepath.Join(tempDir, "plan.md"),
+		PlaybookFile:    filepath.Join(tempDir, "ansible", "main.yml"),
+		ProgressCurrent: 4,
+		ProgressTotal:   4,
+		CompletedPhases: []string{"Loaded plan metadata", "Prepared review scope", "Completed ansible review run", "Prepared detailed review summary"},
+	}
+
+	lines := executionSummaryLines(cfg, state)
+	joined := strings.Join(lines, "\n")
+	checks := []string{
+		"Completed phases: 4/4",
+		"Review mode: ansible-playbook executed with --check --diff (server changes were not applied)",
+		"Review scope: system_update, web_server(traefik)",
+		"Target hosts: 1 host(s): web-01",
+		"Selected ansible tags: system_update, traefik",
+		"SSH auth mode: SSH key auth",
+		"Result: apply review completed and the current server state was checked against the saved plan.",
+	}
+
+	for _, check := range checks {
+		if !strings.Contains(joined, check) {
+			t.Fatalf("expected summary to contain %q, got:\n%s", check, joined)
+		}
+	}
+}
+
 func TestSSHCredentialSummaryHidesPassword(t *testing.T) {
 	passwordSummary := sshCredentialSummary(config{SSHAuthMethod: sshAuthMethodPassword, SSHPassword: "super-secret"})
 	if passwordSummary != "[hidden password]" {
@@ -556,8 +713,8 @@ func TestMaterializeAnsibleAssetsWritesEmbeddedFiles(t *testing.T) {
 
 	paths := []string{
 		filepath.Join(ansibleDir, "main.yml"),
-		filepath.Join(ansibleDir, "collections", "ansible_collections", "civa", "traefik", "roles", "traefik", "templates", "traefik.env.j2"),
-		filepath.Join(ansibleDir, "collections", "ansible_collections", "civa", "traefik", "roles", "traefik", "templates", "traefik-compose.yml.j2"),
+		filepath.Join(ansibleDir, "collections", "ansible_collections", "civa", "webserver", "roles", "traefik", "templates", "traefik.env.j2"),
+		filepath.Join(ansibleDir, "collections", "ansible_collections", "civa", "webserver", "roles", "traefik", "templates", "traefik-compose.yml.j2"),
 		filepath.Join(ansibleDir, "collections", "ansible_collections", "civa", "security_firewall", "roles", "security_firewall", "templates", "fail2ban-jail.local.j2"),
 	}
 
@@ -709,6 +866,108 @@ func TestLoadPlannedRunParsesGeneratedArtifacts(t *testing.T) {
 	}
 }
 
+func TestLoadPlannedRunMetadataNormalizesLegacyDotCivaPaths(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	runID := "20260402-153329-602964730"
+	planDir := filepath.Join(homeDir, ".civa", "runs", runID)
+	inventoryFile := filepath.Join(planDir, "inventory.yml")
+	varsFile := filepath.Join(planDir, "vars.yml")
+	playbookFile := filepath.Join(planDir, "ansible", "main.yml")
+	planFile := filepath.Join(planDir, "plan.md")
+	metadataFile := planMetadataPath(planFile)
+
+	if err := os.MkdirAll(filepath.Dir(playbookFile), 0o755); err != nil {
+		t.Fatalf("failed to create playbook dir: %v", err)
+	}
+	for _, file := range []string{inventoryFile, varsFile, playbookFile, planFile} {
+		if err := os.WriteFile(file, []byte("test"), 0o600); err != nil {
+			t.Fatalf("failed to write %s: %v", file, err)
+		}
+	}
+
+	metadata := strings.Join([]string{
+		"{",
+		`  "webServer": "none",`,
+		`  "sshAuthMethod": "key",`,
+		`  "sshUser": "root",`,
+		`  "sshPort": 22,`,
+		`  "components": ["system_update"],`,
+		`  "inventoryFile": ".civa/runs/` + runID + `/inventory.yml",`,
+		`  "varsFile": ".civa/runs/` + runID + `/vars.yml",`,
+		`  "planFile": ".civa/runs/` + runID + `/plan.md",`,
+		`  "playbookFile": ".civa/runs/` + runID + `/ansible/main.yml"`,
+		"}",
+	}, "\n") + "\n"
+	if err := os.WriteFile(metadataFile, []byte(metadata), 0o600); err != nil {
+		t.Fatalf("failed to write metadata: %v", err)
+	}
+
+	loadedCfg, state, err := loadPlannedRun(planFile)
+	if err != nil {
+		t.Fatalf("loadPlannedRun returned error: %v", err)
+	}
+	if len(loadedCfg.Components) != 1 || loadedCfg.Components[0] != "system_update" {
+		t.Fatalf("unexpected components: %v", loadedCfg.Components)
+	}
+	if state.InventoryFile != inventoryFile || state.VarsFile != varsFile || state.PlaybookFile != playbookFile || state.PlanFile != planFile {
+		t.Fatalf("expected normalized artifact paths, got %#v", state)
+	}
+}
+
+func TestLoadPlannedRunFromMarkdownNormalizesLegacyDotCivaPaths(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	runID := "20260403-000000-000000001"
+	planDir := filepath.Join(homeDir, ".civa", "runs", runID)
+	inventoryFile := filepath.Join(planDir, "inventory.yml")
+	varsFile := filepath.Join(planDir, "vars.yml")
+	playbookFile := filepath.Join(planDir, "ansible", "main.yml")
+	planFile := filepath.Join(planDir, "plan.md")
+
+	if err := os.MkdirAll(filepath.Dir(playbookFile), 0o755); err != nil {
+		t.Fatalf("failed to create playbook dir: %v", err)
+	}
+	for _, file := range []string{inventoryFile, varsFile, playbookFile} {
+		if err := os.WriteFile(file, []byte("test"), 0o600); err != nil {
+			t.Fatalf("failed to write %s: %v", file, err)
+		}
+	}
+
+	planContent := strings.Join([]string{
+		"# civa Run Plan",
+		"",
+		"## Mode",
+		"",
+		"- Command: plan",
+		"- SSH auth method: SSH Key",
+		"- SSH user: root",
+		"- SSH port: 22",
+		"",
+		"## Selected Components",
+		"",
+		"- System Update & Upgrade",
+		"",
+		"## Generated Files",
+		"",
+		"- Inventory: .civa/runs/" + runID + "/inventory.yml",
+		"- Vars: .civa/runs/" + runID + "/vars.yml",
+		"- SSH auth file: not used",
+		"- Playbook: .civa/runs/" + runID + "/ansible/main.yml",
+	}, "\n") + "\n"
+	if err := os.WriteFile(planFile, []byte(planContent), 0o600); err != nil {
+		t.Fatalf("failed to write plan file: %v", err)
+	}
+
+	_, state, err := loadPlannedRun(planFile)
+	if err != nil {
+		t.Fatalf("loadPlannedRun returned error: %v", err)
+	}
+	if state.InventoryFile != inventoryFile || state.VarsFile != varsFile || state.PlaybookFile != playbookFile || state.PlanFile != planFile {
+		t.Fatalf("expected normalized markdown artifact paths, got %#v", state)
+	}
+}
+
 func TestResolvePlanInputFileRequiresNameOrPlanFile(t *testing.T) {
 	cfg := &config{Command: commandPreview, NonInteractive: true}
 	_, err := resolvePlanInputFile(cfg)
@@ -719,6 +978,7 @@ func TestResolvePlanInputFileRequiresNameOrPlanFile(t *testing.T) {
 
 func TestResolvePlanInputFileUsesPlanName(t *testing.T) {
 	workingDir := t.TempDir()
+	t.Setenv("HOME", workingDir)
 	originalDir, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("failed to get working dir: %v", err)
@@ -791,7 +1051,7 @@ func TestEnsureUserCivaDirectoryInHomeCreatesDotCiva(t *testing.T) {
 		t.Fatalf("ensureUserCivaDirectoryInHome returned error: %v", err)
 	}
 
-	if created != filepath.Join(homeDir, ".civa") {
+	if created != filepath.Join(homeDir, strings.TrimPrefix(userCivaHomeDirectory, "~/")) {
 		t.Fatalf("unexpected civa directory path: %s", created)
 	}
 	if info, statErr := os.Stat(created); statErr != nil {
@@ -893,7 +1153,7 @@ func TestSyncSSHConfigAfterApplyInHomeUpdatesManagedEntries(t *testing.T) {
 	if !strings.Contains(updated, "HostName 203.0.113.50") {
 		t.Fatalf("expected updated host address in ssh config, got:\n%s", updated)
 	}
-	if _, err := os.Stat(filepath.Join(homeDir, ".civa")); err != nil {
+	if _, err := os.Stat(filepath.Join(homeDir, strings.TrimPrefix(userCivaHomeDirectory, "~/"))); err != nil {
 		t.Fatalf("expected ~/.civa to be created, got error: %v", err)
 	}
 }

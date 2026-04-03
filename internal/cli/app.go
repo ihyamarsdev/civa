@@ -43,11 +43,11 @@ const (
 	defaultSwapSize           = "2G"
 	defaultTraefikChallenge   = "http"
 	defaultTraefikDNSProvider = "cloudflare"
-	runRootDirectory          = ".civa/runs"
-	latestPlanPointerFile     = ".civa/latest-plan"
 	planActionStart           = "start"
 	planActionList            = "list"
 	planActionRemove          = "remove"
+	applyActionExecute        = "execute"
+	applyActionReview         = "review"
 	doctorActionCheck         = "check"
 	doctorActionFix           = "fix"
 )
@@ -87,6 +87,7 @@ type providedFlags struct {
 type config struct {
 	Command            string
 	PlanAction         string
+	ApplyAction        string
 	DoctorAction       string
 	PlanName           string
 	AssumeYes          bool
@@ -188,6 +189,9 @@ func Run(args []string) error {
 	case commandPreview:
 		return runPreviewFlow(&cfg)
 	case commandApply:
+		if cfg.ApplyAction == applyActionReview {
+			return runApplyReviewFlow(&cfg)
+		}
 		return runApplyFlow(&cfg)
 	default:
 		return fmt.Errorf("unknown command: %s", cfg.Command)
@@ -198,6 +202,7 @@ func defaultConfig(command string) config {
 	return config{
 		Command:            command,
 		PlanAction:         planActionStart,
+		ApplyAction:        applyActionExecute,
 		DoctorAction:       doctorActionCheck,
 		SSHUser:            defaultSSHUser,
 		SSHPort:            defaultSSHPort,
@@ -227,6 +232,10 @@ func shouldShowCommandHelp(args []string) bool {
 		case commandPlan, commandPreview, commandApply, commandCompletion, commandSetup, commandDoctor:
 			return true
 		}
+	}
+
+	if len(args) == 3 && args[0] == commandApply && args[1] == applyActionReview {
+		return args[2] == "help" || args[2] == "--help" || args[2] == "-h"
 	}
 
 	return false
@@ -268,6 +277,16 @@ func parseArgs(args []string) (config, error) {
 				startIndex = 2
 			default:
 				return config{}, fmt.Errorf("unknown doctor subcommand: %s", args[1])
+			}
+		}
+	}
+
+	if command == commandApply {
+		if len(args) > 1 && !strings.HasPrefix(args[1], "-") {
+			switch args[1] {
+			case applyActionReview:
+				cfg.ApplyAction = applyActionReview
+				startIndex = 2
 			}
 		}
 	}
@@ -478,7 +497,9 @@ func parseArgs(args []string) (config, error) {
 			cfg.Provided.PlanFile = true
 		case command == commandPlan && cfg.PlanAction == planActionRemove && cfg.PlanName == "" && !strings.HasPrefix(arg, "-"):
 			cfg.PlanName = arg
-		case (command == commandPreview || command == commandApply) && cfg.PlanName == "" && !strings.HasPrefix(arg, "-"):
+		case command == commandPreview && cfg.PlanName == "" && !strings.HasPrefix(arg, "-"):
+			cfg.PlanName = arg
+		case command == commandApply && cfg.PlanName == "" && !strings.HasPrefix(arg, "-"):
 			cfg.PlanName = arg
 		default:
 			return config{}, fmt.Errorf("unknown argument: %s", arg)
@@ -688,6 +709,7 @@ func runApplyFlow(cfg *config) error {
 	}
 
 	loadedCfg.Command = commandApply
+	loadedCfg.ApplyAction = applyActionExecute
 	state.ProgressCurrent = 0
 	state.ProgressTotal = 1
 	state.CompletedPhases = nil
@@ -713,13 +735,64 @@ func runApplyFlow(cfg *config) error {
 	return nil
 }
 
+func runApplyReviewFlow(cfg *config) error {
+	if err := validateExistingPlanCommandFlags(*cfg); err != nil {
+		return err
+	}
+
+	planPath, err := resolvePlanInputFile(cfg)
+	if err != nil {
+		return err
+	}
+
+	loadedCfg, state, err := loadPlannedRun(planPath)
+	if err != nil {
+		return err
+	}
+
+	loadedCfg.Command = commandApply
+	loadedCfg.ApplyAction = applyActionReview
+	state.ProgressCurrent = 0
+	state.ProgressTotal = 4
+	state.CompletedPhases = nil
+
+	printSection("Apply Review")
+	state.progressStep("Loading planned review artifacts")
+	fmt.Fprintf(os.Stderr, "Plan file: %s\n", planPath)
+	fmt.Fprintf(os.Stderr, "Inventory: %s\n", state.InventoryFile)
+	fmt.Fprintf(os.Stderr, "Vars: %s\n", state.VarsFile)
+	if state.AuthFile != "" {
+		fmt.Fprintf(os.Stderr, "SSH auth file: %s\n", state.AuthFile)
+	}
+	fmt.Fprintf(os.Stderr, "Playbook: %s\n", state.PlaybookFile)
+	state.appendCompletedPhase("Loaded plan metadata and resolved inventory, vars, auth, and playbook artifacts")
+
+	state.progressStep("Inspecting review scope from the generated plan")
+	state.appendCompletedPhase(fmt.Sprintf("Prepared review scope for %s", reviewScopeSummary(*loadedCfg)))
+
+	state.progressStep("Running Ansible review in check mode (--check --diff)")
+	if err := runAnsible(loadedCfg, state); err != nil {
+		return err
+	}
+	state.appendCompletedPhase("Completed ansible review run without applying changes to the server")
+
+	state.progressStep("Rendering detailed review summary")
+	state.appendCompletedPhase("Prepared detailed review summary for server state verification")
+	showExecutionSummary(loadedCfg, state)
+	return nil
+}
+
 func shouldPromptApplyConfirmation(cfg config) bool {
-	return cfg.Command == commandApply && !cfg.NonInteractive
+	action := cfg.ApplyAction
+	if action == "" {
+		action = applyActionExecute
+	}
+	return cfg.Command == commandApply && action == applyActionExecute && !cfg.NonInteractive
 }
 
 func prepareRuntime(cfg *config) (*runtimeState, error) {
 	runID := generateRunID(time.Now())
-	generatedDir := filepath.Join(runRootDirectory, runID)
+	generatedDir := filepath.Join(runRootDirectoryPath(), runID)
 	inventoryFile := filepath.Join(generatedDir, "inventory.yml")
 	varsFile := filepath.Join(generatedDir, "vars.yml")
 	authFile := ""
@@ -1162,137 +1235,107 @@ func planMetadataPath(planPath string) string {
 }
 
 func printUsage() {
-	lines := []string{
-		"Usage:",
-		"  civa <command> [options]",
-		"",
-		"Commands:",
-		"  apply <plan-name>          Execute an existing generated plan",
-		"  plan start                 Generate inventory, vars, and the execution plan only",
-		"  plan list                  List generated plans",
-		"  plan remove <plan-name>    Remove a generated plan and its artifacts",
-		"  preview <plan-name>        Show an existing generated plan",
-		"  setup                      Install a public SSH key on a server with ssh-copy-id",
-		"  completion <shell>         Print shell completion for bash, zsh, or fish",
-		"  doctor [fix]               Check or install local dependencies for civa",
-		"  uninstall                  Remove the currently installed civa binary",
-		"  version                    Show the civa version",
-		"  help                       Show this help message",
-		"",
-		"Options:",
-		"  --non-interactive          Disable prompts and rely on provided flags",
-		"  --yes, -y                  Skip confirmation prompts for destructive commands",
-		"  --ssh-user <name>          SSH user used to connect to every target server",
-		"  --ssh-port <port>          SSH port used to connect to every target server",
-		"  --ssh-password <value>     SSH password used by civa setup",
-		"  --web-server <name>        Web server to prepare: traefik, nginx, caddy, or none",
-		"  --ssh-private-key <path>   Local private key path used by Ansible for SSH",
-		"  --ssh-public-key <path>    Local public key path that will be installed for the deploy user",
-		"  --deployer-user <name>     User created and configured on the target servers",
-		"  --timezone <tz>            Timezone applied to the target servers",
-		"  --components <list>        Components to run: all or a comma list such as 1,2,4 or docker,traefik",
-		"  --plan-file <path>         Existing plan file override used by preview or apply",
-		"  --server <addr[,hostname]> Add a target server; hostname is optional and becomes the server hostname",
-		"  --traefik-email <email>    Email used by Let's Encrypt ACME",
-		"  --traefik-challenge <type> Traefik challenge type: http or dns",
-		"  --traefik-dns-provider <id> DNS provider name used when challenge type is dns",
-		"  --output <path>            Extra exported Markdown copy for plan start",
-		"  --help                     Show this help message",
-		"",
-		"Examples:",
-		"  civa plan start --non-interactive --server 203.0.113.10,web-01 --server 203.0.113.11,api-01 --components 1,2,3,4",
-		"  civa plan list",
-		"  civa preview 20260401-152334-210329559",
-		"  civa setup --server 203.0.113.10 --ssh-user root --ssh-password 'secret' --ssh-public-key ~/.ssh/id_ed25519.pub",
-		"  civa doctor",
-		"  civa doctor fix",
-		"  civa completion bash",
-		"  civa apply 20260401-152334-210329559 --yes",
-		"  civa plan remove 20260401-152334-210329559 --yes",
-		"  civa uninstall --yes",
+	styled := canStyleStdout()
+	blocks := []outputBlock{
+		{Title: "Usage", Lines: []string{"civa <command> [options]"}},
+		{Title: "Commands", Lines: []string{
+			"apply <plan-name>          Execute an existing generated plan",
+			"apply review <plan-name>   Verify an applied plan with ansible check mode",
+			"plan start                 Generate inventory, vars, and the execution plan only",
+			"plan list                  List generated plans",
+			"plan remove <plan-name>    Remove a generated plan and its artifacts",
+			"preview <plan-name>        Show an existing generated plan",
+			"setup                      Install a public SSH key on a server with ssh-copy-id",
+			"completion <shell>         Print shell completion for bash, zsh, or fish",
+			"doctor [fix]               Check or install local dependencies for civa",
+			"uninstall                  Remove the currently installed civa binary",
+			"version                    Show the civa version",
+			"help                       Show this help message",
+		}},
+		{Title: "Options", Lines: []string{
+			"--non-interactive          Disable prompts and rely on provided flags",
+			"--yes, -y                  Skip confirmation prompts for destructive commands",
+			"--ssh-user <name>          SSH user used to connect to every target server",
+			"--ssh-port <port>          SSH port used to connect to every target server",
+			"--ssh-password <value>     SSH password used by civa setup",
+			"--web-server <name>        Web server to prepare: traefik, nginx, caddy, or none",
+			"--ssh-private-key <path>   Local private key path used by Ansible for SSH",
+			"--ssh-public-key <path>    Local public key path that will be installed for the deploy user",
+			"--deployer-user <name>     User created and configured on the target servers",
+			"--timezone <tz>            Timezone applied to the target servers",
+			"--components <list>        Components to run: all or a comma list such as 1,2,4 or docker,traefik",
+			"--plan-file <path>         Existing plan file override used by preview or apply",
+			"--server <addr[,hostname]> Add a target server; hostname is optional and becomes the server hostname",
+			"--traefik-email <email>    Email used by Let's Encrypt ACME",
+			"--traefik-challenge <type> Traefik challenge type: http or dns",
+			"--traefik-dns-provider <id> DNS provider name used when challenge type is dns",
+			"--output <path>            Extra exported Markdown copy for plan start",
+			"--help                     Show this help message",
+		}},
+		{Title: "Examples", Lines: []string{
+			"civa plan start --non-interactive --server 203.0.113.10,web-01 --server 203.0.113.11,api-01 --components 1,2,3,4",
+			"civa plan list",
+			"civa preview 20260401-152334-210329559",
+			"civa setup --server 203.0.113.10 --ssh-user root --ssh-password 'secret' --ssh-public-key ~/.ssh/id_ed25519.pub",
+			"civa doctor",
+			"civa doctor fix",
+			"civa completion bash",
+			"civa apply 20260401-152334-210329559 --yes",
+			"civa apply review 20260401-152334-210329559",
+			"civa plan remove 20260401-152334-210329559 --yes",
+			"civa uninstall --yes",
+		}},
 	}
 
-	fmt.Println(strings.Join(lines, "\n"))
+	fmt.Println(renderSectionTitle("civa", styled))
+	fmt.Println(renderOutputBlocks(blocks, styled))
 }
 
 func printCommandUsage(command string) {
+	styled := canStyleStdout()
 	switch command {
 	case commandPlan:
-		fmt.Println(`Usage:
-  civa plan start [options]
-  civa plan list
-  civa plan remove <plan-name> [--yes]
-
-Subcommands:
-  start                        Generate a new named plan under .civa/runs/
-  list                         List generated plans
-  remove <plan-name>           Remove a generated plan and its artifacts
-
-Examples:
-  civa plan start --non-interactive --server 203.0.113.10,web-01 --components all
-  civa plan list
-  civa plan remove 20260401-160900-040074544 --yes`)
+		fmt.Println(renderSectionTitle("civa plan", styled))
+		fmt.Println(renderOutputBlocks([]outputBlock{
+			{Title: "Usage", Lines: []string{"civa plan start [options]", "civa plan list", "civa plan remove <plan-name> [--yes]"}},
+			{Title: "Subcommands", Lines: []string{"start                        Generate a new named plan under ~/.civa/runs/", "list                         List generated plans", "remove <plan-name>           Remove a generated plan and its artifacts"}},
+			{Title: "Examples", Lines: []string{"civa plan start --non-interactive --server 203.0.113.10,web-01 --components all", "civa plan list", "civa plan remove 20260401-160900-040074544 --yes"}},
+		}, styled))
 	case commandPreview:
-		fmt.Println(`Usage:
-  civa preview <plan-name>
-  civa preview --plan-file <path>
-
-Examples:
-  civa preview 20260401-160900-040074544
-  civa preview --plan-file .civa/runs/20260401-160900-040074544/plan.md`)
+		fmt.Println(renderSectionTitle("civa preview", styled))
+		fmt.Println(renderOutputBlocks([]outputBlock{
+			{Title: "Usage", Lines: []string{"civa preview <plan-name>", "civa preview --plan-file <path>"}},
+			{Title: "Examples", Lines: []string{"civa preview 20260401-160900-040074544", "civa preview --plan-file ~/.civa/runs/20260401-160900-040074544/plan.md"}},
+		}, styled))
 	case commandApply:
-		fmt.Println(`Usage:
-  civa apply <plan-name> [--yes]
-  civa apply --plan-file <path> [--yes]
-
-Examples:
-  civa apply 20260401-160900-040074544 --yes
-  civa apply --plan-file .civa/runs/20260401-160900-040074544/plan.md --yes`)
+		fmt.Println(renderSectionTitle("civa apply", styled))
+		fmt.Println(renderOutputBlocks([]outputBlock{
+			{Title: "Usage", Lines: []string{"civa apply <plan-name> [--yes]", "civa apply review <plan-name>", "civa apply --plan-file <path> [--yes]", "civa apply review --plan-file <path>"}},
+			{Title: "Examples", Lines: []string{"civa apply 20260401-160900-040074544 --yes", "civa apply review 20260401-160900-040074544", "civa apply --plan-file ~/.civa/runs/20260401-160900-040074544/plan.md --yes"}},
+		}, styled))
 	case commandCompletion:
-		fmt.Println(`Usage:
-  civa completion <shell>
-
-Supported shells:
-  bash
-  zsh
-  fish
-
-Examples:
-  civa completion bash
-  civa completion zsh
-  civa completion fish`)
+		fmt.Println(renderSectionTitle("civa completion", styled))
+		fmt.Println(renderOutputBlocks([]outputBlock{
+			{Title: "Usage", Lines: []string{"civa completion <shell>"}},
+			{Title: "Supported shells", Lines: []string{"bash", "zsh", "fish"}},
+			{Title: "Examples", Lines: []string{"civa completion bash", "civa completion zsh", "civa completion fish"}},
+		}, styled))
 	case commandDoctor:
-		fmt.Println(`Usage:
-  civa doctor
-  civa doctor fix
-
-Subcommands:
-  fix                          Install or update required local dependencies
-
-Required minimum versions:
-  go >= 1.26
-  ansible-playbook >= 2.20
-  python3 (or python) >= 3.10
-
-Examples:
-  civa doctor
-  civa doctor fix`)
+		fmt.Println(renderSectionTitle("civa doctor", styled))
+		fmt.Println(renderOutputBlocks([]outputBlock{
+			{Title: "Usage", Lines: []string{"civa doctor", "civa doctor fix"}},
+			{Title: "Subcommands", Lines: []string{"fix                          Install or update required local dependencies"}},
+			{Title: "Required minimum versions", Lines: []string{"go >= 1.26", "ansible-playbook >= 2.20", "python3 (or python) >= 3.10"}},
+			{Title: "Examples", Lines: []string{"civa doctor", "civa doctor fix"}},
+		}, styled))
 	case commandSetup:
-		fmt.Println(`Usage:
-  civa setup [options]
-
-Required options:
-  --server <addr>
-  --ssh-user <name>
-  --ssh-public-key <path>
-
-Optional:
-  --ssh-password <value>
-
-Examples:
-  civa setup --server 203.0.113.10 --ssh-user root --ssh-password 'secret' --ssh-public-key ~/.ssh/id_ed25519.pub
-  civa setup --server 203.0.113.10 --ssh-user root --ssh-public-key ~/.ssh/id_ed25519.pub
-  civa setup --server 203.0.113.10 --ssh-user ubuntu --ssh-port 2222 --ssh-password 'secret' --ssh-public-key ~/.ssh/id_ed25519.pub`)
+		fmt.Println(renderSectionTitle("civa setup", styled))
+		fmt.Println(renderOutputBlocks([]outputBlock{
+			{Title: "Usage", Lines: []string{"civa setup [options]"}},
+			{Title: "Required options", Lines: []string{"--server <addr>", "--ssh-user <name>", "--ssh-public-key <path>"}},
+			{Title: "Optional", Lines: []string{"--ssh-password <value>"}},
+			{Title: "Examples", Lines: []string{"civa setup --server 203.0.113.10 --ssh-user root --ssh-password 'secret' --ssh-public-key ~/.ssh/id_ed25519.pub", "civa setup --server 203.0.113.10 --ssh-user root --ssh-public-key ~/.ssh/id_ed25519.pub", "civa setup --server 203.0.113.10 --ssh-user ubuntu --ssh-port 2222 --ssh-password 'secret' --ssh-public-key ~/.ssh/id_ed25519.pub"}},
+		}, styled))
 	default:
 		printUsage()
 	}
@@ -1341,7 +1384,7 @@ func webServerLabel(value string) string {
 }
 
 func validateExistingPlanCommandFlags(cfg config) error {
-	if cfg.Provided.SSHUser || cfg.Provided.SSHPort || cfg.Provided.SSHAuthMethod || cfg.Provided.SSHPassword || cfg.Provided.WebServer || cfg.Provided.SSHPrivateKey || cfg.Provided.SSHPublicKey || cfg.Provided.DeployUser || cfg.Provided.Timezone || cfg.Provided.Components || cfg.Provided.TraefikEmail || cfg.Provided.TraefikChallenge || cfg.Provided.TraefikDNSProvider || cfg.Provided.Servers {
+	if cfg.Provided.SSHUser || cfg.Provided.SSHPort || cfg.Provided.SSHAuthMethod || cfg.Provided.SSHPassword || cfg.Provided.WebServer || cfg.Provided.SSHPrivateKey || cfg.Provided.SSHPublicKey || cfg.Provided.DeployUser || cfg.Provided.Timezone || cfg.Provided.Components || cfg.Provided.PlanFile || cfg.Provided.TraefikEmail || cfg.Provided.TraefikChallenge || cfg.Provided.TraefikDNSProvider || cfg.Provided.Servers {
 		return fmt.Errorf("preview/apply only accept --plan-file, --yes, --non-interactive, and --help")
 	}
 	return nil

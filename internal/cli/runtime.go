@@ -2,17 +2,23 @@ package cli
 
 import (
 	"bufio"
+	"bytes"
 	ansible "civa/ansible"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
+	"github.com/schollz/progressbar/v3"
 	"golang.org/x/term"
 )
 
@@ -27,6 +33,32 @@ type plannedRunMetadata struct {
 	AuthFile      string   `json:"authFile,omitempty"`
 	PlanFile      string   `json:"planFile"`
 	PlaybookFile  string   `json:"playbookFile"`
+}
+
+const userCivaHomeDirectory = "~/.civa"
+
+func civaHomeDirectory() string {
+	homeDir, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(homeDir) == "" {
+		homeDir = strings.TrimSpace(os.Getenv("HOME"))
+	}
+	if homeDir == "" {
+		if currentUser, userErr := user.Current(); userErr == nil {
+			homeDir = strings.TrimSpace(currentUser.HomeDir)
+		}
+	}
+	if homeDir == "" {
+		return filepath.Clean(strings.TrimPrefix(userCivaHomeDirectory, "~"))
+	}
+	return filepath.Join(homeDir, strings.TrimPrefix(userCivaHomeDirectory, "~/"))
+}
+
+func runRootDirectoryPath() string {
+	return filepath.Join(civaHomeDirectory(), "runs")
+}
+
+func latestPlanPointerFilePath() string {
+	return filepath.Join(civaHomeDirectory(), "latest-plan")
 }
 
 func resolvePlanInputFile(cfg *config) (string, error) {
@@ -54,7 +86,7 @@ func resolvePlanInputFile(cfg *config) (string, error) {
 }
 
 func readLatestPlanPointer() (string, error) {
-	content, err := os.ReadFile(latestPlanPointerFile)
+	content, err := os.ReadFile(latestPlanPointerFilePath())
 	if err != nil {
 		return "", err
 	}
@@ -69,22 +101,22 @@ func readLatestPlanPointer() (string, error) {
 }
 
 func writeLatestPlanPointer(planPath string) error {
-	if err := os.MkdirAll(filepath.Dir(latestPlanPointerFile), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(latestPlanPointerFilePath()), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(latestPlanPointerFile, []byte(planPath+"\n"), 0o644)
+	return os.WriteFile(latestPlanPointerFilePath(), []byte(planPath+"\n"), 0o644)
 }
 
 func planPathForName(name string) string {
-	return filepath.Join(runRootDirectory, name, "plan.md")
+	return filepath.Join(runRootDirectoryPath(), name, "plan.md")
 }
 
 func planDirForName(name string) string {
-	return filepath.Join(runRootDirectory, name)
+	return filepath.Join(runRootDirectoryPath(), name)
 }
 
 func listPlans() error {
-	entries, err := os.ReadDir(runRootDirectory)
+	entries, err := os.ReadDir(runRootDirectoryPath())
 	if err != nil {
 		if os.IsNotExist(err) {
 			fmt.Println("No generated plans found.")
@@ -155,7 +187,7 @@ func removePlan(cfg *config) error {
 				return writeErr
 			}
 		} else {
-			_ = os.Remove(latestPlanPointerFile)
+			_ = os.Remove(latestPlanPointerFilePath())
 		}
 	}
 
@@ -164,7 +196,7 @@ func removePlan(cfg *config) error {
 }
 
 func latestGeneratedPlanFile() (string, error) {
-	entries, err := os.ReadDir(runRootDirectory)
+	entries, err := os.ReadDir(runRootDirectoryPath())
 	if err != nil {
 		return "", err
 	}
@@ -174,19 +206,19 @@ func latestGeneratedPlanFile() (string, error) {
 		if !entry.IsDir() {
 			continue
 		}
-		candidate := filepath.Join(runRootDirectory, entry.Name(), "plan.md")
+		candidate := filepath.Join(runRootDirectoryPath(), entry.Name(), "plan.md")
 		if _, err := os.Stat(candidate); err == nil {
 			return candidate, nil
 		}
 	}
 
-	return "", fmt.Errorf("no generated plan found under %s", runRootDirectory)
+	return "", fmt.Errorf("no generated plan found under %s", runRootDirectoryPath())
 }
 
 func loadPlannedRun(planPath string) (*config, *runtimeState, error) {
 	metadata, err := loadPlannedRunMetadata(planPath)
 	if err == nil {
-		return metadataToPlannedRun(metadata)
+		return metadataToPlannedRun(planPath, metadata)
 	}
 
 	return loadPlannedRunFromMarkdown(planPath)
@@ -206,28 +238,33 @@ func loadPlannedRunMetadata(planPath string) (*plannedRunMetadata, error) {
 	return &metadata, nil
 }
 
-func metadataToPlannedRun(metadata *plannedRunMetadata) (*config, *runtimeState, error) {
+func metadataToPlannedRun(planPath string, metadata *plannedRunMetadata) (*config, *runtimeState, error) {
 	loadedCfg := defaultConfig(commandApply)
 	loadedCfg.WebServer = metadata.WebServer
 	loadedCfg.SSHAuthMethod = metadata.SSHAuthMethod
 	loadedCfg.SSHUser = metadata.SSHUser
 	loadedCfg.SSHPort = metadata.SSHPort
 	loadedCfg.Components = append([]string(nil), metadata.Components...)
+	resolvedPlanFile := metadata.PlanFile
+	if strings.TrimSpace(resolvedPlanFile) == "" {
+		resolvedPlanFile = planPath
+	}
+	resolvedPlanFile = normalizePlannedArtifactPath(planPath, resolvedPlanFile)
 
 	state := &runtimeState{
-		InventoryFile: metadata.InventoryFile,
-		VarsFile:      metadata.VarsFile,
-		AuthFile:      metadata.AuthFile,
-		MetadataFile:  planMetadataPath(metadata.PlanFile),
-		PlanFile:      metadata.PlanFile,
-		PlaybookFile:  metadata.PlaybookFile,
+		InventoryFile: normalizePlannedArtifactPath(planPath, metadata.InventoryFile),
+		VarsFile:      normalizePlannedArtifactPath(planPath, metadata.VarsFile),
+		AuthFile:      normalizePlannedArtifactPath(planPath, metadata.AuthFile),
+		MetadataFile:  planMetadataPath(planPath),
+		PlanFile:      resolvedPlanFile,
+		PlaybookFile:  normalizePlannedArtifactPath(planPath, metadata.PlaybookFile),
 	}
 
 	if state.InventoryFile == "" || state.VarsFile == "" || state.PlaybookFile == "" || state.PlanFile == "" {
-		return nil, nil, fmt.Errorf("plan metadata is missing execution artifacts: %s", metadata.PlanFile)
+		return nil, nil, fmt.Errorf("plan metadata is missing execution artifacts: %s", planPath)
 	}
 	if len(loadedCfg.Components) == 0 {
-		return nil, nil, fmt.Errorf("plan metadata is missing selected components: %s", metadata.PlanFile)
+		return nil, nil, fmt.Errorf("plan metadata is missing selected components: %s", planPath)
 	}
 
 	for _, path := range []string{state.InventoryFile, state.VarsFile, state.PlaybookFile, state.PlanFile} {
@@ -338,6 +375,11 @@ func loadPlannedRunFromMarkdown(planPath string) (*config, *runtimeState, error)
 		return nil, nil, fmt.Errorf("failed to read plan file %s: %w", planPath, err)
 	}
 
+	state.InventoryFile = normalizePlannedArtifactPath(planPath, state.InventoryFile)
+	state.VarsFile = normalizePlannedArtifactPath(planPath, state.VarsFile)
+	state.PlaybookFile = normalizePlannedArtifactPath(planPath, state.PlaybookFile)
+	state.AuthFile = normalizePlannedArtifactPath(planPath, state.AuthFile)
+
 	if state.InventoryFile == "" || state.VarsFile == "" || state.PlaybookFile == "" {
 		return nil, nil, fmt.Errorf("plan file is missing execution artifacts: %s", planPath)
 	}
@@ -357,6 +399,36 @@ func loadPlannedRunFromMarkdown(planPath string) (*config, *runtimeState, error)
 	}
 
 	return &loadedCfg, state, nil
+}
+
+func normalizePlannedArtifactPath(planPath, candidate string) string {
+	resolved := strings.TrimSpace(candidate)
+	if resolved == "" {
+		return ""
+	}
+
+	if strings.HasPrefix(resolved, "~/") {
+		expanded, err := expandHomePath(resolved)
+		if err == nil {
+			return expanded
+		}
+	}
+
+	if filepath.IsAbs(resolved) {
+		return filepath.Clean(resolved)
+	}
+
+	normalizedSlash := filepath.ToSlash(resolved)
+	if strings.HasPrefix(normalizedSlash, ".civa/") {
+		remainder := strings.TrimPrefix(normalizedSlash, ".civa/")
+		return filepath.Join(civaHomeDirectory(), filepath.FromSlash(remainder))
+	}
+
+	if planPath != "" {
+		return filepath.Join(filepath.Dir(planPath), resolved)
+	}
+
+	return filepath.Clean(resolved)
 }
 
 func runUninstall(cfg config) error {
@@ -887,16 +959,178 @@ func runAnsible(cfg *config, state *runtimeState) error {
 	if len(tags) > 0 {
 		args = append(args, "--tags", strings.Join(tags, ","))
 	}
-	if cfg.Command == commandPreview {
+	if shouldUseAnsibleCheckMode(*cfg) {
 		args = append(args, "--check", "--diff")
 	}
 
 	cmd := exec.Command("ansible-playbook", args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
 	cmd.Env = append(os.Environ(), "ANSIBLE_COLLECTIONS_PATH="+filepath.Join(filepath.Dir(state.PlaybookFile), "collections"))
-	return cmd.Run()
+
+	progressController := newAnsibleProgressBarController(*cfg)
+	if progressController == nil {
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		return cmd.Run()
+	}
+
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("failed to capture ansible stdout: %w", err)
+	}
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		return fmt.Errorf("failed to capture ansible stderr: %w", err)
+	}
+
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+
+	progressController.Start()
+
+	errCh := make(chan error, 2)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	stdoutBuffer := &bytes.Buffer{}
+	stderrBuffer := &bytes.Buffer{}
+
+	go func() {
+		defer wg.Done()
+		errCh <- captureCommandOutput(stdoutPipe, stdoutBuffer)
+	}()
+	go func() {
+		defer wg.Done()
+		errCh <- captureCommandOutput(stderrPipe, stderrBuffer)
+	}()
+
+	waitErr := cmd.Wait()
+	progressController.Stop(waitErr == nil)
+	wg.Wait()
+	close(errCh)
+
+	for streamErr := range errCh {
+		if streamErr != nil {
+			return streamErr
+		}
+	}
+
+	if waitErr != nil {
+		reportCapturedCommandOutput(stdoutBuffer, stderrBuffer)
+	}
+
+	return waitErr
+}
+
+type ansibleProgressBarController struct {
+	bar      *progressbar.ProgressBar
+	stopCh   chan struct{}
+	doneCh   chan struct{}
+	stopped  sync.Once
+	success  bool
+	ticker   time.Duration
+	maxTicks int
+}
+
+func newAnsibleProgressBarController(cfg config) *ansibleProgressBarController {
+	if !shouldUseAnsibleProgressBar(cfg, term.IsTerminal(int(os.Stdout.Fd())), term.IsTerminal(int(os.Stderr.Fd()))) {
+		return nil
+	}
+
+	bar := progressbar.NewOptions(
+		100,
+		progressbar.OptionSetWriter(os.Stderr),
+		progressbar.OptionSetDescription(ansibleProgressDescription(cfg)),
+		progressbar.OptionSetWidth(24),
+		progressbar.OptionSetPredictTime(false),
+		progressbar.OptionSetElapsedTime(false),
+		progressbar.OptionSetRenderBlankState(true),
+		progressbar.OptionClearOnFinish(),
+		progressbar.OptionShowCount(),
+	)
+
+	return &ansibleProgressBarController{
+		bar:      bar,
+		stopCh:   make(chan struct{}),
+		doneCh:   make(chan struct{}),
+		ticker:   120 * time.Millisecond,
+		maxTicks: 100,
+	}
+}
+
+func (c *ansibleProgressBarController) Start() {
+	if c == nil {
+		return
+	}
+
+	if err := c.bar.RenderBlank(); err != nil {
+		return
+	}
+
+	go func() {
+		ticker := time.NewTicker(c.ticker)
+		defer ticker.Stop()
+		defer close(c.doneCh)
+
+		for {
+			select {
+			case <-ticker.C:
+				if c.bar.IsFinished() {
+					c.bar.Reset()
+					_ = c.bar.RenderBlank()
+				}
+				_ = c.bar.Add(1)
+			case <-c.stopCh:
+				return
+			}
+		}
+	}()
+}
+
+func (c *ansibleProgressBarController) Stop(success bool) {
+	if c == nil {
+		return
+	}
+
+	c.success = success
+	c.stopped.Do(func() {
+		close(c.stopCh)
+		<-c.doneCh
+		if success {
+			_ = c.bar.Finish()
+		} else {
+			_ = c.bar.Clear()
+		}
+		_, _ = fmt.Fprintln(os.Stderr)
+	})
+}
+
+func captureCommandOutput(source io.Reader, target io.Writer) error {
+	_, err := io.Copy(target, source)
+	return err
+}
+
+func ansibleProgressDescription(cfg config) string {
+	if cfg.ApplyAction == applyActionReview {
+		return "Reviewing server state"
+	}
+	return "Running ansible-playbook"
+}
+
+func shouldUseAnsibleProgressBar(cfg config, stdoutTTY, stderrTTY bool) bool {
+	return cfg.Command == commandApply && stdoutTTY && stderrTTY
+}
+
+func reportCapturedCommandOutput(stdoutBuffer, stderrBuffer *bytes.Buffer) {
+	stdoutContent := strings.TrimSpace(stdoutBuffer.String())
+	stderrContent := strings.TrimSpace(stderrBuffer.String())
+
+	if stderrContent != "" {
+		fmt.Fprintln(os.Stderr, stderrContent)
+	}
+	if stdoutContent != "" {
+		fmt.Fprintln(os.Stderr, stdoutContent)
+	}
 }
 
 func syncSSHConfigAfterApply(cfg *config, state *runtimeState) error {
@@ -949,7 +1183,7 @@ func syncSSHConfigAfterApplyInHome(_ *config, state *runtimeState, homeDir strin
 }
 
 func ensureUserCivaDirectoryInHome(homeDir string) (string, error) {
-	userCivaDir := filepath.Join(homeDir, ".civa")
+	userCivaDir := filepath.Join(homeDir, strings.TrimPrefix(userCivaHomeDirectory, "~/"))
 	if err := os.MkdirAll(userCivaDir, 0o755); err != nil {
 		return "", fmt.Errorf("failed to create user civa directory %s: %w", userCivaDir, err)
 	}
@@ -1109,7 +1343,7 @@ func buildAnsibleCommand(cfg *config, state *runtimeState) string {
 	if len(tags) > 0 {
 		parts = append(parts, "--tags", strings.Join(tags, ","))
 	}
-	if cfg.Command == commandPreview {
+	if shouldUseAnsibleCheckMode(*cfg) {
 		parts = append(parts, "--check", "--diff")
 	}
 
@@ -1137,6 +1371,10 @@ func shellQuote(value string) string {
 	}
 
 	return strconv.Quote(value)
+}
+
+func shouldUseAnsibleCheckMode(cfg config) bool {
+	return cfg.Command == commandPreview || cfg.ApplyAction == applyActionReview
 }
 
 func uniqueInventoryAlias(server serverSpec, index int, used map[string]int) string {
@@ -1184,65 +1422,211 @@ func sanitizeAlias(raw string) string {
 }
 
 func printSection(title string) {
-	fmt.Fprintf(os.Stderr, "\n== %s ==\n", title)
-	fmt.Fprintln(os.Stderr, "----------------------------------------")
+	fmt.Fprintln(os.Stderr, renderSectionTitle(title, canStyleStderr()))
 }
 
 func logLine(message string) {
+	if canStyleStderr() {
+		fmt.Fprintln(os.Stderr, renderOutputBlock(outputBlock{Title: "Info", Lines: []string{message}}, true))
+		return
+	}
 	fmt.Fprintln(os.Stderr, message)
 }
 
 func printConfigurationSummary(cfg *config) {
 	printSection("Run Summary")
-	fmt.Fprintf(os.Stderr, "Command: %s\n", cfg.Command)
-	fmt.Fprintf(os.Stderr, "Web server: %s\n", webServerLabel(cfg.WebServer))
-	fmt.Fprintf(os.Stderr, "SSH auth method: %s\n", sshAuthMethodLabel(cfg.SSHAuthMethod))
-	fmt.Fprintf(os.Stderr, "SSH user: %s\n", cfg.SSHUser)
-	fmt.Fprintf(os.Stderr, "SSH port: %d\n", cfg.SSHPort)
-	fmt.Fprintf(os.Stderr, "SSH credential: %s\n", sshCredentialSummary(*cfg))
-	fmt.Fprintf(os.Stderr, "SSH public key: %s\n", cfg.SSHPublicKey)
-	fmt.Fprintf(os.Stderr, "Deployer user: %s\n", cfg.DeployUser)
-	fmt.Fprintf(os.Stderr, "Timezone: %s\n", cfg.Timezone)
-	fmt.Fprintln(os.Stderr, "Components:")
-	for _, component := range cfg.Components {
-		fmt.Fprintf(os.Stderr, "- %s\n", componentLabel(component))
+	style := canStyleStderr()
+	configLines := []string{
+		fmt.Sprintf("Command: %s", cfg.Command),
+		fmt.Sprintf("Web server: %s", webServerLabel(cfg.WebServer)),
+		fmt.Sprintf("SSH auth method: %s", sshAuthMethodLabel(cfg.SSHAuthMethod)),
+		fmt.Sprintf("SSH user: %s", cfg.SSHUser),
+		fmt.Sprintf("SSH port: %d", cfg.SSHPort),
+		fmt.Sprintf("SSH credential: %s", sshCredentialSummary(*cfg)),
+		fmt.Sprintf("SSH public key: %s", cfg.SSHPublicKey),
+		fmt.Sprintf("Deployer user: %s", cfg.DeployUser),
+		fmt.Sprintf("Timezone: %s", cfg.Timezone),
 	}
-	fmt.Fprintln(os.Stderr, "Servers:")
+	componentLines := make([]string, 0, len(cfg.Components))
+	for _, component := range cfg.Components {
+		componentLines = append(componentLines, fmt.Sprintf("- %s", componentLabel(component)))
+	}
+	serverLines := make([]string, 0, len(cfg.Servers))
 	for _, server := range cfg.Servers {
 		if server.Hostname != "" {
-			fmt.Fprintf(os.Stderr, "- %s -> %s\n", server.Address, server.Hostname)
+			serverLines = append(serverLines, fmt.Sprintf("- %s -> %s", server.Address, server.Hostname))
 		} else {
-			fmt.Fprintf(os.Stderr, "- %s\n", server.Address)
+			serverLines = append(serverLines, fmt.Sprintf("- %s", server.Address))
 		}
+	}
+	blocks := []outputBlock{
+		{Title: "Configuration", Lines: configLines},
+		{Title: "Components", Lines: componentLines},
+		{Title: "Servers", Lines: serverLines},
 	}
 	if cfg.WebServer == webServerTraefik {
-		fmt.Fprintf(os.Stderr, "Traefik ACME email: %s\n", cfg.TraefikEmail)
-		fmt.Fprintf(os.Stderr, "Traefik challenge: %s\n", cfg.TraefikChallenge)
-		if cfg.TraefikChallenge == "dns" {
-			fmt.Fprintf(os.Stderr, "Traefik DNS provider: %s\n", cfg.TraefikDNSProvider)
+		traefikLines := []string{
+			fmt.Sprintf("Traefik ACME email: %s", cfg.TraefikEmail),
+			fmt.Sprintf("Traefik challenge: %s", cfg.TraefikChallenge),
 		}
+		if cfg.TraefikChallenge == "dns" {
+			traefikLines = append(traefikLines, fmt.Sprintf("Traefik DNS provider: %s", cfg.TraefikDNSProvider))
+		}
+		blocks = append(blocks, outputBlock{Title: "Traefik", Lines: traefikLines})
 	}
+	fmt.Fprintln(os.Stderr, renderOutputBlocks(blocks, style))
 }
 
 func showExecutionSummary(cfg *config, state *runtimeState) {
 	printSection("Execution Summary")
-	fmt.Fprintf(os.Stderr, "Command: %s\n", cfg.Command)
-	fmt.Fprintf(os.Stderr, "Completed phases: %d/%d\n", state.ProgressCurrent, state.ProgressTotal)
-	fmt.Fprintln(os.Stderr, "Phases completed:")
-	for _, phase := range state.CompletedPhases {
-		fmt.Fprintf(os.Stderr, "- %s\n", phase)
+	style := canStyleStderr()
+	coreLines := []string{
+		fmt.Sprintf("Command: %s", cfg.Command),
+		fmt.Sprintf("Completed phases: %d/%d", state.ProgressCurrent, state.ProgressTotal),
+		fmt.Sprintf("Result: %s", executionResultLabel(cfg)),
 	}
-	fmt.Fprintf(os.Stderr, "Inventory: %s\n", state.InventoryFile)
-	fmt.Fprintf(os.Stderr, "Vars: %s\n", state.VarsFile)
-	fmt.Fprintf(os.Stderr, "Plan: %s\n", state.PlanFile)
+	phaseLines := make([]string, 0, len(state.CompletedPhases))
+	for _, phase := range state.CompletedPhases {
+		phaseLines = append(phaseLines, fmt.Sprintf("- %s", phase))
+	}
+	artifactLines := []string{
+		fmt.Sprintf("Inventory: %s", state.InventoryFile),
+		fmt.Sprintf("Vars: %s", state.VarsFile),
+		fmt.Sprintf("Plan: %s", state.PlanFile),
+	}
+	blocks := []outputBlock{
+		{Title: "Overview", Lines: coreLines},
+		{Title: "Phases Completed", Lines: phaseLines},
+		{Title: "Artifacts", Lines: artifactLines},
+	}
+	if cfg.Command == commandApply && cfg.ApplyAction == applyActionReview {
+		blocks = append(blocks, outputBlock{Title: "Review Details", Lines: applyReviewSummaryLines(cfg, state)})
+	}
+	fmt.Fprintln(os.Stderr, renderOutputBlocks(blocks, style))
+}
+
+func executionSummaryLines(cfg *config, state *runtimeState) []string {
+	lines := []string{
+		fmt.Sprintf("Command: %s", cfg.Command),
+		fmt.Sprintf("Completed phases: %d/%d", state.ProgressCurrent, state.ProgressTotal),
+		"Phases completed:",
+	}
+
+	for _, phase := range state.CompletedPhases {
+		lines = append(lines, fmt.Sprintf("- %s", phase))
+	}
+
+	lines = append(lines,
+		fmt.Sprintf("Inventory: %s", state.InventoryFile),
+		fmt.Sprintf("Vars: %s", state.VarsFile),
+		fmt.Sprintf("Plan: %s", state.PlanFile),
+	)
+
+	if cfg.Command == commandApply && cfg.ApplyAction == applyActionReview {
+		lines = append(lines, applyReviewSummaryLines(cfg, state)...)
+		return lines
+	}
+
 	switch cfg.Command {
 	case commandPreview:
-		fmt.Fprintln(os.Stderr, "Result: preview completed with ansible check mode")
+		lines = append(lines, "Result: preview completed with ansible check mode")
 	case commandApply:
-		fmt.Fprintln(os.Stderr, "Result: apply completed")
+		lines = append(lines, "Result: apply completed")
 	case commandPlan:
-		fmt.Fprintln(os.Stderr, "Result: plan generated without executing ansible-playbook")
+		lines = append(lines, "Result: plan generated without executing ansible-playbook")
 	}
+
+	return lines
+}
+
+func executionResultLabel(cfg *config) string {
+	switch cfg.Command {
+	case commandPreview:
+		return "preview completed with ansible check mode"
+	case commandApply:
+		if cfg.ApplyAction == applyActionReview {
+			return "apply review completed and current state was checked against the saved plan"
+		}
+		return "apply completed"
+	case commandPlan:
+		return "plan generated without executing ansible-playbook"
+	default:
+		return "completed"
+	}
+}
+
+func applyReviewSummaryLines(cfg *config, state *runtimeState) []string {
+	targetSummary := reviewTargetSummary(state.InventoryFile)
+	tags := selectedAnsibleTags(*cfg)
+	tagSummary := "all configured roles"
+	if len(tags) > 0 {
+		tagSummary = strings.Join(tags, ", ")
+	}
+
+	lines := []string{
+		"Review mode: ansible-playbook executed with --check --diff (server changes were not applied)",
+		fmt.Sprintf("Review scope: %s", reviewScopeSummary(*cfg)),
+		fmt.Sprintf("Target hosts: %s", targetSummary),
+		fmt.Sprintf("Selected ansible tags: %s", tagSummary),
+		fmt.Sprintf("SSH auth mode: %s", reviewSSHAuthMode(*cfg, *state)),
+		"Verification meaning: any reported diff or change indicates drift that a normal `civa apply` would try to reconcile.",
+		"Result: apply review completed and the current server state was checked against the saved plan.",
+	}
+
+	if state.AuthFile != "" {
+		lines = append(lines, fmt.Sprintf("Review auth file: %s", state.AuthFile))
+	}
+
+	return lines
+}
+
+func reviewTargetSummary(inventoryPath string) string {
+	entries, err := parseSSHConfigHostsFromInventory(inventoryPath)
+	if err != nil || len(entries) == 0 {
+		return fmt.Sprintf("unable to summarize inventory targets from %s", inventoryPath)
+	}
+
+	aliases := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if strings.TrimSpace(entry.Alias) != "" {
+			aliases = append(aliases, entry.Alias)
+			continue
+		}
+		aliases = append(aliases, entry.HostName)
+	}
+
+	return fmt.Sprintf("%d host(s): %s", len(entries), strings.Join(aliases, ", "))
+}
+
+func reviewScopeSummary(cfg config) string {
+	components := make([]string, 0, len(cfg.Components))
+	for _, component := range cfg.Components {
+		if component == "web_server" {
+			if isValidWebServer(cfg.WebServer) && cfg.WebServer != webServerNone {
+				components = append(components, fmt.Sprintf("web_server(%s)", cfg.WebServer))
+			}
+			continue
+		}
+		components = append(components, component)
+	}
+
+	if len(components) == 0 {
+		return "all planned components"
+	}
+
+	return strings.Join(components, ", ")
+}
+
+func reviewSSHAuthMode(cfg config, state runtimeState) string {
+	if cfg.SSHAuthMethod == sshAuthMethodPassword && state.AuthFile != "" {
+		return fmt.Sprintf("password auth via %s", state.AuthFile)
+	}
+
+	if cfg.SSHAuthMethod == sshAuthMethodPassword {
+		return "password auth"
+	}
+
+	return "SSH key auth"
 }
 
 func (state *runtimeState) progressStep(label string) {

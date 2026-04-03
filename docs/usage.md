@@ -7,6 +7,7 @@
 - `civa plan remove <nama-plan>`
 - `civa preview <nama-plan>`
 - `civa apply <nama-plan>`
+- `civa apply review <nama-plan>`
 - `civa setup`
 - `civa completion <shell>`
 - `civa doctor`
@@ -30,9 +31,9 @@ When you run `civa plan start` without all required flags, `civa` asks for:
 - web server choice (`none`, `traefik`, `nginx`, or `caddy`) when the web server component is enabled
 - Traefik ACME email and challenge settings when Traefik is selected
 
-`civa preview <nama-plan>` shows an existing `plan.md` rendered with Glow-style terminal formatting when stdout is a TTY. When redirected or piped, it falls back to plain non-TTY formatting. `civa apply <nama-plan>` only executes an existing plan and asks for a final confirmation unless you pass `--yes`.
+`civa preview <nama-plan>` shows an existing `plan.md` rendered with Glow-style terminal formatting when stdout is a TTY. When redirected or piped, it falls back to plain non-TTY formatting. `civa apply <nama-plan>` only executes an existing plan and asks for a final confirmation unless you pass `--yes`. `civa apply review <nama-plan>` runs the same plan artifacts in Ansible check mode (`--check --diff`) to verify post-installation convergence.
 
-Generated plan names come from the run directory under `.civa/runs/`, for example `20260401-152334-210329559`. Use `civa plan list` to see available names. `--plan-file` remains available as a manual override, but the normal flow is name-based.
+Generated plan names come from the run directory under `~/.civa/runs/`, for example `20260401-152334-210329559`. Use `civa plan list` to see available names. `--plan-file` remains available as a manual override, but the normal flow is name-based.
 
 Component selection in interactive mode uses a Charmbracelet Huh multi-select prompt: use the Up and Down arrow keys to move, press Space to select or clear the highlighted component, then press Enter to confirm.
 

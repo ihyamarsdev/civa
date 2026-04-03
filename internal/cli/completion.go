@@ -176,8 +176,24 @@ func completePreview(words []string) []string {
 
 func completeApply(words []string) []string {
 	current := words[len(words)-1]
+	if len(words) == 2 && words[1] != applyActionReview && !strings.HasPrefix(current, "-") {
+		suggestions := append([]string{applyActionReview}, generatedPlanNames(current)...)
+		return filterByPrefix(suggestions, current)
+	}
+
+	if len(words) > 1 && words[1] == applyActionReview {
+		reviewFlags := []string{"--plan-file", "--non-interactive", "--help"}
+		if len(words) == 2 {
+			return append(generatedPlanNames(""), reviewFlags...)
+		}
+		if strings.HasPrefix(current, "-") || previousWordExpectsValue(words) {
+			return filterByPrefix(reviewFlags, current)
+		}
+		return generatedPlanNames(current)
+	}
+
 	if len(words) == 1 {
-		return append(generatedPlanNames(""), "--plan-file", "--yes", "--non-interactive", "--help")
+		return append([]string{applyActionReview}, append(generatedPlanNames(""), "--plan-file", "--yes", "--non-interactive", "--help")...)
 	}
 	if strings.HasPrefix(current, "-") || previousWordExpectsValue(words) {
 		return filterByPrefix([]string{"--plan-file", "--yes", "--non-interactive", "--help"}, current)
@@ -212,7 +228,7 @@ func completionValuesForFlag(flag string) ([]string, bool) {
 }
 
 func generatedPlanNames(prefix string) []string {
-	entries, err := os.ReadDir(runRootDirectory)
+	entries, err := os.ReadDir(runRootDirectoryPath())
 	if err != nil {
 		return nil
 	}
@@ -222,7 +238,7 @@ func generatedPlanNames(prefix string) []string {
 		if !entry.IsDir() {
 			continue
 		}
-		if _, err := os.Stat(filepath.Join(runRootDirectory, entry.Name(), "plan.md")); err == nil {
+		if _, err := os.Stat(filepath.Join(runRootDirectoryPath(), entry.Name(), "plan.md")); err == nil {
 			plans = append(plans, entry.Name())
 		}
 	}
