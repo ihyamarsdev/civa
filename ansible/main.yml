@@ -3,38 +3,48 @@
   hosts: civa_targets
   become: true
   gather_facts: true
+  collections:
+    - civa.bootstrap
+    - civa.system_update
+    - civa.user_management
+    - civa.ssh_hardening
+    - civa.security_firewall
+    - civa.system_config
+    - civa.dependencies
+    - civa.containerization
+    - civa.webserver
 
   roles:
-    - role: civa.bootstrap.bootstrap
+    - role: bootstrap
       tags:
         - always
-    - role: civa.system_update.system_update
+    - role: system_update
       tags:
         - system_update
-    - role: civa.user_management.user_management
+    - role: user_management
       tags:
         - user_management
-    - role: civa.ssh_hardening.ssh_hardening
+    - role: ssh_hardening
       tags:
         - ssh_hardening
-    - role: civa.security_firewall.security_firewall
+    - role: security_firewall
       tags:
         - security_firewall
-    - role: civa.system_config.system_config
+    - role: system_config
       tags:
         - system_config
-    - role: civa.dependencies.dependencies
+    - role: dependencies
       tags:
         - dependencies
-    - role: civa.containerization.containerization
+    - role: containerization
       tags:
         - containerization
-    - role: civa.traefik.traefik
+    - role: traefik
       tags:
         - traefik
-    - role: civa.nginx.nginx
+    - role: nginx
       tags:
         - nginx
-    - role: civa.caddy.caddy
+    - role: caddy
       tags:
         - caddy

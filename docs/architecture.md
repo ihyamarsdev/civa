@@ -18,7 +18,7 @@ It does not harden servers by itself. Instead, it:
 - `internal/cli/` — command parsing, prompts, validation, artifact generation, doctor checks, and ansible execution
 - `ansible/assets.go` — embedded Ansible asset loader for the Go runtime
 - `ansible/main.yml` — main playbook entrypoint
-- `ansible/collections/ansible_collections/civa/` — per-service collections split by vendor-specific task files
+- `ansible/collections/ansible_collections/civa/` — service collections, including the unified `webserver` collection for Traefik, Nginx, and Caddy
 - `scripts/install.sh` — one-line installer target
 - `scripts/uninstall.sh` — uninstall wrapper that delegates to `civa uninstall --yes` when available
 - `.github/workflows/release.yml` — automated release workflow
@@ -26,7 +26,7 @@ It does not harden servers by itself. Instead, it:
 
 ## Runtime Artifacts
 
-Each `civa plan start` run creates a timestamped directory under `.civa/runs/`.
+Each `civa plan start` run creates a timestamped directory under `~/.civa/runs/`.
 
 Artifacts include:
 
@@ -51,7 +51,7 @@ These files make it easier to:
 ## Execution Modes
 
 - `plan start` — generate reusable artifacts only
-- `plan list` — enumerate generated plan names from `.civa/runs/`
+- `plan list` — enumerate generated plan names from `~/.civa/runs/`
 - `plan remove <nama-plan>` — remove a generated plan directory and its artifacts
 - `preview <nama-plan>` — display an existing Markdown plan
 - `apply <nama-plan>` — execute the artifacts recorded by an existing plan
