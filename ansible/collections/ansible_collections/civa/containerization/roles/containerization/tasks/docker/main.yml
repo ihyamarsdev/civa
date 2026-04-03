@@ -1,0 +1,8 @@
+---
+- name: Apply Debian Docker tasks
+  when: civa_is_debian
+  ansible.builtin.include_tasks: docker/vendors/debian.yml
+
+- name: Apply RedHat Docker tasks
+  when: civa_is_rhel
+  ansible.builtin.include_tasks: docker/vendors/redhat.yml

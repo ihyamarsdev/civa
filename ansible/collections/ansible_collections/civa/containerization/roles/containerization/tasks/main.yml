@@ -1,11 +1,6 @@
 ---
-- name: Apply Debian containerization tasks
-  when: civa_is_debian
-  ansible.builtin.include_tasks: vendors/debian.yml
-
-- name: Apply RedHat containerization tasks
-  when: civa_is_rhel
-  ansible.builtin.include_tasks: vendors/redhat.yml
+- name: Apply Docker containerization tasks
+  ansible.builtin.include_tasks: docker/main.yml
 
 - name: Ensure Docker is enabled and running
   ansible.builtin.service:

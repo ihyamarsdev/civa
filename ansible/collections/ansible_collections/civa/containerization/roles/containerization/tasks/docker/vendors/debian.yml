@@ -29,7 +29,7 @@
   ansible.builtin.apt:
     name: "{{ civa_docker_packages }}"
     state: present
-    
+
 - name: Ensure Docker service is started and enabled on boot
   ansible.builtin.service:
     name: docker
