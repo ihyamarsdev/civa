@@ -1801,15 +1801,28 @@ func printConfigurationSummary(cfg *config) {
 }
 
 func showExecutionSummary(cfg *config, state *runtimeState) {
-	printSection("Execution Summary")
+	sectionTitle := "Execution Summary"
+	if cfg.Command == commandApply {
+		sectionTitle = "✅ Execution Summary"
+	}
+	printSection(sectionTitle)
 	style := canStyleStderr()
 	coreLines := []string{
 		fmt.Sprintf("Command: %s", cfg.Command),
 		fmt.Sprintf("Completed phases: %d/%d", state.ProgressCurrent, state.ProgressTotal),
 		fmt.Sprintf("Result: %s", executionResultLabel(cfg)),
 	}
+	if cfg.Command == commandApply {
+		coreLines[0] = fmt.Sprintf("🧾 Command: %s", cfg.Command)
+		coreLines[1] = fmt.Sprintf("📊 Completed phases: %d/%d", state.ProgressCurrent, state.ProgressTotal)
+		coreLines[2] = fmt.Sprintf("🏁 Result: %s", executionResultLabel(cfg))
+	}
 	phaseLines := make([]string, 0, len(state.CompletedPhases))
 	for _, phase := range state.CompletedPhases {
+		if cfg.Command == commandApply {
+			phaseLines = append(phaseLines, fmt.Sprintf("✅ %s", phase))
+			continue
+		}
 		phaseLines = append(phaseLines, fmt.Sprintf("- %s", phase))
 	}
 	artifactLines := []string{
@@ -1817,13 +1830,18 @@ func showExecutionSummary(cfg *config, state *runtimeState) {
 		fmt.Sprintf("Vars: %s", state.VarsFile),
 		fmt.Sprintf("Plan: %s", state.PlanFile),
 	}
+	if cfg.Command == commandApply {
+		artifactLines[0] = fmt.Sprintf("🗂️ Inventory: %s", state.InventoryFile)
+		artifactLines[1] = fmt.Sprintf("🧩 Vars: %s", state.VarsFile)
+		artifactLines[2] = fmt.Sprintf("📄 Plan: %s", state.PlanFile)
+	}
 	blocks := []outputBlock{
-		{Title: "Overview", Lines: coreLines},
-		{Title: "Phases Completed", Lines: phaseLines},
-		{Title: "Artifacts", Lines: artifactLines},
+		{Title: blockTitleForApply(cfg, "Overview", "🧭 Overview"), Lines: coreLines},
+		{Title: blockTitleForApply(cfg, "Phases Completed", "✅ Phases Completed"), Lines: phaseLines},
+		{Title: blockTitleForApply(cfg, "Artifacts", "📦 Artifacts"), Lines: artifactLines},
 	}
 	if cfg.Command == commandApply && cfg.ApplyAction == applyActionReview {
-		blocks = append(blocks, outputBlock{Title: "Review Details", Lines: applyReviewSummaryLines(cfg, state)})
+		blocks = append(blocks, outputBlock{Title: "🔍 Review Details", Lines: applyReviewSummaryLines(cfg, state)})
 	}
 	fmt.Fprintln(os.Stderr, renderOutputBlocks(blocks, style))
 }
@@ -1887,20 +1905,28 @@ func applyReviewSummaryLines(cfg *config, state *runtimeState) []string {
 	}
 
 	lines := []string{
-		"Review mode: ansible-playbook executed with --check --diff (server changes were not applied)",
-		fmt.Sprintf("Review scope: %s", reviewScopeSummary(*cfg)),
-		fmt.Sprintf("Target hosts: %s", targetSummary),
-		fmt.Sprintf("Selected ansible tags: %s", tagSummary),
-		fmt.Sprintf("SSH auth mode: %s", reviewSSHAuthMode(*cfg, *state)),
-		"Verification meaning: any reported diff or change indicates drift that a normal `civa apply` would try to reconcile.",
-		"Result: apply review completed and the current server state was checked against the saved plan.",
+		"Review mode: ansible-playbook executed with --check --diff (server changes were not applied) 🔍",
+		fmt.Sprintf("Review scope: %s 🧭", reviewScopeSummary(*cfg)),
+		fmt.Sprintf("Target hosts: %s 🎯", targetSummary),
+		fmt.Sprintf("Selected ansible tags: %s 🧩", tagSummary),
+		fmt.Sprintf("SSH auth mode: %s 🔐", reviewSSHAuthMode(*cfg, *state)),
+		"Verification meaning: any reported diff or change indicates drift that a normal `civa apply` would try to reconcile. 🧪",
+		"Result: apply review completed and the current server state was checked against the saved plan. ✅",
 	}
 
 	if state.AuthFile != "" {
-		lines = append(lines, fmt.Sprintf("Review auth file: %s", state.AuthFile))
+		lines = append(lines, fmt.Sprintf("Review auth file: %s 🔐", state.AuthFile))
 	}
 
 	return lines
+}
+
+func blockTitleForApply(cfg *config, plainTitle, applyTitle string) string {
+	if cfg.Command == commandApply {
+		return applyTitle
+	}
+
+	return plainTitle
 }
 
 func reviewTargetSummary(inventoryPath string) string {

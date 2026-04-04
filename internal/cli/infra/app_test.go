@@ -752,6 +752,51 @@ func TestExecutionSummaryLinesForApplyReview(t *testing.T) {
 	}
 }
 
+func TestApplyArtifactLinesUseNeatIconSpacing(t *testing.T) {
+	state := &runtimeState{
+		InventoryFile: "/tmp/inventory.yml",
+		VarsFile:      "/tmp/vars.yml",
+		AuthFile:      "/tmp/auth.yml",
+		PlaybookFile:  "/tmp/ansible/main.yml",
+	}
+
+	lines := applyArtifactLines("/tmp/plan.md", state)
+	if len(lines) != 5 {
+		t.Fatalf("expected 5 artifact lines with auth file, got %d", len(lines))
+	}
+
+	expectedPrefixes := []string{
+		"📄  Plan file:",
+		"🗂️  Inventory:",
+		"🧩  Vars:",
+		"🔐  SSH auth file:",
+		"📜  Playbook:",
+	}
+	for i, prefix := range expectedPrefixes {
+		if !strings.HasPrefix(lines[i], prefix) {
+			t.Fatalf("expected line %d to start with %q, got %q", i, prefix, lines[i])
+		}
+	}
+}
+
+func TestApplyArtifactLinesSkipAuthWhenEmpty(t *testing.T) {
+	state := &runtimeState{
+		InventoryFile: "/tmp/inventory.yml",
+		VarsFile:      "/tmp/vars.yml",
+		PlaybookFile:  "/tmp/ansible/main.yml",
+	}
+
+	lines := applyArtifactLines("/tmp/plan.md", state)
+	if len(lines) != 4 {
+		t.Fatalf("expected 4 artifact lines without auth file, got %d", len(lines))
+	}
+	for _, line := range lines {
+		if strings.Contains(line, "SSH auth file") {
+			t.Fatalf("did not expect SSH auth file line when auth is empty, got %q", line)
+		}
+	}
+}
+
 func TestSSHCredentialSummaryHidesPassword(t *testing.T) {
 	passwordSummary := sshCredentialSummary(config{SSHAuthMethod: sshAuthMethodPassword, SSHPassword: "super-secret"})
 	if passwordSummary != "[hidden password]" {

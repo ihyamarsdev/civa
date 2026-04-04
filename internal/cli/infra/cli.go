@@ -356,7 +356,7 @@ func runApplyFlow(cfg *config) error {
 			return err
 		}
 		if !confirmed {
-			fmt.Fprintln(os.Stderr, "civa apply was cancelled by the user before ansible-playbook started.")
+			fmt.Fprintln(os.Stderr, "🛑 civa apply was cancelled by the user before ansible-playbook started.")
 			return nil
 		}
 	}
@@ -364,26 +364,24 @@ func runApplyFlow(cfg *config) error {
 	loadedCfg.Command = commandApply
 	loadedCfg.ApplyAction = applyActionExecute
 	state.ProgressCurrent = 0
-	state.ProgressTotal = 1
+	state.ProgressTotal = 2
 	state.CompletedPhases = nil
 
-	printSection("Apply Existing Plan")
-	fmt.Fprintf(os.Stderr, "Plan file: %s\n", planPath)
-	fmt.Fprintf(os.Stderr, "Inventory: %s\n", state.InventoryFile)
-	fmt.Fprintf(os.Stderr, "Vars: %s\n", state.VarsFile)
-	if state.AuthFile != "" {
-		fmt.Fprintf(os.Stderr, "SSH auth file: %s\n", state.AuthFile)
+	printSection("🚀 Apply Existing Plan")
+	for _, line := range applyArtifactLines(planPath, state) {
+		fmt.Fprintln(os.Stderr, line)
 	}
-	fmt.Fprintf(os.Stderr, "Playbook: %s\n", state.PlaybookFile)
 
-	state.progressStep("Running ansible-playbook from existing plan")
+	state.progressStep("⚙️ Running ansible-playbook from existing plan")
 	if err := runAnsible(loadedCfg, state); err != nil {
 		return err
 	}
-	state.appendCompletedPhase("ansible-playbook execution")
+	state.appendCompletedPhase("✅ ansible-playbook execution")
+	state.progressStep("🔧 Updating local SSH config from applied inventory")
 	if err := syncSSHConfigAfterApply(loadedCfg, state); err != nil {
 		return err
 	}
+	state.appendCompletedPhase("✅ local SSH config synchronized")
 	showExecutionSummary(loadedCfg, state)
 	return nil
 }
@@ -409,28 +407,24 @@ func runApplyReviewFlow(cfg *config) error {
 	state.ProgressTotal = 4
 	state.CompletedPhases = nil
 
-	printSection("Apply Review")
-	state.progressStep("Loading planned review artifacts")
-	fmt.Fprintf(os.Stderr, "Plan file: %s\n", planPath)
-	fmt.Fprintf(os.Stderr, "Inventory: %s\n", state.InventoryFile)
-	fmt.Fprintf(os.Stderr, "Vars: %s\n", state.VarsFile)
-	if state.AuthFile != "" {
-		fmt.Fprintf(os.Stderr, "SSH auth file: %s\n", state.AuthFile)
+	printSection("🔍 Apply Review")
+	state.progressStep("📦 Loading planned review artifacts")
+	for _, line := range applyArtifactLines(planPath, state) {
+		fmt.Fprintln(os.Stderr, line)
 	}
-	fmt.Fprintf(os.Stderr, "Playbook: %s\n", state.PlaybookFile)
-	state.appendCompletedPhase("Loaded plan metadata and resolved inventory, vars, auth, and playbook artifacts")
+	state.appendCompletedPhase("✅ Loaded plan metadata and resolved inventory, vars, auth, and playbook artifacts")
 
-	state.progressStep("Inspecting review scope from the generated plan")
-	state.appendCompletedPhase(fmt.Sprintf("Prepared review scope for %s", reviewScopeSummary(*loadedCfg)))
+	state.progressStep("🧭 Inspecting review scope from the generated plan")
+	state.appendCompletedPhase(fmt.Sprintf("✅ Prepared review scope for %s", reviewScopeSummary(*loadedCfg)))
 
-	state.progressStep("Running Ansible review in check mode (--check --diff)")
+	state.progressStep("🧪 Running Ansible review in check mode (--check --diff)")
 	if err := runAnsible(loadedCfg, state); err != nil {
 		return err
 	}
-	state.appendCompletedPhase("Completed ansible review run without applying changes to the server")
+	state.appendCompletedPhase("✅ Completed ansible review run without applying changes to the server")
 
-	state.progressStep("Rendering detailed review summary")
-	state.appendCompletedPhase("Prepared detailed review summary for server state verification")
+	state.progressStep("📝 Rendering detailed review summary")
+	state.appendCompletedPhase("✅ Prepared detailed review summary for server state verification")
 	showExecutionSummary(loadedCfg, state)
 	return nil
 }
@@ -441,6 +435,23 @@ func shouldPromptApplyConfirmation(cfg config) bool {
 		action = applyActionExecute
 	}
 	return cfg.Command == commandApply && action == applyActionExecute && !cfg.NonInteractive
+}
+
+func applyArtifactLines(planPath string, state *runtimeState) []string {
+	lines := []string{
+		formatApplyArtifactLine("📄", "Plan file", planPath),
+		formatApplyArtifactLine("🗂️", "Inventory", state.InventoryFile),
+		formatApplyArtifactLine("🧩", "Vars", state.VarsFile),
+	}
+	if state.AuthFile != "" {
+		lines = append(lines, formatApplyArtifactLine("🔐", "SSH auth file", state.AuthFile))
+	}
+	lines = append(lines, formatApplyArtifactLine("📜", "Playbook", state.PlaybookFile))
+	return lines
+}
+
+func formatApplyArtifactLine(icon, label, value string) string {
+	return fmt.Sprintf("%s  %-15s %s", icon, label+":", value)
 }
 
 func prepareRuntime(cfg *config) (*runtimeState, error) {
