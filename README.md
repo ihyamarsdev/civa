@@ -18,7 +18,7 @@
 ## Current Support
 
 - Target families: Debian/Ubuntu and RHEL-compatible distributions such as RHEL, Rocky, AlmaLinux, CentOS, and Oracle Linux
-- Commands: `setup`, `plan start|list|remove`, `preview <nama-plan>`, `apply <nama-plan>`, `apply review <nama-plan>`, `completion <shell>`, `doctor`, `uninstall`, `version`, `help`
+- Commands: `setup`, `config`, `plan start|list|remove`, `preview <nama-plan>`, `apply <nama-plan>`, `apply review <nama-plan>`, `completion <shell>`, `doctor`, `uninstall`, `version`, `help`
 - Runtime artifacts: `~/.civa/runs/<timestamp>/inventory.yml`, `vars.yml`, `plan.md`, and staged embedded Ansible assets
 
 ## Quick Start
@@ -44,6 +44,12 @@ Run an interactive plan:
 ./bin/civa plan start
 ```
 
+Configure persisted web server settings interactively:
+
+```bash
+./bin/civa config
+```
+
 Bootstrap a fresh server for key-based access:
 
 ```bash
@@ -66,6 +72,7 @@ Check local prerequisites:
 ## Commands
 
 - `civa setup` — install your local public key onto a fresh server with ssh-copy-id, optionally supplying the password via `sshpass`
+- `civa config` — configure persistent web server profile (nginx/caddy), choose target hostname(s) for web server installation, and enable nginx HTTPS via certbot
 - `civa plan start` — generate inventory, vars, and a Markdown plan only after key-based access is ready
 - `civa plan list` — show generated plan names under `~/.civa/runs/`
 - `civa plan remove <nama-plan>` — delete a generated plan and its artifacts

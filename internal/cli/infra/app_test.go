@@ -91,6 +91,107 @@ func TestValidateExecutionConfigRejectsPasswordModeForPlan(t *testing.T) {
 	}
 }
 
+func TestValidateExecutionConfigRejectsCustomWebServerSitesForTraefik(t *testing.T) {
+	tempDir := t.TempDir()
+	privateKey := filepath.Join(tempDir, "id_test")
+	publicKey := privateKey + ".pub"
+	for _, path := range []string{privateKey, publicKey} {
+		if err := os.WriteFile(path, []byte("test"), 0o600); err != nil {
+			t.Fatalf("failed to write %s: %v", path, err)
+		}
+	}
+
+	cfg := &config{
+		SSHUser:          "root",
+		SSHPort:          22,
+		WebServer:        webServerTraefik,
+		SSHPrivateKey:    privateKey,
+		SSHPublicKey:     publicKey,
+		DeployUser:       "deployer",
+		Timezone:         "Asia/Jakarta",
+		Components:       []string{"web_server"},
+		Servers:          []serverSpec{{Address: "203.0.113.10"}},
+		TraefikEmail:     "ops@example.com",
+		TraefikChallenge: "http",
+		WebServerSites: []webServerSiteSpec{
+			{ServerName: "app.example.com", UpstreamHost: "127.0.0.1", UpstreamPort: 3000},
+		},
+	}
+
+	err := validateExecutionConfig(cfg)
+	if err == nil || !strings.Contains(err.Error(), "only supported for nginx or caddy") {
+		t.Fatalf("expected nginx/caddy-only validation error, got %v", err)
+	}
+}
+
+func TestValidateExecutionConfigAcceptsCustomWebServerSitesForNginx(t *testing.T) {
+	tempDir := t.TempDir()
+	privateKey := filepath.Join(tempDir, "id_test")
+	publicKey := privateKey + ".pub"
+	for _, path := range []string{privateKey, publicKey} {
+		if err := os.WriteFile(path, []byte("test"), 0o600); err != nil {
+			t.Fatalf("failed to write %s: %v", path, err)
+		}
+	}
+
+	cfg := &config{
+		SSHUser:       "root",
+		SSHPort:       22,
+		WebServer:     webServerNginx,
+		SSHPrivateKey: privateKey,
+		SSHPublicKey:  publicKey,
+		DeployUser:    "deployer",
+		Timezone:      "Asia/Jakarta",
+		Components:    []string{"web_server"},
+		Servers:       []serverSpec{{Address: "203.0.113.10"}},
+		WebServerSites: []webServerSiteSpec{
+			{ServerName: "app.example.com", UpstreamHost: "127.0.0.1", UpstreamPort: 3000},
+		},
+	}
+
+	if err := validateExecutionConfig(cfg); err != nil {
+		t.Fatalf("expected valid nginx config with custom sites, got %v", err)
+	}
+}
+
+func TestValidateExecutionConfigRequiresCertbotEmailWhenNginxHTTPSEnabled(t *testing.T) {
+	tempDir := t.TempDir()
+	privateKey := filepath.Join(tempDir, "id_test")
+	publicKey := privateKey + ".pub"
+	for _, path := range []string{privateKey, publicKey} {
+		if err := os.WriteFile(path, []byte("test"), 0o600); err != nil {
+			t.Fatalf("failed to write %s: %v", path, err)
+		}
+	}
+
+	cfg := &config{
+		SSHUser:       "root",
+		SSHPort:       22,
+		WebServer:     webServerNginx,
+		SSHPrivateKey: privateKey,
+		SSHPublicKey:  publicKey,
+		DeployUser:    "deployer",
+		Timezone:      "Asia/Jakarta",
+		Components:    []string{"web_server"},
+		Servers:       []serverSpec{{Address: "203.0.113.10"}},
+		WebServerSites: []webServerSiteSpec{
+			{ServerName: "app.example.com", UpstreamHost: "127.0.0.1", UpstreamPort: 3000, EnableHTTPS: true},
+		},
+	}
+
+	err := validateExecutionConfig(cfg)
+	if err == nil || !strings.Contains(err.Error(), "requires a certbot email") {
+		t.Fatalf("expected certbot email validation error, got %v", err)
+	}
+}
+
+func TestRunConfigFlowRequiresInteractiveTerminal(t *testing.T) {
+	err := runConfigFlow(&config{Command: commandConfig, NonInteractive: true})
+	if err == nil || !strings.Contains(err.Error(), "requires an interactive terminal") {
+		t.Fatalf("expected interactive-terminal error, got %v", err)
+	}
+}
+
 func TestBuildSSHCopyIDCommand(t *testing.T) {
 	cfg := config{
 		SSHUser:      "root",
@@ -926,6 +1027,8 @@ func TestMaterializeAnsibleAssetsWritesEmbeddedFiles(t *testing.T) {
 		filepath.Join(ansibleDir, "main.yml"),
 		filepath.Join(ansibleDir, "roles", "web_server_traefik", "templates", "traefik.env.j2"),
 		filepath.Join(ansibleDir, "roles", "web_server_traefik", "templates", "traefik-compose.yml.j2"),
+		filepath.Join(ansibleDir, "roles", "web_server_nginx", "templates", "civa-site.conf.j2"),
+		filepath.Join(ansibleDir, "roles", "web_server_caddy", "templates", "Caddyfile.j2"),
 		filepath.Join(ansibleDir, "roles", "security_firewall", "templates", "fail2ban-jail.local.j2"),
 	}
 
@@ -1047,6 +1150,129 @@ func TestWriteInventoryUsesInitiationPortAndStoresCustomSSHPortForSSHConfig(t *t
 	}
 	if !strings.Contains(inventory, "civa_custom_ssh_port: 2222") {
 		t.Fatalf("expected custom ssh port metadata for ssh config sync, got %s", inventory)
+	}
+}
+
+func TestWriteVarsFileIncludesConfiguredWebServerSites(t *testing.T) {
+	tempDir := t.TempDir()
+	state := &runtimeState{VarsFile: filepath.Join(tempDir, "vars.yml")}
+	cfg := &config{
+		DeployUser:           "deployer",
+		SSHPublicKey:         "/home/user/.ssh/id_ed25519.pub",
+		WebServer:            webServerNginx,
+		WebServerTargetHosts: []string{"web-01", "web-02"},
+		NginxCertbotEmail:    "ops@example.com",
+		Timezone:             "Asia/Jakarta",
+		SwapSize:             "2G",
+		TraefikEmail:         "",
+		TraefikChallenge:     "",
+		WebServerSites: []webServerSiteSpec{
+			{ServerName: "app.example.com", UpstreamHost: "127.0.0.1", UpstreamPort: 3000, EnableHTTPS: true},
+			{ServerName: "api.example.com", UpstreamHost: "10.0.0.5", UpstreamPort: 8080},
+		},
+	}
+
+	if err := writeVarsFile(cfg, state); err != nil {
+		t.Fatalf("writeVarsFile returned error: %v", err)
+	}
+
+	content, err := os.ReadFile(state.VarsFile)
+	if err != nil {
+		t.Fatalf("failed to read vars file: %v", err)
+	}
+
+	varsContent := string(content)
+	if !strings.Contains(varsContent, "civa_web_server_sites:\n") {
+		t.Fatalf("expected web server sites key in vars file, got %s", varsContent)
+	}
+	if !strings.Contains(varsContent, `- server_name: "app.example.com"`) {
+		t.Fatalf("expected first site server_name in vars file, got %s", varsContent)
+	}
+	if !strings.Contains(varsContent, `upstream_host: "10.0.0.5"`) {
+		t.Fatalf("expected second site upstream host in vars file, got %s", varsContent)
+	}
+	if !strings.Contains(varsContent, "upstream_port: 8080") {
+		t.Fatalf("expected second site upstream port in vars file, got %s", varsContent)
+	}
+	if !strings.Contains(varsContent, "civa_nginx_ssl_enabled: true") {
+		t.Fatalf("expected nginx ssl toggle in vars file, got %s", varsContent)
+	}
+	if !strings.Contains(varsContent, `civa_nginx_certbot_email: "ops@example.com"`) {
+		t.Fatalf("expected certbot email in vars file, got %s", varsContent)
+	}
+	if !strings.Contains(varsContent, "https: true") {
+		t.Fatalf("expected https flag in vars file site entry, got %s", varsContent)
+	}
+	if !strings.Contains(varsContent, "civa_web_server_target_hosts:\n") {
+		t.Fatalf("expected target host key in vars file, got %s", varsContent)
+	}
+	if !strings.Contains(varsContent, `- "web-01"`) || !strings.Contains(varsContent, `- "web-02"`) {
+		t.Fatalf("expected target host entries in vars file, got %s", varsContent)
+	}
+}
+
+func TestWriteVarsFileWritesEmptyWebServerSitesListWhenUnset(t *testing.T) {
+	tempDir := t.TempDir()
+	state := &runtimeState{VarsFile: filepath.Join(tempDir, "vars.yml")}
+	cfg := &config{
+		DeployUser:       "deployer",
+		SSHPublicKey:     "/home/user/.ssh/id_ed25519.pub",
+		WebServer:        webServerTraefik,
+		Timezone:         "Asia/Jakarta",
+		SwapSize:         "2G",
+		TraefikEmail:     "ops@example.com",
+		TraefikChallenge: "http",
+	}
+
+	if err := writeVarsFile(cfg, state); err != nil {
+		t.Fatalf("writeVarsFile returned error: %v", err)
+	}
+
+	content, err := os.ReadFile(state.VarsFile)
+	if err != nil {
+		t.Fatalf("failed to read vars file: %v", err)
+	}
+
+	if !strings.Contains(string(content), "civa_web_server_sites:\n  []\n") {
+		t.Fatalf("expected empty web server sites list in vars file, got %s", string(content))
+	}
+	if !strings.Contains(string(content), "civa_web_server_target_hosts:\n  []\n") {
+		t.Fatalf("expected empty web server target hosts list in vars file, got %s", string(content))
+	}
+	if !strings.Contains(string(content), "civa_nginx_ssl_enabled: false") {
+		t.Fatalf("expected nginx ssl to be disabled in vars file, got %s", string(content))
+	}
+}
+
+func TestApplyPersistedWebServerConfigLoadsNginxProfile(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	stored := defaultPersistedWebServerConfig()
+	stored.Nginx = webServerProfileConfig{
+		Sites: []webServerSiteSpec{
+			{ServerName: "app.example.com", UpstreamHost: "127.0.0.1", UpstreamPort: 3000, EnableHTTPS: true},
+		},
+		InstallHostnames:  []string{"web-01", "web-02", "web-01", " "},
+		NginxCertbotEmail: "ops@example.com",
+	}
+	if err := saveWebServerConfig(stored); err != nil {
+		t.Fatalf("saveWebServerConfig returned error: %v", err)
+	}
+
+	cfg := &config{WebServer: webServerNginx}
+	if err := applyPersistedWebServerConfig(cfg); err != nil {
+		t.Fatalf("applyPersistedWebServerConfig returned error: %v", err)
+	}
+
+	if len(cfg.WebServerSites) != 1 || cfg.WebServerSites[0].ServerName != "app.example.com" || !cfg.WebServerSites[0].EnableHTTPS {
+		t.Fatalf("expected nginx sites loaded from persisted config, got %#v", cfg.WebServerSites)
+	}
+	if cfg.NginxCertbotEmail != "ops@example.com" {
+		t.Fatalf("expected nginx certbot email loaded from persisted config, got %q", cfg.NginxCertbotEmail)
+	}
+	if strings.Join(cfg.WebServerTargetHosts, ",") != "web-01,web-02" {
+		t.Fatalf("expected normalized web server target hosts, got %v", cfg.WebServerTargetHosts)
 	}
 }
 

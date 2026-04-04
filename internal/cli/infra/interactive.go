@@ -323,6 +323,25 @@ func promptPositiveInt(title string, defaultValue int) (int, error) {
 	return parsed, nil
 }
 
+func promptNonNegativeInt(title string, defaultValue int) (int, error) {
+	value := strconv.Itoa(defaultValue)
+	field := huh.NewInput().
+		Title(title).
+		Value(&value).
+		Validate(func(input string) error {
+			parsed, err := strconv.Atoi(strings.TrimSpace(input))
+			if err != nil || parsed < 0 {
+				return fmt.Errorf("please enter zero or a positive integer")
+			}
+			return nil
+		})
+	if err := field.Run(); err != nil {
+		return 0, normalizePromptError(err)
+	}
+	parsed, _ := strconv.Atoi(strings.TrimSpace(value))
+	return parsed, nil
+}
+
 func promptPort(title string, defaultValue int) (int, error) {
 	value := strconv.Itoa(defaultValue)
 	field := huh.NewInput().
@@ -376,6 +395,109 @@ func parseOptionalPortInput(input string) (int, error) {
 	}
 
 	return parsed, nil
+}
+
+func promptConfigWebServerTarget(defaultValue string) (string, error) {
+	value := defaultValue
+	field := huh.NewSelect[string]().
+		Title("Web server profile to configure").
+		Options(
+			huh.NewOption("Nginx", webServerNginx),
+			huh.NewOption("Caddy", webServerCaddy),
+		).
+		Value(&value)
+	if err := field.Run(); err != nil {
+		return "", normalizePromptError(err)
+	}
+	return value, nil
+}
+
+func promptWebServerProfileConfig(webServer string, current webServerProfileConfig) (webServerProfileConfig, error) {
+	defaultHostnames := strings.Join(current.InstallHostnames, ",")
+	targetHostnamesRaw, err := promptString(
+		"Install web server on hostname(s) (comma-separated, blank for all)",
+		defaultHostnames,
+		false,
+	)
+	if err != nil {
+		return webServerProfileConfig{}, err
+	}
+	targetHostnames := normalizeHostnameList(strings.Split(targetHostnamesRaw, ","))
+
+	defaultSiteCount := len(current.Sites)
+	if defaultSiteCount == 0 {
+		defaultSiteCount = 1
+	}
+
+	siteCount, err := promptNonNegativeInt(
+		fmt.Sprintf("How many %s reverse-proxy sites should be stored? (0 to clear)", webServerLabel(webServer)),
+		defaultSiteCount,
+	)
+	if err != nil {
+		return webServerProfileConfig{}, err
+	}
+
+	sites := make([]webServerSiteSpec, 0, siteCount)
+	for i := 1; i <= siteCount; i++ {
+		printSection(fmt.Sprintf("%s Config Site %d/%d", webServerLabel(webServer), i, siteCount))
+
+		seed := webServerSiteSpec{UpstreamHost: "127.0.0.1", UpstreamPort: 3000}
+		if i <= len(current.Sites) {
+			seed = current.Sites[i-1]
+		}
+
+		serverName, err := promptNonEmptyString("Domain / server_name", seed.ServerName)
+		if err != nil {
+			return webServerProfileConfig{}, err
+		}
+
+		upstreamHost, err := promptNonEmptyString("Upstream host or IP", seed.UpstreamHost)
+		if err != nil {
+			return webServerProfileConfig{}, err
+		}
+
+		upstreamPort, err := promptPort("Upstream port", seed.UpstreamPort)
+		if err != nil {
+			return webServerProfileConfig{}, err
+		}
+
+		httpsEnabled := false
+		if webServer == webServerNginx {
+			httpsEnabled, err = promptConfirm("Enable HTTPS via certbot for this domain?", seed.EnableHTTPS)
+			if err != nil {
+				return webServerProfileConfig{}, err
+			}
+		}
+
+		sites = append(sites, webServerSiteSpec{
+			ServerName:   serverName,
+			UpstreamHost: upstreamHost,
+			UpstreamPort: upstreamPort,
+			EnableHTTPS:  httpsEnabled,
+		})
+	}
+
+	profile := webServerProfileConfig{Sites: sites, InstallHostnames: targetHostnames}
+	if webServer == webServerNginx && hasHTTPSWebServerSites(sites) {
+		email, err := promptNonEmptyString("Certbot email for HTTPS domains", current.NginxCertbotEmail)
+		if err != nil {
+			return webServerProfileConfig{}, err
+		}
+		profile.NginxCertbotEmail = email
+	}
+
+	return profile, nil
+}
+
+func promptConfirm(title string, defaultValue bool) (bool, error) {
+	value := defaultValue
+	field := huh.NewConfirm().
+		Title(title).
+		Value(&value)
+	if err := field.Run(); err != nil {
+		return false, normalizePromptError(err)
+	}
+	return value, nil
 }
 
 func promptChallengeType(defaultValue string) (string, error) {

@@ -1,0 +1,8 @@
+{% for site in civa_web_server_sites %}
+{{ site.server_name }} {
+    reverse_proxy {{ site.upstream_host }}:{{ site.upstream_port }}
+}
+{% if not loop.last %}
+
+{% endif %}
+{% endfor %}

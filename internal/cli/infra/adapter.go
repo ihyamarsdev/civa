@@ -46,6 +46,11 @@ func (LegacyRunner) ExecuteRequest(req domain.Request) error {
 		}
 		cfg.Servers = servers
 		return runSetupFlow(&cfg)
+	case domain.CommandConfig:
+		cfg := defaultConfig(commandConfig)
+		applyGlobalRequest(req, &cfg)
+		applySharedRequest(req, &cfg)
+		return runConfigFlow(&cfg)
 	case domain.CommandUninstall:
 		cfg := defaultConfig(commandUninstall)
 		applyGlobalRequest(req, &cfg)

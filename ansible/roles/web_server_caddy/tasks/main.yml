@@ -1,14 +1,39 @@
 ---
-- name: Apply Debian Caddy tasks
-  when: civa_is_debian
-  ansible.builtin.include_tasks: vendors/debian.yml
+- name: Configure Caddy for selected web server targets
+  when: >-
+    (civa_web_server_target_hosts | default([])) | length == 0
+    or inventory_hostname in (civa_web_server_target_hosts | default([]))
+  block:
+    - name: Apply Debian Caddy tasks
+      when: civa_is_debian
+      ansible.builtin.include_tasks: vendors/debian.yml
 
-- name: Apply RedHat Caddy tasks
-  when: civa_is_rhel
-  ansible.builtin.include_tasks: vendors/redhat.yml
+    - name: Apply RedHat Caddy tasks
+      when: civa_is_rhel
+      ansible.builtin.include_tasks: vendors/redhat.yml
 
-- name: Ensure Caddy is enabled and running
-  ansible.builtin.service:
-    name: caddy
-    state: started
-    enabled: true
+    - name: Render custom Caddyfile from configured reverse-proxy sites
+      when: (civa_web_server_sites | default([])) | length > 0
+      ansible.builtin.template:
+        src: Caddyfile.j2
+        dest: /etc/caddy/Caddyfile
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Validate Caddy configuration when custom sites are configured
+      when: (civa_web_server_sites | default([])) | length > 0
+      ansible.builtin.command: caddy validate --config /etc/caddy/Caddyfile
+      changed_when: false
+
+    - name: Reload Caddy when custom sites are configured
+      when: (civa_web_server_sites | default([])) | length > 0
+      ansible.builtin.service:
+        name: caddy
+        state: reloaded
+
+    - name: Ensure Caddy is enabled and running
+      ansible.builtin.service:
+        name: caddy
+        state: started
+        enabled: true

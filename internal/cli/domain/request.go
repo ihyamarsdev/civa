@@ -9,6 +9,7 @@ const (
 	CommandCompleteInternal Command = "__complete"
 	CommandDoctor           Command = "doctor"
 	CommandSetup            Command = "setup"
+	CommandConfig           Command = "config"
 	CommandUninstall        Command = "uninstall"
 	CommandPlan             Command = "plan"
 	CommandPreview          Command = "preview"

@@ -13,6 +13,7 @@ var completionCommands = []string{
 	commandPlan,
 	commandPreview,
 	commandSetup,
+	commandConfig,
 	commandDoctor,
 	commandUninstall,
 	commandVersion,
@@ -89,6 +90,8 @@ func completionSuggestions(words []string) []string {
 		return completeApply(words)
 	case commandSetup:
 		return completeSetup(words)
+	case commandConfig:
+		return completeConfig(words)
 	case commandCompletion:
 		return completeCompletionCommand(words)
 	default:
@@ -144,6 +147,18 @@ func completePlanStart(words []string, current string) []string {
 func completeSetup(words []string) []string {
 	current := words[len(words)-1]
 	flags := []string{"--help", "--non-interactive", "--ssh-user", "--ssh-port", "--ssh-password", "--ssh-public-key", "--server"}
+	if len(words) == 1 {
+		return flags
+	}
+	if strings.HasPrefix(current, "-") || previousWordExpectsValue(words) {
+		return filterByPrefix(flags, current)
+	}
+	return flags
+}
+
+func completeConfig(words []string) []string {
+	current := words[len(words)-1]
+	flags := []string{"--help", "--non-interactive"}
 	if len(words) == 1 {
 		return flags
 	}

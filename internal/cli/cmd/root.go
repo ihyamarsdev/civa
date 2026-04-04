@@ -68,6 +68,7 @@ func (r *Root) newRootCommand() *cobra.Command {
 		r.newCompletionCommand(),
 		r.newDoctorCommand(globals),
 		r.newSetupCommand(globals),
+		r.newConfigCommand(globals),
 		r.newPlanCommand(globals),
 		r.newPreviewCommand(globals),
 		r.newApplyCommand(globals),
@@ -194,6 +195,18 @@ func (r *Root) newSetupCommand(globals *globalFlags) *cobra.Command {
 	cmd.Flags().StringArrayVar(&flags.servers, "server", nil, "Add a target server as addr[,hostname][,port]; hostname and SSH port are optional")
 
 	return cmd
+}
+
+func (r *Root) newConfigCommand(globals *globalFlags) *cobra.Command {
+	return &cobra.Command{
+		Use:   string(domain.CommandConfig),
+		Short: "Configure persistent civa settings interactively",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			req := r.withGlobalFlags(cmd, globals, domain.Request{Command: domain.CommandConfig})
+			return r.executor.Execute(req)
+		},
+	}
 }
 
 func (r *Root) newPlanCommand(globals *globalFlags) *cobra.Command {

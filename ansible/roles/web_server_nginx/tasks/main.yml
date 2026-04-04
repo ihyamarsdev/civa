@@ -1,19 +1,85 @@
 ---
-- name: Install Nginx on Debian-family targets
-  when: civa_is_debian
-  ansible.builtin.apt:
-    name: nginx
-    state: present
-    update_cache: true
+- name: Configure Nginx for selected web server targets
+  when: >-
+    (civa_web_server_target_hosts | default([])) | length == 0
+    or inventory_hostname in (civa_web_server_target_hosts | default([]))
+  block:
+    - name: Install Nginx on Debian-family targets
+      when: civa_is_debian
+      ansible.builtin.apt:
+        name: nginx
+        state: present
+        update_cache: true
 
-- name: Install Nginx on RHEL-family targets
-  when: civa_is_rhel
-  ansible.builtin.dnf:
-    name: nginx
-    state: present
+    - name: Install Nginx on RHEL-family targets
+      when: civa_is_rhel
+      ansible.builtin.dnf:
+        name: nginx
+        state: present
 
-- name: Ensure Nginx is enabled and running
-  ansible.builtin.service:
-    name: nginx
-    state: started
-    enabled: true
+    - name: Render custom Nginx reverse-proxy site configs
+      when: (civa_web_server_sites | default([])) | length > 0
+      ansible.builtin.template:
+        src: civa-site.conf.j2
+        dest: "/etc/nginx/conf.d/{{ item.server_name }}.conf"
+        owner: root
+        group: root
+        mode: "0644"
+      loop: "{{ civa_web_server_sites | default([]) }}"
+
+    - name: Validate Nginx configuration when custom sites are configured
+      when: (civa_web_server_sites | default([])) | length > 0
+      ansible.builtin.command: nginx -t
+      changed_when: false
+
+    - name: Reload Nginx when custom sites are configured
+      when: (civa_web_server_sites | default([])) | length > 0
+      ansible.builtin.service:
+        name: nginx
+        state: reloaded
+
+    - name: Install Certbot dependencies for Nginx on Debian-family targets
+      when:
+        - civa_is_debian
+        - civa_nginx_ssl_enabled | default(false) | bool
+      ansible.builtin.apt:
+        name:
+          - certbot
+          - python3-certbot-nginx
+        state: present
+        update_cache: true
+
+    - name: Install Certbot dependencies for Nginx on RHEL-family targets
+      when:
+        - civa_is_rhel
+        - civa_nginx_ssl_enabled | default(false) | bool
+      ansible.builtin.dnf:
+        name:
+          - certbot
+          - python3-certbot-nginx
+        state: present
+
+    - name: Ensure Nginx is running before requesting certificates
+      when: civa_nginx_ssl_enabled | default(false) | bool
+      ansible.builtin.service:
+        name: nginx
+        state: started
+
+    - name: Request/renew certificates and enable HTTPS redirects with Certbot
+      when: civa_nginx_ssl_enabled | default(false) | bool
+      ansible.builtin.command: >-
+        certbot --nginx --non-interactive --agree-tos
+        --email {{ civa_nginx_certbot_email }}
+        -d {{ item.server_name }}
+        --redirect
+      loop: "{{ civa_web_server_sites | default([]) | selectattr('https', 'equalto', true) | list }}"
+      register: civa_nginx_certbot_results
+      changed_when: >-
+        'Congratulations' in civa_nginx_certbot_results.stdout
+        or 'Certificate not yet due for renewal' not in civa_nginx_certbot_results.stdout
+
+    - name: Ensure Nginx is enabled and running
+      ansible.builtin.service:
+        name: nginx
+        state: started
+        enabled: true

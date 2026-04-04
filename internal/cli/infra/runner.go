@@ -49,6 +49,103 @@ func latestPlanPointerFilePath() string {
 	return storage.LatestPlanPointerFilePath()
 }
 
+func webServerConfigFilePath() string {
+	return storage.WebServerConfigFilePath()
+}
+
+func defaultPersistedWebServerConfig() persistedWebServerConfig {
+	return persistedWebServerConfig{
+		Version: 1,
+		Nginx: webServerProfileConfig{
+			Sites:            []webServerSiteSpec{},
+			InstallHostnames: []string{},
+		},
+		Caddy: webServerProfileConfig{
+			Sites:            []webServerSiteSpec{},
+			InstallHostnames: []string{},
+		},
+	}
+}
+
+func normalizePersistedWebServerConfig(cfg persistedWebServerConfig) persistedWebServerConfig {
+	if cfg.Version == 0 {
+		cfg.Version = 1
+	}
+	if cfg.Nginx.Sites == nil {
+		cfg.Nginx.Sites = []webServerSiteSpec{}
+	}
+	cfg.Nginx.InstallHostnames = normalizeHostnameList(cfg.Nginx.InstallHostnames)
+	if cfg.Caddy.Sites == nil {
+		cfg.Caddy.Sites = []webServerSiteSpec{}
+	}
+	cfg.Caddy.InstallHostnames = normalizeHostnameList(cfg.Caddy.InstallHostnames)
+	return cfg
+}
+
+func normalizeHostnameList(values []string) []string {
+	if len(values) == 0 {
+		return []string{}
+	}
+	seen := make(map[string]struct{}, len(values))
+	normalized := make([]string, 0, len(values))
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		if _, exists := seen[trimmed]; exists {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		normalized = append(normalized, trimmed)
+	}
+	return normalized
+}
+
+func loadWebServerConfig() (persistedWebServerConfig, error) {
+	cfg := defaultPersistedWebServerConfig()
+	path := webServerConfigFilePath()
+
+	content, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return cfg, nil
+		}
+		return cfg, fmt.Errorf("read web server config: %w", err)
+	}
+
+	if strings.TrimSpace(string(content)) == "" {
+		return cfg, nil
+	}
+
+	if err := json.Unmarshal(content, &cfg); err != nil {
+		return cfg, fmt.Errorf("parse web server config: %w", err)
+	}
+
+	return normalizePersistedWebServerConfig(cfg), nil
+}
+
+func saveWebServerConfig(cfg persistedWebServerConfig) error {
+	path := webServerConfigFilePath()
+	normalized := normalizePersistedWebServerConfig(cfg)
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("create web server config directory: %w", err)
+	}
+
+	content, err := json.MarshalIndent(normalized, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal web server config: %w", err)
+	}
+	content = append(content, '\n')
+
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		return fmt.Errorf("write web server config: %w", err)
+	}
+
+	return nil
+}
+
 func resolvePlanInputFile(cfg *config) (string, error) {
 	if err := finalizePaths(cfg); err != nil {
 		return "", err
@@ -988,13 +1085,16 @@ func writePlanMetadata(cfg *config, state *runtimeState) error {
 }
 
 func writeVarsFile(cfg *config, state *runtimeState) error {
-	content := fmt.Sprintf(
+	var builder strings.Builder
+	builder.WriteString(fmt.Sprintf(
 		"civa_deployer_user: %q\n"+
 			"civa_public_key_path: %q\n"+
 			"civa_web_server: %q\n"+
 			"civa_timezone: %q\n"+
 			"civa_swap_size: %q\n"+
 			"civa_swap_file: %q\n"+
+			"civa_nginx_ssl_enabled: %t\n"+
+			"civa_nginx_certbot_email: %q\n"+
 			"civa_traefik_email: %q\n"+
 			"civa_traefik_challenge: %q\n"+
 			"civa_traefik_dns_provider: %q\n",
@@ -1004,11 +1104,32 @@ func writeVarsFile(cfg *config, state *runtimeState) error {
 		cfg.Timezone,
 		cfg.SwapSize,
 		"/swapfile",
+		cfg.WebServer == webServerNginx && hasHTTPSWebServerSites(cfg.WebServerSites),
+		cfg.NginxCertbotEmail,
 		cfg.TraefikEmail,
 		cfg.TraefikChallenge,
 		cfg.TraefikDNSProvider,
-	)
-	return os.WriteFile(state.VarsFile, []byte(content), 0o644)
+	))
+	builder.WriteString("civa_web_server_sites:\n")
+	if len(cfg.WebServerSites) == 0 {
+		builder.WriteString("  []\n")
+	} else {
+		for _, site := range cfg.WebServerSites {
+			builder.WriteString(fmt.Sprintf("  - server_name: %q\n", site.ServerName))
+			builder.WriteString(fmt.Sprintf("    upstream_host: %q\n", site.UpstreamHost))
+			builder.WriteString(fmt.Sprintf("    upstream_port: %d\n", site.UpstreamPort))
+			builder.WriteString(fmt.Sprintf("    https: %t\n", site.EnableHTTPS))
+		}
+	}
+	builder.WriteString("civa_web_server_target_hosts:\n")
+	if len(cfg.WebServerTargetHosts) == 0 {
+		builder.WriteString("  []\n")
+	} else {
+		for _, host := range cfg.WebServerTargetHosts {
+			builder.WriteString(fmt.Sprintf("  - %q\n", host))
+		}
+	}
+	return os.WriteFile(state.VarsFile, []byte(builder.String()), 0o644)
 }
 
 func writePlanFile(cfg *config, state *runtimeState) error {

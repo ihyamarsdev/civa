@@ -41,3 +41,11 @@ func PlanPathForName(name string) string {
 func PlanDirForName(name string) string {
 	return filepath.Join(RunRootDirectoryPath(), name)
 }
+
+func ConfigDirectoryPath() string {
+	return filepath.Join(CivaHomeDirectory(), "config")
+}
+
+func WebServerConfigFilePath() string {
+	return filepath.Join(ConfigDirectoryPath(), "web-server.json")
+}

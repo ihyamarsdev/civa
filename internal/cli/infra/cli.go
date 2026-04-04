@@ -29,6 +29,7 @@ const (
 	commandCompleteInternal = "__complete"
 	commandDoctor           = "doctor"
 	commandSetup            = "setup"
+	commandConfig           = "config"
 	commandUninstall        = "uninstall"
 	commandVersion          = "version"
 	commandHelp             = "help"
@@ -60,6 +61,25 @@ type serverSpec struct {
 	SSHPort  int
 }
 
+type webServerSiteSpec struct {
+	ServerName   string
+	UpstreamHost string
+	UpstreamPort int
+	EnableHTTPS  bool
+}
+
+type webServerProfileConfig struct {
+	Sites             []webServerSiteSpec `json:"sites"`
+	InstallHostnames  []string            `json:"installHostnames,omitempty"`
+	NginxCertbotEmail string              `json:"nginxCertbotEmail,omitempty"`
+}
+
+type persistedWebServerConfig struct {
+	Version int                    `json:"version"`
+	Nginx   webServerProfileConfig `json:"nginx"`
+	Caddy   webServerProfileConfig `json:"caddy"`
+}
+
 type componentOption struct {
 	Number      int
 	Value       string
@@ -88,32 +108,35 @@ type providedFlags struct {
 }
 
 type config struct {
-	Command            string
-	PlanAction         string
-	ApplyAction        string
-	DoctorAction       string
-	PlanName           string
-	AssumeYes          bool
-	NonInteractive     bool
-	SSHUser            string
-	SSHPort            int
-	SSHAuthMethod      string
-	SSHPassword        string
-	WebServer          string
-	SSHPrivateKey      string
-	SSHPublicKey       string
-	DeployUser         string
-	Timezone           string
-	SwapSize           string
-	TraefikEmail       string
-	TraefikChallenge   string
-	TraefikDNSProvider string
-	ComponentsInput    string
-	Components         []string
-	PlanInputFile      string
-	PlanFile           string
-	Servers            []serverSpec
-	Provided           providedFlags
+	Command              string
+	PlanAction           string
+	ApplyAction          string
+	DoctorAction         string
+	PlanName             string
+	AssumeYes            bool
+	NonInteractive       bool
+	SSHUser              string
+	SSHPort              int
+	SSHAuthMethod        string
+	SSHPassword          string
+	WebServer            string
+	SSHPrivateKey        string
+	SSHPublicKey         string
+	DeployUser           string
+	Timezone             string
+	SwapSize             string
+	TraefikEmail         string
+	TraefikChallenge     string
+	TraefikDNSProvider   string
+	ComponentsInput      string
+	Components           []string
+	PlanInputFile        string
+	PlanFile             string
+	WebServerSites       []webServerSiteSpec
+	WebServerTargetHosts []string
+	NginxCertbotEmail    string
+	Servers              []serverSpec
+	Provided             providedFlags
 }
 
 type runtimeState struct {
@@ -204,6 +227,69 @@ func runSetupFlow(cfg *config) error {
 	return runSSHCopyID(*cfg)
 }
 
+func runConfigFlow(cfg *config) error {
+	if !shouldPrompt(cfg) {
+		return fmt.Errorf("civa config currently requires an interactive terminal")
+	}
+
+	store, err := loadWebServerConfig()
+	if err != nil {
+		return err
+	}
+
+	printSection("civa Config")
+	logLine("Configure persisted web server settings. Plan start will only install web server components.")
+
+	targetWebServer, err := promptConfigWebServerTarget(webServerNginx)
+	if err != nil {
+		if errors.Is(err, errUserCancelled) {
+			return nil
+		}
+		return err
+	}
+
+	currentProfile := store.Caddy
+	if targetWebServer == webServerNginx {
+		currentProfile = store.Nginx
+	}
+
+	updatedProfile, err := promptWebServerProfileConfig(targetWebServer, currentProfile)
+	if err != nil {
+		if errors.Is(err, errUserCancelled) {
+			return nil
+		}
+		return err
+	}
+
+	if targetWebServer == webServerNginx {
+		store.Nginx = updatedProfile
+	} else {
+		store.Caddy = updatedProfile
+	}
+
+	if err := saveWebServerConfig(store); err != nil {
+		return err
+	}
+
+	printSection("Config Saved")
+	fmt.Fprintf(os.Stderr, "Web server profile: %s\n", webServerLabel(targetWebServer))
+	fmt.Fprintf(os.Stderr, "Configured sites: %d\n", len(updatedProfile.Sites))
+	if len(updatedProfile.InstallHostnames) == 0 {
+		fmt.Fprintln(os.Stderr, "Install targets: all hostnames")
+	} else {
+		fmt.Fprintf(os.Stderr, "Install targets: %s\n", strings.Join(updatedProfile.InstallHostnames, ", "))
+	}
+	if targetWebServer == webServerNginx {
+		if hasHTTPSWebServerSites(updatedProfile.Sites) {
+			fmt.Fprintln(os.Stderr, "HTTPS mode: enabled via certbot")
+		} else {
+			fmt.Fprintln(os.Stderr, "HTTPS mode: disabled")
+		}
+	}
+
+	return nil
+}
+
 func runPlanFlow(cfg *config) error {
 	cfg.SSHAuthMethod = sshAuthMethodKey
 	cfg.SSHPassword = ""
@@ -224,6 +310,9 @@ func runPlanFlow(cfg *config) error {
 		return err
 	}
 	normalizeWebServerSelection(cfg)
+	if err := applyPersistedWebServerConfig(cfg); err != nil {
+		return err
+	}
 
 	if err := validateExecutionConfig(cfg); err != nil {
 		return err
@@ -711,6 +800,34 @@ func normalizeWebServerSelection(cfg *config) {
 	}
 }
 
+func applyPersistedWebServerConfig(cfg *config) error {
+	cfg.WebServerSites = nil
+	cfg.WebServerTargetHosts = nil
+	cfg.NginxCertbotEmail = ""
+
+	if !supportsCustomWebServerSites(cfg.WebServer) {
+		return nil
+	}
+
+	stored, err := loadWebServerConfig()
+	if err != nil {
+		return err
+	}
+
+	profile := stored.Caddy
+	if cfg.WebServer == webServerNginx {
+		profile = stored.Nginx
+	}
+
+	cfg.WebServerSites = append([]webServerSiteSpec(nil), profile.Sites...)
+	cfg.WebServerTargetHosts = append([]string(nil), normalizeHostnameList(profile.InstallHostnames)...)
+	if cfg.WebServer == webServerNginx {
+		cfg.NginxCertbotEmail = strings.TrimSpace(profile.NginxCertbotEmail)
+	}
+
+	return nil
+}
+
 func inferWebServerFromComponentsInput(raw string) string {
 	tokens := strings.Split(strings.NewReplacer(";", ",", " ", ",").Replace(strings.TrimSpace(raw)), ",")
 	for _, token := range tokens {
@@ -770,6 +887,33 @@ func validateExecutionConfig(cfg *config) error {
 		}
 		if cfg.TraefikChallenge == "dns" && strings.TrimSpace(cfg.TraefikDNSProvider) == "" {
 			return fmt.Errorf("Traefik DNS challenge requires --traefik-dns-provider")
+		}
+	}
+	if len(cfg.WebServerSites) > 0 {
+		if !supportsCustomWebServerSites(cfg.WebServer) {
+			return fmt.Errorf("custom web server sites are only supported for nginx or caddy")
+		}
+		for idx, site := range cfg.WebServerSites {
+			if strings.TrimSpace(site.ServerName) == "" {
+				return fmt.Errorf("web server site %d requires a server name", idx+1)
+			}
+			if strings.TrimSpace(site.UpstreamHost) == "" {
+				return fmt.Errorf("web server site %d requires an upstream host", idx+1)
+			}
+			if site.UpstreamPort < 1 || site.UpstreamPort > 65535 {
+				return fmt.Errorf("web server site %d upstream port must be between 1 and 65535", idx+1)
+			}
+			if site.EnableHTTPS && cfg.WebServer != webServerNginx {
+				return fmt.Errorf("web server site %d enables HTTPS, but only nginx HTTPS via certbot is supported", idx+1)
+			}
+		}
+	}
+	if cfg.WebServer == webServerNginx && hasHTTPSWebServerSites(cfg.WebServerSites) && strings.TrimSpace(cfg.NginxCertbotEmail) == "" {
+		return fmt.Errorf("nginx HTTPS configuration requires a certbot email")
+	}
+	for idx, host := range cfg.WebServerTargetHosts {
+		if strings.TrimSpace(host) == "" {
+			return fmt.Errorf("web server install target host %d must not be empty", idx+1)
 		}
 	}
 	return nil
@@ -993,6 +1137,7 @@ func printUsage() {
 	blocks := []outputBlock{
 		{Title: "Usage", Lines: []string{"civa <command> [options]"}},
 		{Title: "Commands", Lines: []string{
+			"config                     Configure persistent civa settings (interactive)",
 			"apply <plan-name>          Execute an existing generated plan",
 			"apply review <plan-name>   Verify an applied plan with ansible check mode",
 			"plan start                 Generate inventory, vars, and the execution plan only",
@@ -1027,6 +1172,7 @@ func printUsage() {
 			"--help                     Show this help message",
 		}},
 		{Title: "Examples", Lines: []string{
+			"civa config",
 			"civa plan start --non-interactive --server 203.0.113.10,web-01,2201 --server 203.0.113.11,api-01,2202 --components 1,2,3,4",
 			"civa plan list",
 			"civa preview web-01",
@@ -1048,6 +1194,13 @@ func printUsage() {
 func printCommandUsage(command string) {
 	styled := canStyleStdout()
 	switch command {
+	case commandConfig:
+		fmt.Println(renderSectionTitle("civa config", styled))
+		fmt.Println(renderOutputBlocks([]outputBlock{
+			{Title: "Usage", Lines: []string{"civa config"}},
+			{Title: "What it configures", Lines: []string{"Persisted web server profile for nginx/caddy", "Nginx HTTPS mode via certbot"}},
+			{Title: "Examples", Lines: []string{"civa config"}},
+		}, styled))
 	case commandPlan:
 		fmt.Println(renderSectionTitle("civa plan", styled))
 		fmt.Println(renderOutputBlocks([]outputBlock{
@@ -1135,6 +1288,19 @@ func webServerLabel(value string) string {
 	default:
 		return "None"
 	}
+}
+
+func supportsCustomWebServerSites(value string) bool {
+	return value == webServerNginx || value == webServerCaddy
+}
+
+func hasHTTPSWebServerSites(sites []webServerSiteSpec) bool {
+	for _, site := range sites {
+		if site.EnableHTTPS {
+			return true
+		}
+	}
+	return false
 }
 
 func validateExistingPlanCommandFlags(cfg config) error {
