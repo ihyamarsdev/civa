@@ -191,7 +191,7 @@ func (r *Root) newSetupCommand(globals *globalFlags) *cobra.Command {
 	cmd.Flags().IntVar(&flags.sshPort, "ssh-port", 22, "SSH port used to connect to every target server")
 	cmd.Flags().StringVar(&flags.sshPassword, "ssh-password", "", "SSH password used by civa setup")
 	cmd.Flags().StringVar(&flags.sshPublicKey, "ssh-public-key", "~/.ssh/id_ed25519.pub", "Local public key path that will be installed for the deploy user")
-	cmd.Flags().StringArrayVar(&flags.servers, "server", nil, "Add a target server; hostname is optional and becomes the server hostname")
+	cmd.Flags().StringArrayVar(&flags.servers, "server", nil, "Add a target server as addr[,hostname][,port]; hostname and SSH port are optional")
 
 	return cmd
 }
@@ -355,7 +355,7 @@ func (r *Root) bindPlanStartFlags(cmd *cobra.Command, flags *planStartFlags) {
 	cmd.Flags().StringVar(&flags.deployUser, "deployer-user", "deployer", "User created and configured on the target servers")
 	cmd.Flags().StringVar(&flags.timezone, "timezone", "Asia/Jakarta", "Timezone applied to the target servers")
 	cmd.Flags().StringVar(&flags.componentsInput, "components", "all", "Components to run: all or a comma list such as 1,2,4 or docker,traefik")
-	cmd.Flags().StringArrayVar(&flags.servers, "server", nil, "Add a target server; hostname is optional and becomes the server hostname")
+	cmd.Flags().StringArrayVar(&flags.servers, "server", nil, "Add a target server as addr[,hostname][,port]; hostname and SSH port are optional")
 	cmd.Flags().StringVar(&flags.traefikEmail, "traefik-email", "", "Email used by Let's Encrypt ACME")
 	cmd.Flags().StringVar(&flags.traefikChallenge, "traefik-challenge", "http", "Traefik challenge type: http or dns")
 	cmd.Flags().StringVar(&flags.traefikDNSProvider, "traefik-dns-provider", "cloudflare", "DNS provider name used when challenge type is dns")

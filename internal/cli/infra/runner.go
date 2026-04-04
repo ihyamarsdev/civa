@@ -456,10 +456,13 @@ func runUninstall(cfg config) error {
 }
 
 func runSSHCopyID(cfg config) error {
-	target := fmt.Sprintf("%s@%s", cfg.SSHUser, cfg.Servers[0].Address)
-	if err := rotateKnownHostsFile(); err != nil {
+	server := cfg.Servers[0]
+	sshPort := effectiveSSHPort(cfg, server)
+	target := fmt.Sprintf("%s@%s", cfg.SSHUser, server.Address)
+	if err := rewriteKnownHostEntry(server.Address, sshPort); err != nil {
 		return err
 	}
+
 	cmd := buildSSHCopyIDCommand(cfg)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -472,19 +475,16 @@ func runSSHCopyID(cfg config) error {
 	return nil
 }
 
-func rotateKnownHostsFile() error {
-	return infssh.RotateKnownHostsFile()
-}
-
-func rotateKnownHostsFileInHome(homeDir string) error {
-	return infssh.RotateKnownHostsFileInHome(homeDir)
+func rewriteKnownHostEntry(host string, port int) error {
+	return infssh.RewriteKnownHostEntry(host, port)
 }
 
 func buildSSHCopyIDCommand(cfg config) *exec.Cmd {
 	target := fmt.Sprintf("%s@%s", cfg.SSHUser, cfg.Servers[0].Address)
+	sshPort := effectiveSSHPort(cfg, cfg.Servers[0])
 	args := []string{
 		"-i", cfg.SSHPublicKey,
-		"-p", strconv.Itoa(cfg.SSHPort),
+		"-p", strconv.Itoa(sshPort),
 		"-o", "StrictHostKeyChecking=accept-new",
 		target,
 	}
@@ -496,6 +496,17 @@ func buildSSHCopyIDCommand(cfg config) *exec.Cmd {
 	cmd := exec.Command("sshpass", append([]string{"-e", "ssh-copy-id"}, args...)...)
 	cmd.Env = append(os.Environ(), "SSHPASS="+cfg.SSHPassword)
 	return cmd
+}
+
+func effectiveSSHPort(cfg config, server serverSpec) int {
+	if server.SSHPort >= 1 && server.SSHPort <= 65535 {
+		return server.SSHPort
+	}
+	if cfg.SSHPort >= 1 && cfg.SSHPort <= 65535 {
+		return cfg.SSHPort
+	}
+
+	return defaultSSHPort
 }
 
 func uninstallTargetPathForPath(path string) (string, error) {
@@ -769,7 +780,7 @@ func writeInventory(cfg *config, state *runtimeState) error {
 		fmt.Fprintf(&builder, "        %s:\n", alias)
 		fmt.Fprintf(&builder, "          ansible_host: %q\n", server.Address)
 		fmt.Fprintf(&builder, "          ansible_user: %q\n", cfg.SSHUser)
-		fmt.Fprintf(&builder, "          ansible_port: %d\n", cfg.SSHPort)
+		fmt.Fprintf(&builder, "          ansible_port: %d\n", effectiveSSHPort(*cfg, server))
 		if cfg.SSHAuthMethod == sshAuthMethodKey {
 			fmt.Fprintf(&builder, "          ansible_ssh_private_key_file: %q\n", cfg.SSHPrivateKey)
 		}

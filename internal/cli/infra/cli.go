@@ -7,8 +7,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/glamour/styles"
@@ -55,6 +57,7 @@ const (
 type serverSpec struct {
 	Address  string
 	Hostname string
+	SSHPort  int
 }
 
 type componentOption struct {
@@ -441,7 +444,10 @@ func shouldPromptApplyConfirmation(cfg config) bool {
 }
 
 func prepareRuntime(cfg *config) (*runtimeState, error) {
-	runID := generateRunID(time.Now())
+	runID, err := resolveGeneratedPlanName(cfg)
+	if err != nil {
+		return nil, err
+	}
 	generatedDir := filepath.Join(runRootDirectoryPath(), runID)
 	inventoryFile := filepath.Join(generatedDir, "inventory.yml")
 	varsFile := filepath.Join(generatedDir, "vars.yml")
@@ -491,6 +497,92 @@ func prepareRuntime(cfg *config) (*runtimeState, error) {
 		ProgressTotal:   total,
 		CompletedPhases: []string{},
 	}, nil
+}
+
+func resolveGeneratedPlanName(cfg *config) (string, error) {
+	candidate := strings.TrimSpace(cfg.PlanName)
+	if candidate == "" && len(cfg.Servers) > 0 {
+		candidate = strings.TrimSpace(cfg.Servers[0].Hostname)
+		if candidate == "" {
+			candidate = strings.TrimSpace(cfg.Servers[0].Address)
+		}
+	}
+
+	planName := sanitizePlanName(candidate)
+	if planName == "" {
+		planName = generateRunID(time.Now())
+	}
+
+	if !planNameExists(planName) {
+		cfg.PlanName = planName
+		return planName, nil
+	}
+
+	if !shouldPrompt(cfg) {
+		return "", fmt.Errorf("generated plan name %q already exists; use a different primary hostname", planName)
+	}
+
+	for {
+		printSection("Plan Name")
+		logLine(fmt.Sprintf("Hostname %q is already used by an existing plan.", planName))
+		replacement, err := promptNonEmptyString("Enter a unique primary hostname", "")
+		if err != nil {
+			return "", err
+		}
+
+		sanitized := sanitizePlanName(replacement)
+		if sanitized == "" {
+			logLine("Hostname only contains unsupported characters. Use letters, numbers, dot, dash, or underscore.")
+			continue
+		}
+		if planNameExists(sanitized) {
+			planName = sanitized
+			continue
+		}
+
+		if len(cfg.Servers) > 0 {
+			cfg.Servers[0].Hostname = strings.TrimSpace(replacement)
+		}
+		cfg.PlanName = sanitized
+		return sanitized, nil
+	}
+}
+
+func planNameExists(planName string) bool {
+	if strings.TrimSpace(planName) == "" {
+		return false
+	}
+	_, err := os.Stat(planPathForName(planName))
+	return err == nil
+}
+
+func sanitizePlanName(raw string) string {
+	raw = strings.ToLower(strings.TrimSpace(raw))
+	if raw == "" {
+		return ""
+	}
+
+	var builder strings.Builder
+	builder.Grow(len(raw))
+	lastDash := false
+
+	for _, r := range raw {
+		switch {
+		case unicode.IsLetter(r) || unicode.IsDigit(r):
+			builder.WriteRune(r)
+			lastDash = false
+		case r == '-' || r == '_' || r == '.':
+			builder.WriteRune(r)
+			lastDash = false
+		default:
+			if !lastDash {
+				builder.WriteRune('-')
+				lastDash = true
+			}
+		}
+	}
+
+	return strings.Trim(builder.String(), "-._")
 }
 
 func generateRunID(now time.Time) string {
@@ -729,15 +821,41 @@ func validateSetupConfig(cfg *config) error {
 }
 
 func parseServerSpec(raw string) (serverSpec, error) {
-	parts := strings.SplitN(raw, ",", 2)
+	parts := strings.Split(raw, ",")
 	address := strings.TrimSpace(parts[0])
 	if address == "" {
 		return serverSpec{}, fmt.Errorf("--server requires an address or IP")
 	}
 	server := serverSpec{Address: address}
-	if len(parts) == 2 {
-		server.Hostname = strings.TrimSpace(parts[1])
+
+	if len(parts) >= 2 {
+		second := strings.TrimSpace(parts[1])
+		if second != "" {
+			if port, err := strconv.Atoi(second); err == nil {
+				if port < 1 || port > 65535 {
+					return serverSpec{}, fmt.Errorf("--server ssh port must be between 1 and 65535")
+				}
+				server.SSHPort = port
+			} else {
+				server.Hostname = second
+			}
+		}
 	}
+
+	if len(parts) >= 3 {
+		portToken := strings.TrimSpace(parts[2])
+		if portToken != "" {
+			port, err := strconv.Atoi(portToken)
+			if err != nil {
+				return serverSpec{}, fmt.Errorf("--server ssh port must be an integer")
+			}
+			if port < 1 || port > 65535 {
+				return serverSpec{}, fmt.Errorf("--server ssh port must be between 1 and 65535")
+			}
+			server.SSHPort = port
+		}
+	}
+
 	return server, nil
 }
 
@@ -922,7 +1040,7 @@ func printUsage() {
 			"--timezone <tz>            Timezone applied to the target servers",
 			"--components <list>        Components to run: all or a comma list such as 1,2,4 or docker,traefik",
 			"--plan-file <path>         Existing plan file override used by preview or apply",
-			"--server <addr[,hostname]> Add a target server; hostname is optional and becomes the server hostname",
+			"--server <addr[,hostname][,port]> Add a target server; hostname and SSH port are optional",
 			"--traefik-email <email>    Email used by Let's Encrypt ACME",
 			"--traefik-challenge <type> Traefik challenge type: http or dns",
 			"--traefik-dns-provider <id> DNS provider name used when challenge type is dns",
@@ -930,16 +1048,16 @@ func printUsage() {
 			"--help                     Show this help message",
 		}},
 		{Title: "Examples", Lines: []string{
-			"civa plan start --non-interactive --server 203.0.113.10,web-01 --server 203.0.113.11,api-01 --components 1,2,3,4",
+			"civa plan start --non-interactive --server 203.0.113.10,web-01,2201 --server 203.0.113.11,api-01,2202 --components 1,2,3,4",
 			"civa plan list",
-			"civa preview 20260401-152334-210329559",
+			"civa preview web-01",
 			"civa setup --server 203.0.113.10 --ssh-user root --ssh-password 'secret' --ssh-public-key ~/.ssh/id_ed25519.pub",
 			"civa doctor",
 			"civa doctor fix",
 			"civa completion bash",
-			"civa apply 20260401-152334-210329559 --yes",
-			"civa apply review 20260401-152334-210329559",
-			"civa plan remove 20260401-152334-210329559 --yes",
+			"civa apply web-01 --yes",
+			"civa apply review web-01",
+			"civa plan remove web-01 --yes",
 			"civa uninstall --yes",
 		}},
 	}
@@ -956,19 +1074,19 @@ func printCommandUsage(command string) {
 		fmt.Println(renderOutputBlocks([]outputBlock{
 			{Title: "Usage", Lines: []string{"civa plan start [options]", "civa plan list", "civa plan remove <plan-name> [--yes]"}},
 			{Title: "Subcommands", Lines: []string{"start                        Generate a new named plan under ~/.civa/runs/", "list                         List generated plans", "remove <plan-name>           Remove a generated plan and its artifacts"}},
-			{Title: "Examples", Lines: []string{"civa plan start --non-interactive --server 203.0.113.10,web-01 --components all", "civa plan list", "civa plan remove 20260401-160900-040074544 --yes"}},
+			{Title: "Examples", Lines: []string{"civa plan start --non-interactive --server 203.0.113.10,web-01,2201 --components all", "civa plan list", "civa plan remove web-01 --yes"}},
 		}, styled))
 	case commandPreview:
 		fmt.Println(renderSectionTitle("civa preview", styled))
 		fmt.Println(renderOutputBlocks([]outputBlock{
 			{Title: "Usage", Lines: []string{"civa preview <plan-name>", "civa preview --plan-file <path>"}},
-			{Title: "Examples", Lines: []string{"civa preview 20260401-160900-040074544", "civa preview --plan-file ~/.civa/runs/20260401-160900-040074544/plan.md"}},
+			{Title: "Examples", Lines: []string{"civa preview web-01", "civa preview --plan-file ~/.civa/runs/web-01/plan.md"}},
 		}, styled))
 	case commandApply:
 		fmt.Println(renderSectionTitle("civa apply", styled))
 		fmt.Println(renderOutputBlocks([]outputBlock{
 			{Title: "Usage", Lines: []string{"civa apply <plan-name> [--yes]", "civa apply review <plan-name>", "civa apply --plan-file <path> [--yes]", "civa apply review --plan-file <path>"}},
-			{Title: "Examples", Lines: []string{"civa apply 20260401-160900-040074544 --yes", "civa apply review 20260401-160900-040074544", "civa apply --plan-file ~/.civa/runs/20260401-160900-040074544/plan.md --yes"}},
+			{Title: "Examples", Lines: []string{"civa apply web-01 --yes", "civa apply review web-01", "civa apply --plan-file ~/.civa/runs/web-01/plan.md --yes"}},
 		}, styled))
 	case commandCompletion:
 		fmt.Println(renderSectionTitle("civa completion", styled))

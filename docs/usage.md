@@ -39,7 +39,7 @@ Component selection in interactive mode uses a Charmbracelet Huh multi-select pr
 
 `civa plan start` assumes SSH key access and only needs the local SSH private key path. The matching public key path is derived automatically unless you override it explicitly.
 
-Use `civa setup` to install your local public key onto a fresh VPS with its built-in user account. Before running SSH key installation, `civa setup` checks required local dependencies and auto-installs missing packages using your OS package manager (`apt-get`, `dnf`, or `yum`) with `sudo`. If you pass `--ssh-password`, setup uses `sshpass -e ssh-copy-id`; otherwise it runs `ssh-copy-id` directly and lets that tool prompt for the password in your terminal. Before it connects, `civa setup` moves `~/.ssh/known_hosts` to `~/.ssh/known_hosts.old` so a stale host key does not block the first login. For first contact it uses `StrictHostKeyChecking=accept-new`, which is convenient but still a trust-on-first-use trade-off.
+Use `civa setup` to install your local public key onto a fresh VPS with its built-in user account. Before running SSH key installation, `civa setup` checks required local dependencies and auto-installs missing packages using your OS package manager (`apt-get`, `dnf`, or `yum`) with `sudo`. If you pass `--ssh-password`, setup uses `sshpass -e ssh-copy-id`; otherwise it runs `ssh-copy-id` directly and lets that tool prompt for the password in your terminal. Before it connects, `civa setup` rewrites only the matching host entry in `~/.ssh/known_hosts` so stale host keys for the target host do not block the first login while other hosts stay untouched. For first contact it uses `StrictHostKeyChecking=accept-new`, which is convenient but still a trust-on-first-use trade-off.
 
 Use `--web-server none|traefik|nginx|caddy` to choose which web server to prepare. The default web server remains `traefik` when the `web_server` component is selected and no explicit choice is provided.
 
@@ -62,8 +62,8 @@ Generate a plan for two servers:
 ```bash
 ./bin/civa plan start \
   --non-interactive \
-  --server 203.0.113.10,web-01 \
-  --server 203.0.113.11,api-01 \
+  --server 203.0.113.10,web-01,2201 \
+  --server 203.0.113.11,api-01,2202 \
   --ssh-user root \
   --ssh-port 22 \
   --web-server nginx \
@@ -73,6 +73,8 @@ Generate a plan for two servers:
   --timezone Asia/Jakarta \
   --components all
 ```
+
+`--server` now supports `addr[,hostname][,port]`. If `port` is omitted, `civa plan start` falls back to `--ssh-port` and defaults to `22`.
 
 Install your public key on a fresh server before planning:
 
@@ -91,22 +93,22 @@ List generated plans:
 ./bin/civa plan list
 ```
 
-Preview an existing plan:
+Preview an existing plan (plan names now follow your primary hostname):
 
 ```bash
-./bin/civa preview 20260401-152334-210329559
+./bin/civa preview web-01
 ```
 
 Apply an existing plan to a Rocky or AlmaLinux target:
 
 ```bash
-./bin/civa apply 20260401-152334-210329559 --yes
+./bin/civa apply web-01 --yes
 ```
 
 Remove a generated plan:
 
 ```bash
-./bin/civa plan remove 20260401-152334-210329559 --yes
+./bin/civa plan remove web-01 --yes
 ```
 
 Print a completion script for Bash:

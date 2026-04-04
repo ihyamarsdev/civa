@@ -17,6 +17,7 @@ func collectInteractiveInputs(cfg *config) error {
 	fmt.Fprintln(os.Stderr, "")
 	printSection("Interactive Setup")
 	logLine("civa will ask for the minimum data needed to generate inventory, vars, and the Ansible run plan.")
+	logLine("Hostname for the first server is used as the generated plan name and must be unique.")
 
 	if !cfg.Provided.Components {
 		components, err := promptComponents()
@@ -38,11 +39,21 @@ func collectInteractiveInputs(cfg *config) error {
 			if err != nil {
 				return err
 			}
-			hostname, err := promptString("Hostname to apply on the server (optional)", "", false)
+			hostnamePrompt := "Hostname to apply on the server (optional)"
+			requireHostname := false
+			if i == 1 {
+				hostnamePrompt = "Primary hostname (used as plan name, must be unique)"
+				requireHostname = true
+			}
+			hostname, err := promptString(hostnamePrompt, "", requireHostname)
 			if err != nil {
 				return err
 			}
-			cfg.Servers = append(cfg.Servers, serverSpec{Address: address, Hostname: hostname})
+			sshPort, err := promptOptionalPort(fmt.Sprintf("Custom SSH port for server %d (blank to use %d)", i, cfg.SSHPort), "")
+			if err != nil {
+				return err
+			}
+			cfg.Servers = append(cfg.Servers, serverSpec{Address: address, Hostname: hostname, SSHPort: sshPort})
 		}
 	}
 
@@ -328,6 +339,42 @@ func promptPort(title string, defaultValue int) (int, error) {
 		return 0, normalizePromptError(err)
 	}
 	parsed, _ := strconv.Atoi(strings.TrimSpace(value))
+	return parsed, nil
+}
+
+func promptOptionalPort(title, defaultValue string) (int, error) {
+	value := defaultValue
+	field := huh.NewInput().
+		Title(title).
+		Value(&value).
+		Validate(func(input string) error {
+			_, err := parseOptionalPortInput(input)
+			return err
+		})
+
+	if err := field.Run(); err != nil {
+		return 0, normalizePromptError(err)
+	}
+
+	port, err := parseOptionalPortInput(value)
+	if err != nil {
+		return 0, err
+	}
+
+	return port, nil
+}
+
+func parseOptionalPortInput(input string) (int, error) {
+	trimmed := strings.TrimSpace(input)
+	if trimmed == "" {
+		return 0, nil
+	}
+
+	parsed, err := strconv.Atoi(trimmed)
+	if err != nil || parsed < 1 || parsed > 65535 {
+		return 0, fmt.Errorf("port must be blank or an integer between 1 and 65535")
+	}
+
 	return parsed, nil
 }
 

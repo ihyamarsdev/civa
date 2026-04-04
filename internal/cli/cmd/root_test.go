@@ -55,7 +55,7 @@ func TestRootRunRoutesPlanStartFlags(t *testing.T) {
 	executor := &stubExecutor{}
 	root := NewRoot(executor)
 
-	err := root.Run([]string{"plan", "start", "--server", "203.0.113.10", "--ssh-user", "ubuntu", "--non-interactive"})
+	err := root.Run([]string{"plan", "start", "--server", "203.0.113.10,web-01,2201", "--ssh-user", "ubuntu", "--non-interactive"})
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
@@ -67,7 +67,7 @@ func TestRootRunRoutesPlanStartFlags(t *testing.T) {
 	if req.Command != domain.CommandPlan || req.PlanAction != domain.PlanActionStart {
 		t.Fatalf("unexpected plan start request: %#v", req)
 	}
-	if req.SSHUser != "ubuntu" || len(req.Servers) != 1 || req.Servers[0] != "203.0.113.10" {
+	if req.SSHUser != "ubuntu" || len(req.Servers) != 1 || req.Servers[0] != "203.0.113.10,web-01,2201" {
 		t.Fatalf("unexpected mapped flags: %#v", req)
 	}
 	if !req.NonInteractive || !req.Provided.NonInteractive || !req.Provided.SSHUser || !req.Provided.Servers {

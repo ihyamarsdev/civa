@@ -2,6 +2,7 @@ package infra
 
 import (
 	"bytes"
+	infssh "civa/internal/cli/infra/ssh"
 	"os"
 	"path/filepath"
 	"strings"
@@ -116,6 +117,21 @@ func TestBuildSSHCopyIDCommand(t *testing.T) {
 	}
 }
 
+func TestBuildSSHCopyIDCommandUsesServerSpecificPortWhenProvided(t *testing.T) {
+	cfg := config{
+		SSHUser:      "root",
+		SSHPort:      2222,
+		SSHPublicKey: "/tmp/id_test.pub",
+		Servers:      []serverSpec{{Address: "203.0.113.10", SSHPort: 2201}},
+	}
+
+	cmd := buildSSHCopyIDCommand(cfg)
+	gotArgs := strings.Join(cmd.Args, " ")
+	if !strings.Contains(gotArgs, "ssh-copy-id -i /tmp/id_test.pub -p 2201 -o StrictHostKeyChecking=accept-new root@203.0.113.10") {
+		t.Fatalf("expected server-specific ssh port in command args, got %s", gotArgs)
+	}
+}
+
 func TestBuildSSHCopyIDCommandWithoutPasswordUsesSSHCopyIDDirectly(t *testing.T) {
 	cfg := config{
 		SSHUser:      "root",
@@ -133,30 +149,43 @@ func TestBuildSSHCopyIDCommandWithoutPasswordUsesSSHCopyIDDirectly(t *testing.T)
 	}
 }
 
-func TestRotateKnownHostsFileInHomeMovesKnownHosts(t *testing.T) {
+func TestRewriteKnownHostEntryInHomeRewritesMatchingHostOnly(t *testing.T) {
 	homeDir := t.TempDir()
 	sshDir := filepath.Join(homeDir, ".ssh")
 	if err := os.MkdirAll(sshDir, 0o755); err != nil {
 		t.Fatalf("failed to create ssh dir: %v", err)
 	}
 	knownHostsPath := filepath.Join(sshDir, "known_hosts")
-	if err := os.WriteFile(knownHostsPath, []byte("old-host-key\n"), 0o600); err != nil {
+	content := strings.Join([]string{
+		"203.0.113.10,host-a ssh-ed25519 AAAA",
+		"[203.0.113.11]:2222 ssh-ed25519 BBBB",
+		"203.0.113.12 ssh-ed25519 CCCC",
+		"",
+	}, "\n")
+	if err := os.WriteFile(knownHostsPath, []byte(content), 0o600); err != nil {
 		t.Fatalf("failed to write known_hosts: %v", err)
 	}
 
-	if err := rotateKnownHostsFileInHome(homeDir); err != nil {
-		t.Fatalf("rotateKnownHostsFileInHome returned error: %v", err)
+	if err := infssh.RewriteKnownHostEntryInHome(homeDir, "203.0.113.10", 22); err != nil {
+		t.Fatalf("RewriteKnownHostEntryInHome returned error: %v", err)
+	}
+	if err := infssh.RewriteKnownHostEntryInHome(homeDir, "203.0.113.11", 2222); err != nil {
+		t.Fatalf("RewriteKnownHostEntryInHome returned error: %v", err)
 	}
 
-	if _, err := os.Stat(knownHostsPath); !os.IsNotExist(err) {
-		t.Fatalf("expected known_hosts to be moved away, got err=%v", err)
-	}
-	oldContent, err := os.ReadFile(filepath.Join(sshDir, "known_hosts.old"))
+	rewritten, err := os.ReadFile(knownHostsPath)
 	if err != nil {
-		t.Fatalf("failed to read known_hosts.old: %v", err)
+		t.Fatalf("failed to read rewritten known_hosts: %v", err)
 	}
-	if string(oldContent) != "old-host-key\n" {
-		t.Fatalf("unexpected known_hosts.old content: %q", string(oldContent))
+	text := string(rewritten)
+	if strings.Contains(text, "203.0.113.10") || strings.Contains(text, "[203.0.113.11]:2222") {
+		t.Fatalf("expected matching host entries removed, got: %q", text)
+	}
+	if !strings.Contains(text, "host-a ssh-ed25519 AAAA") || !strings.Contains(text, "203.0.113.12 ssh-ed25519 CCCC") {
+		t.Fatalf("expected non-target host entries retained, got: %q", text)
+	}
+	if _, err := os.Stat(filepath.Join(sshDir, "known_hosts.old")); !os.IsNotExist(err) {
+		t.Fatalf("expected no known_hosts.old backup file, got err=%v", err)
 	}
 }
 
@@ -200,8 +229,61 @@ func TestParseServerSpecSupportsHostname(t *testing.T) {
 		t.Fatalf("parseServerSpec returned error: %v", err)
 	}
 
-	if server.Address != "203.0.113.10" || server.Hostname != "web-01" {
+	if server.Address != "203.0.113.10" || server.Hostname != "web-01" || server.SSHPort != 0 {
 		t.Fatalf("unexpected server spec: %#v", server)
+	}
+}
+
+func TestParseServerSpecSupportsCustomSSHPort(t *testing.T) {
+	server, err := parseServerSpec("203.0.113.10,2202")
+	if err != nil {
+		t.Fatalf("parseServerSpec returned error: %v", err)
+	}
+	if server.Address != "203.0.113.10" || server.Hostname != "" || server.SSHPort != 2202 {
+		t.Fatalf("unexpected server spec for address+port: %#v", server)
+	}
+
+	server, err = parseServerSpec("203.0.113.10,web-01,2203")
+	if err != nil {
+		t.Fatalf("parseServerSpec returned error: %v", err)
+	}
+	if server.Address != "203.0.113.10" || server.Hostname != "web-01" || server.SSHPort != 2203 {
+		t.Fatalf("unexpected server spec for address+hostname+port: %#v", server)
+	}
+}
+
+func TestParseServerSpecRejectsInvalidSSHPort(t *testing.T) {
+	if _, err := parseServerSpec("203.0.113.10,web-01,abc"); err == nil {
+		t.Fatal("expected parseServerSpec to reject non-integer ssh port")
+	}
+	if _, err := parseServerSpec("203.0.113.10,web-01,70000"); err == nil {
+		t.Fatal("expected parseServerSpec to reject out-of-range ssh port")
+	}
+}
+
+func TestParseOptionalPortInputSupportsBlankAndValidPort(t *testing.T) {
+	port, err := parseOptionalPortInput("")
+	if err != nil {
+		t.Fatalf("expected blank input to be accepted, got error: %v", err)
+	}
+	if port != 0 {
+		t.Fatalf("expected blank input to map to 0, got %d", port)
+	}
+
+	port, err = parseOptionalPortInput("2201")
+	if err != nil {
+		t.Fatalf("expected valid port input, got error: %v", err)
+	}
+	if port != 2201 {
+		t.Fatalf("expected parsed port 2201, got %d", port)
+	}
+}
+
+func TestParseOptionalPortInputRejectsInvalidPort(t *testing.T) {
+	for _, input := range []string{"abc", "0", "70000"} {
+		if _, err := parseOptionalPortInput(input); err == nil {
+			t.Fatalf("expected invalid port input %q to fail", input)
+		}
 	}
 }
 
@@ -689,6 +771,44 @@ func TestGenerateRunIDIncludesNanoseconds(t *testing.T) {
 	}
 }
 
+func TestResolveGeneratedPlanNameUsesPrimaryHostname(t *testing.T) {
+	cfg := &config{
+		NonInteractive: true,
+		Servers:        []serverSpec{{Address: "203.0.113.10", Hostname: "Web-01"}},
+	}
+
+	planName, err := resolveGeneratedPlanName(cfg)
+	if err != nil {
+		t.Fatalf("resolveGeneratedPlanName returned error: %v", err)
+	}
+	if planName != "web-01" {
+		t.Fatalf("expected hostname-based plan name web-01, got %s", planName)
+	}
+}
+
+func TestResolveGeneratedPlanNameRejectsDuplicateInNonInteractive(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	existingPlanName := "web-01"
+	existingPlanPath := planPathForName(existingPlanName)
+	if err := os.MkdirAll(filepath.Dir(existingPlanPath), 0o755); err != nil {
+		t.Fatalf("failed to create existing plan dir: %v", err)
+	}
+	if err := os.WriteFile(existingPlanPath, []byte("# existing plan\n"), 0o644); err != nil {
+		t.Fatalf("failed to create existing plan file: %v", err)
+	}
+
+	cfg := &config{
+		NonInteractive: true,
+		Servers:        []serverSpec{{Address: "203.0.113.10", Hostname: "web-01"}},
+	}
+
+	if _, err := resolveGeneratedPlanName(cfg); err == nil {
+		t.Fatal("expected duplicate hostname-based plan name to be rejected in non-interactive mode")
+	}
+}
+
 func TestMaterializeAnsibleAssetsWritesEmbeddedFiles(t *testing.T) {
 	tempDir := t.TempDir()
 	ansibleDir := filepath.Join(tempDir, "ansible")
@@ -790,6 +910,38 @@ func TestWriteInventoryUsesPrivateKeyForKeyAuth(t *testing.T) {
 	}
 	if !strings.Contains(inventory, `ansible_ssh_private_key_file: "/tmp/id_ed25519"`) {
 		t.Fatalf("expected private key in key-auth inventory, got %s", inventory)
+	}
+}
+
+func TestWriteInventoryPrefersServerSpecificSSHPort(t *testing.T) {
+	tempDir := t.TempDir()
+	cfg := &config{
+		SSHAuthMethod: sshAuthMethodKey,
+		SSHPrivateKey: "/tmp/id_ed25519",
+		SSHUser:       "ubuntu",
+		SSHPort:       2200,
+		Servers: []serverSpec{
+			{Address: "203.0.113.20", Hostname: "app-01", SSHPort: 2222},
+			{Address: "203.0.113.21", Hostname: "app-02"},
+		},
+	}
+	state := &runtimeState{InventoryFile: filepath.Join(tempDir, "inventory.yml")}
+
+	if err := writeInventory(cfg, state); err != nil {
+		t.Fatalf("writeInventory returned error: %v", err)
+	}
+
+	content, err := os.ReadFile(state.InventoryFile)
+	if err != nil {
+		t.Fatalf("failed to read inventory: %v", err)
+	}
+
+	inventory := string(content)
+	if !strings.Contains(inventory, "ansible_port: 2222") {
+		t.Fatalf("expected server-specific ssh port in inventory, got %s", inventory)
+	}
+	if !strings.Contains(inventory, "ansible_port: 2200") {
+		t.Fatalf("expected fallback global ssh port in inventory, got %s", inventory)
 	}
 }
 
