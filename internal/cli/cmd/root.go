@@ -226,11 +226,15 @@ func (r *Root) newPlanCommand(globals *globalFlags) *cobra.Command {
 	r.bindPlanStartFlags(startCmd, startFlags)
 
 	listCmd := &cobra.Command{
-		Use:   domain.PlanActionList,
-		Short: "List generated plans",
-		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			req := r.withGlobalFlags(cmd, globals, domain.Request{Command: domain.CommandPlan, PlanAction: domain.PlanActionList})
+		Use:   domain.PlanActionList + " [plan-name]",
+		Short: "List generated plans or list versions for a plan name",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			req := domain.Request{Command: domain.CommandPlan, PlanAction: domain.PlanActionList}
+			if len(args) == 1 {
+				req.PlanName = args[0]
+			}
+			req = r.withGlobalFlags(cmd, globals, req)
 			return r.executor.Execute(req)
 		},
 	}

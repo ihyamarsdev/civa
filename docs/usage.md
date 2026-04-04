@@ -33,7 +33,7 @@ When you run `civa plan start` without all required flags, `civa` asks for:
 
 `civa preview <nama-plan>` shows an existing `plan.md` rendered with Glow-style terminal formatting when stdout is a TTY. When redirected or piped, it falls back to plain non-TTY formatting. `civa apply <nama-plan>` only executes an existing plan and asks for a final confirmation unless you pass `--yes`. `civa apply review <nama-plan>` runs the same plan artifacts in Ansible check mode (`--check --diff`) to verify post-installation convergence.
 
-Generated plan names come from the run directory under `~/.civa/runs/`, for example `20260401-152334-210329559`. Use `civa plan list` to see available names. `--plan-file` remains available as a manual override, but the normal flow is name-based.
+Generated plan names now use your primary hostname as the base (for example `web-01`). If you generate again with the same hostname, civa automatically creates versioned names such as `web-01-v2`, `web-01-v3`, and so on. Use `civa plan list web-01` (or `civa plan web-01 list`) to see all versions.
 
 Component selection in interactive mode uses a Charmbracelet Huh multi-select prompt: use the Up and Down arrow keys to move, press Space to select or clear the highlighted component, then press Enter to confirm.
 
@@ -91,6 +91,14 @@ List generated plans:
 
 ```bash
 ./bin/civa plan list
+```
+
+List all versions for one hostname-based plan:
+
+```bash
+./bin/civa plan list web-01
+# or
+./bin/civa plan web-01 list
 ```
 
 Preview an existing plan (plan names now follow your primary hostname):

@@ -17,7 +17,7 @@ func collectInteractiveInputs(cfg *config) error {
 	fmt.Fprintln(os.Stderr, "")
 	printSection("Interactive Setup")
 	logLine("civa will ask for the minimum data needed to generate inventory, vars, and the Ansible run plan.")
-	logLine("Hostname for the first server is used as the generated plan name and must be unique.")
+	logLine("Hostname for the first server is used as the base generated plan name; repeated runs increment version automatically.")
 
 	if !cfg.Provided.Components {
 		components, err := promptComponents()
@@ -42,7 +42,7 @@ func collectInteractiveInputs(cfg *config) error {
 			hostnamePrompt := "Hostname to apply on the server (optional)"
 			requireHostname := false
 			if i == 1 {
-				hostnamePrompt = "Primary hostname (used as plan name, must be unique)"
+				hostnamePrompt = "Primary hostname (used as base plan name)"
 				requireHostname = true
 			}
 			hostname, err := promptString(hostnamePrompt, "", requireHostname)

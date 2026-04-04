@@ -53,6 +53,7 @@ func (LegacyRunner) ExecuteRequest(req domain.Request) error {
 	case domain.CommandPlan:
 		cfg := defaultConfig(commandPlan)
 		applyGlobalRequest(req, &cfg)
+		cfg.PlanName = req.PlanName
 		if req.PlanAction != "" {
 			cfg.PlanAction = req.PlanAction
 		}

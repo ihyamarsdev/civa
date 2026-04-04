@@ -117,7 +117,7 @@ func TestBuildSSHCopyIDCommand(t *testing.T) {
 	}
 }
 
-func TestBuildSSHCopyIDCommandUsesServerSpecificPortWhenProvided(t *testing.T) {
+func TestBuildSSHCopyIDCommandUsesInitiationPortWhenServerCustomPortProvided(t *testing.T) {
 	cfg := config{
 		SSHUser:      "root",
 		SSHPort:      2222,
@@ -127,8 +127,8 @@ func TestBuildSSHCopyIDCommandUsesServerSpecificPortWhenProvided(t *testing.T) {
 
 	cmd := buildSSHCopyIDCommand(cfg)
 	gotArgs := strings.Join(cmd.Args, " ")
-	if !strings.Contains(gotArgs, "ssh-copy-id -i /tmp/id_test.pub -p 2201 -o StrictHostKeyChecking=accept-new root@203.0.113.10") {
-		t.Fatalf("expected server-specific ssh port in command args, got %s", gotArgs)
+	if !strings.Contains(gotArgs, "ssh-copy-id -i /tmp/id_test.pub -p 2222 -o StrictHostKeyChecking=accept-new root@203.0.113.10") {
+		t.Fatalf("expected initiation ssh port in command args, got %s", gotArgs)
 	}
 }
 
@@ -786,7 +786,7 @@ func TestResolveGeneratedPlanNameUsesPrimaryHostname(t *testing.T) {
 	}
 }
 
-func TestResolveGeneratedPlanNameRejectsDuplicateInNonInteractive(t *testing.T) {
+func TestResolveGeneratedPlanNameIncrementsVersionOnDuplicate(t *testing.T) {
 	homeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)
 
@@ -804,8 +804,68 @@ func TestResolveGeneratedPlanNameRejectsDuplicateInNonInteractive(t *testing.T) 
 		Servers:        []serverSpec{{Address: "203.0.113.10", Hostname: "web-01"}},
 	}
 
-	if _, err := resolveGeneratedPlanName(cfg); err == nil {
-		t.Fatal("expected duplicate hostname-based plan name to be rejected in non-interactive mode")
+	planName, err := resolveGeneratedPlanName(cfg)
+	if err != nil {
+		t.Fatalf("resolveGeneratedPlanName returned error: %v", err)
+	}
+	if planName != "web-01-v2" {
+		t.Fatalf("expected duplicate hostname to generate versioned plan name web-01-v2, got %s", planName)
+	}
+}
+
+func TestLatestPlanVersionNameFindsNewestVersion(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	plans := []string{"web-01", "web-01-v2", "web-01-v3", "api-01"}
+	for _, planName := range plans {
+		planPath := planPathForName(planName)
+		if err := os.MkdirAll(filepath.Dir(planPath), 0o755); err != nil {
+			t.Fatalf("failed to create plan dir: %v", err)
+		}
+		if err := os.WriteFile(planPath, []byte("# plan\n"), 0o644); err != nil {
+			t.Fatalf("failed to write plan file: %v", err)
+		}
+	}
+
+	latestName, found, err := latestPlanVersionName("web-01")
+	if err != nil {
+		t.Fatalf("latestPlanVersionName returned error: %v", err)
+	}
+	if !found {
+		t.Fatal("expected to find latest version for web-01")
+	}
+	if latestName != "web-01-v3" {
+		t.Fatalf("expected latest version web-01-v3, got %s", latestName)
+	}
+}
+
+func TestResolvePlanInputFileUsesLatestVersionForBasePlanName(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	for _, planName := range []string{"web-01-v2", "web-01-v3"} {
+		planPath := planPathForName(planName)
+		if err := os.MkdirAll(filepath.Dir(planPath), 0o755); err != nil {
+			t.Fatalf("failed to create plan dir: %v", err)
+		}
+		if err := os.WriteFile(planPath, []byte("# plan\n"), 0o644); err != nil {
+			t.Fatalf("failed to write plan file: %v", err)
+		}
+	}
+
+	cfg := &config{Command: commandPreview, PlanName: "web-01"}
+	resolved, err := resolvePlanInputFile(cfg)
+	if err != nil {
+		t.Fatalf("resolvePlanInputFile returned error: %v", err)
+	}
+
+	expected := planPathForName("web-01-v3")
+	if resolved != expected {
+		t.Fatalf("expected latest plan path %s, got %s", expected, resolved)
+	}
+	if cfg.PlanName != "web-01-v3" {
+		t.Fatalf("expected cfg.PlanName updated to latest version, got %s", cfg.PlanName)
 	}
 }
 
@@ -913,7 +973,7 @@ func TestWriteInventoryUsesPrivateKeyForKeyAuth(t *testing.T) {
 	}
 }
 
-func TestWriteInventoryPrefersServerSpecificSSHPort(t *testing.T) {
+func TestWriteInventoryUsesInitiationPortAndStoresCustomSSHPortForSSHConfig(t *testing.T) {
 	tempDir := t.TempDir()
 	cfg := &config{
 		SSHAuthMethod: sshAuthMethodKey,
@@ -937,11 +997,11 @@ func TestWriteInventoryPrefersServerSpecificSSHPort(t *testing.T) {
 	}
 
 	inventory := string(content)
-	if !strings.Contains(inventory, "ansible_port: 2222") {
-		t.Fatalf("expected server-specific ssh port in inventory, got %s", inventory)
+	if strings.Count(inventory, "ansible_port: 2200") != 2 {
+		t.Fatalf("expected initiation ssh port for all inventory targets, got %s", inventory)
 	}
-	if !strings.Contains(inventory, "ansible_port: 2200") {
-		t.Fatalf("expected fallback global ssh port in inventory, got %s", inventory)
+	if !strings.Contains(inventory, "civa_custom_ssh_port: 2222") {
+		t.Fatalf("expected custom ssh port metadata for ssh config sync, got %s", inventory)
 	}
 }
 
@@ -1235,6 +1295,35 @@ func TestParseSSHConfigHostsFromInventory(t *testing.T) {
 	}
 	if entries[1].Alias != "db-01" || entries[1].HostName != "203.0.113.20" || entries[1].Port != 22 {
 		t.Fatalf("unexpected second entry: %#v", entries[1])
+	}
+}
+
+func TestParseSSHConfigHostsFromInventoryPrefersCustomSSHPort(t *testing.T) {
+	inventoryPath := filepath.Join(t.TempDir(), "inventory.yml")
+	inventory := strings.Join([]string{
+		"all:",
+		"  children:",
+		"    civa_targets:",
+		"      hosts:",
+		"        app-01:",
+		"          ansible_host: \"203.0.113.10\"",
+		"          ansible_user: \"deployer\"",
+		"          ansible_port: 22",
+		"          civa_custom_ssh_port: 2201",
+	}, "\n") + "\n"
+	if err := os.WriteFile(inventoryPath, []byte(inventory), 0o600); err != nil {
+		t.Fatalf("failed to write inventory: %v", err)
+	}
+
+	entries, err := parseSSHConfigHostsFromInventory(inventoryPath)
+	if err != nil {
+		t.Fatalf("parseSSHConfigHostsFromInventory returned error: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(entries))
+	}
+	if entries[0].Port != 2201 {
+		t.Fatalf("expected ssh config to use custom port 2201, got %d", entries[0].Port)
 	}
 }
 

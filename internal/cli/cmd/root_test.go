@@ -75,6 +75,24 @@ func TestRootRunRoutesPlanStartFlags(t *testing.T) {
 	}
 }
 
+func TestRootRunRoutesPlanListForSpecificName(t *testing.T) {
+	executor := &stubExecutor{}
+	root := NewRoot(executor)
+
+	err := root.Run([]string{"plan", "list", "hyane"})
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+
+	if len(executor.requests) != 1 {
+		t.Fatalf("expected one request, got %d", len(executor.requests))
+	}
+	req := executor.requests[0]
+	if req.Command != domain.CommandPlan || req.PlanAction != domain.PlanActionList || req.PlanName != "hyane" {
+		t.Fatalf("unexpected plan list request: %#v", req)
+	}
+}
+
 func TestRootRunReturnsExecutorError(t *testing.T) {
 	expectedErr := errors.New("executor failed")
 	executor := &stubExecutor{err: expectedErr}

@@ -162,8 +162,8 @@ func defaultConfig(command string) config {
 	}
 }
 
-func runPlanListFlow(_ *config) error {
-	return listPlans()
+func runPlanListFlow(cfg *config) error {
+	return listPlans(cfg.PlanName)
 }
 
 func runPlanRemoveFlow(cfg *config) error {
@@ -508,52 +508,20 @@ func resolveGeneratedPlanName(cfg *config) (string, error) {
 		}
 	}
 
-	planName := sanitizePlanName(candidate)
-	if planName == "" {
-		planName = generateRunID(time.Now())
-	}
-
-	if !planNameExists(planName) {
+	baseName := sanitizePlanName(candidate)
+	if baseName == "" {
+		planName := generateRunID(time.Now())
 		cfg.PlanName = planName
 		return planName, nil
 	}
 
-	if !shouldPrompt(cfg) {
-		return "", fmt.Errorf("generated plan name %q already exists; use a different primary hostname", planName)
+	planName, err := nextPlanVersionName(baseName)
+	if err != nil {
+		return "", err
 	}
 
-	for {
-		printSection("Plan Name")
-		logLine(fmt.Sprintf("Hostname %q is already used by an existing plan.", planName))
-		replacement, err := promptNonEmptyString("Enter a unique primary hostname", "")
-		if err != nil {
-			return "", err
-		}
-
-		sanitized := sanitizePlanName(replacement)
-		if sanitized == "" {
-			logLine("Hostname only contains unsupported characters. Use letters, numbers, dot, dash, or underscore.")
-			continue
-		}
-		if planNameExists(sanitized) {
-			planName = sanitized
-			continue
-		}
-
-		if len(cfg.Servers) > 0 {
-			cfg.Servers[0].Hostname = strings.TrimSpace(replacement)
-		}
-		cfg.PlanName = sanitized
-		return sanitized, nil
-	}
-}
-
-func planNameExists(planName string) bool {
-	if strings.TrimSpace(planName) == "" {
-		return false
-	}
-	_, err := os.Stat(planPathForName(planName))
-	return err == nil
+	cfg.PlanName = planName
+	return planName, nil
 }
 
 func sanitizePlanName(raw string) string {
@@ -1072,9 +1040,9 @@ func printCommandUsage(command string) {
 	case commandPlan:
 		fmt.Println(renderSectionTitle("civa plan", styled))
 		fmt.Println(renderOutputBlocks([]outputBlock{
-			{Title: "Usage", Lines: []string{"civa plan start [options]", "civa plan list", "civa plan remove <plan-name> [--yes]"}},
-			{Title: "Subcommands", Lines: []string{"start                        Generate a new named plan under ~/.civa/runs/", "list                         List generated plans", "remove <plan-name>           Remove a generated plan and its artifacts"}},
-			{Title: "Examples", Lines: []string{"civa plan start --non-interactive --server 203.0.113.10,web-01,2201 --components all", "civa plan list", "civa plan remove web-01 --yes"}},
+			{Title: "Usage", Lines: []string{"civa plan start [options]", "civa plan list [plan-name]", "civa plan remove <plan-name> [--yes]"}},
+			{Title: "Subcommands", Lines: []string{"start                        Generate a new versioned plan under ~/.civa/runs/", "list [plan-name]             List all plans or versions for one plan name", "remove <plan-name>           Remove a generated plan and its artifacts"}},
+			{Title: "Examples", Lines: []string{"civa plan start --non-interactive --server 203.0.113.10,web-01,2201 --components all", "civa plan list", "civa plan list web-01", "civa plan web-01 list", "civa plan remove web-01-v2 --yes"}},
 		}, styled))
 	case commandPreview:
 		fmt.Println(renderSectionTitle("civa preview", styled))

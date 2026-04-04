@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -55,10 +56,22 @@ func resolvePlanInputFile(cfg *config) (string, error) {
 
 	if strings.TrimSpace(cfg.PlanName) != "" {
 		planPath := planPathForName(cfg.PlanName)
-		if _, err := os.Stat(planPath); err != nil {
+		if _, err := os.Stat(planPath); err == nil {
+			cfg.PlanInputFile = planPath
+			return planPath, nil
+		}
+
+		versionedPlanName, ok, err := latestPlanVersionName(cfg.PlanName)
+		if err != nil {
+			return "", err
+		}
+		if !ok {
 			return "", fmt.Errorf("generated plan not found: %s", cfg.PlanName)
 		}
+
+		planPath = planPathForName(versionedPlanName)
 		cfg.PlanInputFile = planPath
+		cfg.PlanName = versionedPlanName
 		return planPath, nil
 	}
 
@@ -102,7 +115,9 @@ func planDirForName(name string) string {
 	return storage.PlanDirForName(name)
 }
 
-func listPlans() error {
+func listPlans(filter string) error {
+	filter = sanitizePlanName(filter)
+
 	entries, err := os.ReadDir(runRootDirectoryPath())
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -113,23 +128,58 @@ func listPlans() error {
 	}
 
 	latestPlan, _ := readLatestPlanPointer()
+
+	type planEntry struct {
+		Name    string
+		Path    string
+		Version int
+	}
+
+	plans := make([]planEntry, 0, len(entries))
+
 	printed := false
-	for i := len(entries) - 1; i >= 0; i-- {
-		entry := entries[i]
+	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
 		}
 		planName := entry.Name()
+		baseName, version := splitPlanVersionName(planName)
+		if filter != "" && baseName != filter {
+			continue
+		}
+
 		planPath := planPathForName(planName)
 		if _, err := os.Stat(planPath); err != nil {
 			continue
 		}
+		plans = append(plans, planEntry{Name: planName, Path: planPath, Version: version})
+	}
 
+	if filter != "" {
+		sort.Slice(plans, func(i, j int) bool {
+			if plans[i].Version == plans[j].Version {
+				return plans[i].Name > plans[j].Name
+			}
+			return plans[i].Version > plans[j].Version
+		})
+		if len(plans) == 0 {
+			fmt.Printf("No generated plans found for %s.\n", filter)
+			return nil
+		}
+		fmt.Printf("Plan versions for %s:\n", filter)
+	} else {
+		sort.Slice(plans, func(i, j int) bool {
+			return plans[i].Name > plans[j].Name
+		})
+	}
+
+	for _, plan := range plans {
 		marker := ""
-		if latestPlan == planPath {
+		if latestPlan == plan.Path {
 			marker = " (latest)"
 		}
-		fmt.Printf("- %s%s\n  %s\n", planName, marker, planPath)
+
+		fmt.Printf("- %s%s\n  %s\n", plan.Name, marker, plan.Path)
 		printed = true
 	}
 
@@ -140,10 +190,20 @@ func listPlans() error {
 }
 
 func removePlan(cfg *config) error {
-	targetDir := planDirForName(cfg.PlanName)
-	planPath := planPathForName(cfg.PlanName)
+	requestedName := strings.TrimSpace(cfg.PlanName)
+	targetDir := planDirForName(requestedName)
+	planPath := planPathForName(requestedName)
 	if _, err := os.Stat(planPath); err != nil {
-		return fmt.Errorf("generated plan not found: %s", cfg.PlanName)
+		versionedName, ok, resolveErr := latestPlanVersionName(requestedName)
+		if resolveErr != nil {
+			return resolveErr
+		}
+		if !ok {
+			return fmt.Errorf("generated plan not found: %s", requestedName)
+		}
+		requestedName = versionedName
+		targetDir = planDirForName(requestedName)
+		planPath = planPathForName(requestedName)
 	}
 
 	if !cfg.AssumeYes {
@@ -151,7 +211,7 @@ func removePlan(cfg *config) error {
 			return fmt.Errorf("non-interactive plan removal requires --yes")
 		}
 
-		confirmed, err := promptPlanRemovalConfirmation(cfg.PlanName)
+		confirmed, err := promptPlanRemovalConfirmation(requestedName)
 		if err != nil {
 			if errors.Is(err, errUserCancelled) {
 				return nil
@@ -165,7 +225,7 @@ func removePlan(cfg *config) error {
 	}
 
 	if err := os.RemoveAll(targetDir); err != nil {
-		return fmt.Errorf("failed to remove plan %s: %w", cfg.PlanName, err)
+		return fmt.Errorf("failed to remove plan %s: %w", requestedName, err)
 	}
 
 	if latestPlan, err := readLatestPlanPointer(); err == nil && latestPlan == planPath {
@@ -178,8 +238,88 @@ func removePlan(cfg *config) error {
 		}
 	}
 
-	fmt.Printf("Removed generated plan %s\n", cfg.PlanName)
+	fmt.Printf("Removed generated plan %s\n", requestedName)
 	return nil
+}
+
+func splitPlanVersionName(planName string) (string, int) {
+	planName = strings.TrimSpace(planName)
+	if planName == "" {
+		return "", 0
+	}
+
+	re := regexp.MustCompile(`^(.*?)-v([0-9]+)$`)
+	match := re.FindStringSubmatch(planName)
+	if len(match) != 3 {
+		return planName, 1
+	}
+
+	version, err := strconv.Atoi(match[2])
+	if err != nil || version < 1 {
+		return planName, 1
+	}
+
+	return match[1], version
+}
+
+func latestPlanVersionName(baseName string) (string, bool, error) {
+	baseName = sanitizePlanName(baseName)
+	if baseName == "" {
+		return "", false, nil
+	}
+
+	entries, err := os.ReadDir(runRootDirectoryPath())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+
+	latestName := ""
+	latestVersion := 0
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		base, version := splitPlanVersionName(name)
+		if base != baseName {
+			continue
+		}
+		if _, err := os.Stat(planPathForName(name)); err != nil {
+			continue
+		}
+		if version > latestVersion {
+			latestVersion = version
+			latestName = name
+		}
+	}
+
+	if latestName == "" {
+		return "", false, nil
+	}
+
+	return latestName, true, nil
+}
+
+func nextPlanVersionName(baseName string) (string, error) {
+	baseName = sanitizePlanName(baseName)
+	if baseName == "" {
+		return "", fmt.Errorf("plan name is empty")
+	}
+
+	latestName, found, err := latestPlanVersionName(baseName)
+	if err != nil {
+		return "", err
+	}
+	if !found {
+		return baseName, nil
+	}
+
+	_, latestVersion := splitPlanVersionName(latestName)
+	return fmt.Sprintf("%s-v%d", baseName, latestVersion+1), nil
 }
 
 func latestGeneratedPlanFile() (string, error) {
@@ -457,7 +597,7 @@ func runUninstall(cfg config) error {
 
 func runSSHCopyID(cfg config) error {
 	server := cfg.Servers[0]
-	sshPort := effectiveSSHPort(cfg, server)
+	sshPort := initiationSSHPort(cfg)
 	target := fmt.Sprintf("%s@%s", cfg.SSHUser, server.Address)
 	if err := rewriteKnownHostEntry(server.Address, sshPort); err != nil {
 		return err
@@ -481,7 +621,7 @@ func rewriteKnownHostEntry(host string, port int) error {
 
 func buildSSHCopyIDCommand(cfg config) *exec.Cmd {
 	target := fmt.Sprintf("%s@%s", cfg.SSHUser, cfg.Servers[0].Address)
-	sshPort := effectiveSSHPort(cfg, cfg.Servers[0])
+	sshPort := initiationSSHPort(cfg)
 	args := []string{
 		"-i", cfg.SSHPublicKey,
 		"-p", strconv.Itoa(sshPort),
@@ -502,6 +642,14 @@ func effectiveSSHPort(cfg config, server serverSpec) int {
 	if server.SSHPort >= 1 && server.SSHPort <= 65535 {
 		return server.SSHPort
 	}
+	if cfg.SSHPort >= 1 && cfg.SSHPort <= 65535 {
+		return cfg.SSHPort
+	}
+
+	return defaultSSHPort
+}
+
+func initiationSSHPort(cfg config) int {
 	if cfg.SSHPort >= 1 && cfg.SSHPort <= 65535 {
 		return cfg.SSHPort
 	}
@@ -767,6 +915,11 @@ func parseVersionParts(version string) []int {
 
 func writeInventory(cfg *config, state *runtimeState) error {
 	var builder strings.Builder
+	initiationPort := cfg.SSHPort
+	if initiationPort < 1 || initiationPort > 65535 {
+		initiationPort = defaultSSHPort
+	}
+
 	usedAliases := make(map[string]int, len(cfg.Servers))
 	builder.WriteString("all:\n")
 	builder.WriteString("  vars:\n")
@@ -780,7 +933,10 @@ func writeInventory(cfg *config, state *runtimeState) error {
 		fmt.Fprintf(&builder, "        %s:\n", alias)
 		fmt.Fprintf(&builder, "          ansible_host: %q\n", server.Address)
 		fmt.Fprintf(&builder, "          ansible_user: %q\n", cfg.SSHUser)
-		fmt.Fprintf(&builder, "          ansible_port: %d\n", effectiveSSHPort(*cfg, server))
+		fmt.Fprintf(&builder, "          ansible_port: %d\n", initiationPort)
+		if server.SSHPort >= 1 && server.SSHPort <= 65535 && server.SSHPort != initiationPort {
+			fmt.Fprintf(&builder, "          civa_custom_ssh_port: %d\n", server.SSHPort)
+		}
 		if cfg.SSHAuthMethod == sshAuthMethodKey {
 			fmt.Fprintf(&builder, "          ansible_ssh_private_key_file: %q\n", cfg.SSHPrivateKey)
 		}
@@ -1411,6 +1567,11 @@ func parseSSHConfigHostsFromInventory(inventoryPath string) ([]sshConfigEntry, e
 		case strings.HasPrefix(trimmed, "ansible_port:"):
 			portValue := parseInventoryScalarValue(strings.TrimPrefix(trimmed, "ansible_port:"))
 			if parsedPort, convErr := strconv.Atoi(portValue); convErr == nil {
+				current.Port = parsedPort
+			}
+		case strings.HasPrefix(trimmed, "civa_custom_ssh_port:"):
+			portValue := parseInventoryScalarValue(strings.TrimPrefix(trimmed, "civa_custom_ssh_port:"))
+			if parsedPort, convErr := strconv.Atoi(portValue); convErr == nil && parsedPort >= 1 && parsedPort <= 65535 {
 				current.Port = parsedPort
 			}
 		case strings.HasPrefix(trimmed, "ansible_ssh_private_key_file:"):
