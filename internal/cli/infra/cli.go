@@ -30,6 +30,7 @@ const (
 	commandUninstall        = "uninstall"
 	commandVersion          = "version"
 	commandHelp             = "help"
+	userCivaHomeDirectory   = "~/.civa"
 
 	defaultSSHUser            = "root"
 	defaultSSHPort            = 22

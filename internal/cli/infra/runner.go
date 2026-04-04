@@ -4,13 +4,14 @@ import (
 	"bufio"
 	"bytes"
 	ansible "civa/ansible"
+	infssh "civa/internal/cli/infra/ssh"
+	"civa/internal/cli/infra/storage"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
-	"os/user"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -35,30 +36,16 @@ type plannedRunMetadata struct {
 	PlaybookFile  string   `json:"playbookFile"`
 }
 
-const userCivaHomeDirectory = "~/.civa"
-
 func civaHomeDirectory() string {
-	homeDir, err := os.UserHomeDir()
-	if err != nil || strings.TrimSpace(homeDir) == "" {
-		homeDir = strings.TrimSpace(os.Getenv("HOME"))
-	}
-	if homeDir == "" {
-		if currentUser, userErr := user.Current(); userErr == nil {
-			homeDir = strings.TrimSpace(currentUser.HomeDir)
-		}
-	}
-	if homeDir == "" {
-		return filepath.Clean(strings.TrimPrefix(userCivaHomeDirectory, "~"))
-	}
-	return filepath.Join(homeDir, strings.TrimPrefix(userCivaHomeDirectory, "~/"))
+	return storage.CivaHomeDirectory()
 }
 
 func runRootDirectoryPath() string {
-	return filepath.Join(civaHomeDirectory(), "runs")
+	return storage.RunRootDirectoryPath()
 }
 
 func latestPlanPointerFilePath() string {
-	return filepath.Join(civaHomeDirectory(), "latest-plan")
+	return storage.LatestPlanPointerFilePath()
 }
 
 func resolvePlanInputFile(cfg *config) (string, error) {
@@ -108,11 +95,11 @@ func writeLatestPlanPointer(planPath string) error {
 }
 
 func planPathForName(name string) string {
-	return filepath.Join(runRootDirectoryPath(), name, "plan.md")
+	return storage.PlanPathForName(name)
 }
 
 func planDirForName(name string) string {
-	return filepath.Join(runRootDirectoryPath(), name)
+	return storage.PlanDirForName(name)
 }
 
 func listPlans() error {
@@ -486,30 +473,11 @@ func runSSHCopyID(cfg config) error {
 }
 
 func rotateKnownHostsFile() error {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return fmt.Errorf("failed to resolve home directory for known_hosts rotation: %w", err)
-	}
-	return rotateKnownHostsFileInHome(homeDir)
+	return infssh.RotateKnownHostsFile()
 }
 
 func rotateKnownHostsFileInHome(homeDir string) error {
-	knownHostsPath := filepath.Join(homeDir, ".ssh", "known_hosts")
-	knownHostsOldPath := filepath.Join(homeDir, ".ssh", "known_hosts.old")
-
-	if _, err := os.Stat(knownHostsPath); err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return fmt.Errorf("failed to inspect %s: %w", knownHostsPath, err)
-	}
-
-	if err := os.Rename(knownHostsPath, knownHostsOldPath); err != nil {
-		return fmt.Errorf("failed to move %s to %s: %w", knownHostsPath, knownHostsOldPath, err)
-	}
-
-	fmt.Fprintf(os.Stderr, "Moved %s to %s before running ssh-copy-id\n", knownHostsPath, knownHostsOldPath)
-	return nil
+	return infssh.RotateKnownHostsFileInHome(homeDir)
 }
 
 func buildSSHCopyIDCommand(cfg config) *exec.Cmd {
@@ -1370,11 +1338,7 @@ func syncSSHConfigAfterApplyInHome(_ *config, state *runtimeState, homeDir strin
 }
 
 func ensureUserCivaDirectoryInHome(homeDir string) (string, error) {
-	userCivaDir := filepath.Join(homeDir, strings.TrimPrefix(userCivaHomeDirectory, "~/"))
-	if err := os.MkdirAll(userCivaDir, 0o755); err != nil {
-		return "", fmt.Errorf("failed to create user civa directory %s: %w", userCivaDir, err)
-	}
-	return userCivaDir, nil
+	return infssh.EnsureUserCivaDirectoryInHome(homeDir)
 }
 
 type sshConfigEntry struct {
