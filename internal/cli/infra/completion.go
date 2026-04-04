@@ -22,6 +22,7 @@ var completionCommands = []string{
 }
 
 var planSubcommands = []string{planActionStart, planActionList, planActionRemove, commandHelp}
+var configSubcommands = []string{configActionEdit, configActionList, configActionRemove, commandHelp}
 var doctorSubcommands = []string{doctorActionFix, commandHelp}
 var webServerValues = []string{webServerNone, webServerTraefik, webServerNginx, webServerCaddy}
 var traefikChallengeValues = []string{"http", "dns"}
@@ -159,14 +160,44 @@ func completeSetup(words []string) []string {
 func completeConfig(words []string) []string {
 	current := words[len(words)-1]
 	flags := []string{"--help", "--non-interactive"}
-	plans := generatedPlanNames(current)
+	removeValues := []string{webServerNginx, webServerCaddy, configProfileAll}
 	if len(words) == 1 {
-		return append(flags, plans...)
+		suggestions := append([]string{}, configSubcommands...)
+		suggestions = append(suggestions, generatedPlanNames("")...)
+		suggestions = append(suggestions, flags...)
+		return suggestions
 	}
+
+	if len(words) == 2 && !contains(configSubcommands, words[1]) && !strings.HasPrefix(words[1], "-") {
+		plans := append(configSubcommands, generatedPlanNames(current)...)
+		return filterByPrefix(plans, current)
+	}
+
+	action := words[1]
+	if !contains(configSubcommands, action) {
+		action = configActionEdit
+	}
+
 	if strings.HasPrefix(current, "-") || previousWordExpectsValue(words) {
 		return filterByPrefix(flags, current)
 	}
-	return plans
+
+	switch action {
+	case configActionList:
+		return filterByPrefix(flags, current)
+	case configActionRemove:
+		if len(words) <= 2 {
+			return append(removeValues, flags...)
+		}
+		if len(words) == 3 && !strings.HasPrefix(words[2], "-") {
+			return filterByPrefix(removeValues, current)
+		}
+		return filterByPrefix(flags, current)
+	case configActionEdit:
+		fallthrough
+	default:
+		return append(generatedPlanNames(current), flags...)
+	}
 }
 
 func completePlanRemove(words []string, current string) []string {

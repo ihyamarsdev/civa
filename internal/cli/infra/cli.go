@@ -49,6 +49,10 @@ const (
 	planActionStart           = "start"
 	planActionList            = "list"
 	planActionRemove          = "remove"
+	configActionEdit          = "edit"
+	configActionList          = "list"
+	configActionRemove        = "remove"
+	configProfileAll          = "all"
 	applyActionExecute        = "execute"
 	applyActionReview         = "review"
 	doctorActionCheck         = "check"
@@ -110,6 +114,7 @@ type providedFlags struct {
 type config struct {
 	Command              string
 	PlanAction           string
+	ConfigAction         string
 	ApplyAction          string
 	DoctorAction         string
 	PlanName             string
@@ -168,6 +173,7 @@ func defaultConfig(command string) config {
 	return config{
 		Command:            command,
 		PlanAction:         planActionStart,
+		ConfigAction:       configActionEdit,
 		ApplyAction:        applyActionExecute,
 		DoctorAction:       doctorActionCheck,
 		SSHUser:            defaultSSHUser,
@@ -228,6 +234,17 @@ func runSetupFlow(cfg *config) error {
 }
 
 func runConfigFlow(cfg *config) error {
+	switch cfg.ConfigAction {
+	case configActionList:
+		return runConfigListFlow(cfg)
+	case configActionRemove:
+		return runConfigRemoveFlow(cfg)
+	default:
+		return runConfigEditFlow(cfg)
+	}
+}
+
+func runConfigEditFlow(cfg *config) error {
 	if !shouldPrompt(cfg) {
 		return fmt.Errorf("civa config currently requires an interactive terminal")
 	}
@@ -380,6 +397,93 @@ func runConfigFlow(cfg *config) error {
 	showExecutionSummary(&executionCfg, state)
 
 	return nil
+}
+
+func runConfigListFlow(_ *config) error {
+	store, err := loadWebServerConfig()
+	if err != nil {
+		return err
+	}
+
+	printSection("Configured Web Server Profiles")
+	printConfigProfileSummary(webServerNginx, store.Nginx)
+	printConfigProfileSummary(webServerCaddy, store.Caddy)
+	return nil
+}
+
+func runConfigRemoveFlow(cfg *config) error {
+	store, err := loadWebServerConfig()
+	if err != nil {
+		return err
+	}
+
+	profile, err := normalizeConfigProfileTarget(cfg.WebServer)
+	if err != nil {
+		return err
+	}
+
+	if profile == "" {
+		if !shouldPrompt(cfg) {
+			return fmt.Errorf("config remove requires a profile: nginx, caddy, or all")
+		}
+		value, err := promptConfigRemoveProfile(configProfileAll)
+		if err != nil {
+			if errors.Is(err, errUserCancelled) {
+				return nil
+			}
+			return err
+		}
+		profile = value
+	}
+
+	emptyProfile := webServerProfileConfig{Sites: []webServerSiteSpec{}, InstallHostnames: []string{}}
+	switch profile {
+	case webServerNginx:
+		store.Nginx = emptyProfile
+	case webServerCaddy:
+		store.Caddy = emptyProfile
+	case configProfileAll:
+		store.Nginx = emptyProfile
+		store.Caddy = emptyProfile
+	}
+
+	if err := saveWebServerConfig(store); err != nil {
+		return err
+	}
+
+	printSection("Config Removed")
+	fmt.Fprintf(os.Stderr, "Removed profile: %s\n", strings.ToUpper(profile))
+	return nil
+}
+
+func printConfigProfileSummary(name string, profile webServerProfileConfig) {
+	fmt.Fprintf(os.Stderr, "\n%s\n", webServerLabel(name))
+	if len(profile.InstallHostnames) == 0 {
+		fmt.Fprintln(os.Stderr, "  Targets: all hostnames")
+	} else {
+		fmt.Fprintf(os.Stderr, "  Targets: %s\n", strings.Join(profile.InstallHostnames, ", "))
+	}
+	fmt.Fprintf(os.Stderr, "  Sites: %d\n", len(profile.Sites))
+	for _, site := range profile.Sites {
+		httpsLabel := "http"
+		if site.EnableHTTPS {
+			httpsLabel = "https"
+		}
+		fmt.Fprintf(os.Stderr, "  - %s -> %s:%d (%s)\n", site.ServerName, site.UpstreamHost, site.UpstreamPort, httpsLabel)
+	}
+	if name == webServerNginx && strings.TrimSpace(profile.NginxCertbotEmail) != "" {
+		fmt.Fprintf(os.Stderr, "  Certbot email: %s\n", profile.NginxCertbotEmail)
+	}
+}
+
+func normalizeConfigProfileTarget(value string) (string, error) {
+	trimmed := strings.ToLower(strings.TrimSpace(value))
+	switch trimmed {
+	case "", webServerNginx, webServerCaddy, configProfileAll:
+		return trimmed, nil
+	default:
+		return "", fmt.Errorf("unknown config profile %q; expected nginx, caddy, or all", value)
+	}
 }
 
 func runPlanFlow(cfg *config) error {
@@ -1255,7 +1359,9 @@ func printUsage() {
 	blocks := []outputBlock{
 		{Title: "Usage", Lines: []string{"civa <command> [options]"}},
 		{Title: "Commands", Lines: []string{
-			"config                     Configure persistent civa settings (interactive)",
+			"config [plan-name]         Edit config and apply via existing plan inventory",
+			"config list                List persisted web server config profiles",
+			"config remove [profile]    Remove persisted config profile (nginx, caddy, or all)",
 			"apply <plan-name>          Execute an existing generated plan",
 			"apply review <plan-name>   Verify an applied plan with ansible check mode",
 			"plan start                 Generate inventory, vars, and the execution plan only",
@@ -1291,6 +1397,9 @@ func printUsage() {
 		}},
 		{Title: "Examples", Lines: []string{
 			"civa config",
+			"civa config edit web-01-v2",
+			"civa config list",
+			"civa config remove nginx",
 			"civa plan start --non-interactive --server 203.0.113.10,web-01,2201 --server 203.0.113.11,api-01,2202 --components 1,2,3,4",
 			"civa plan list",
 			"civa preview web-01",
@@ -1315,9 +1424,9 @@ func printCommandUsage(command string) {
 	case commandConfig:
 		fmt.Println(renderSectionTitle("civa config", styled))
 		fmt.Println(renderOutputBlocks([]outputBlock{
-			{Title: "Usage", Lines: []string{"civa config [plan-name]"}},
-			{Title: "What it configures", Lines: []string{"Persisted web server profile for nginx/caddy", "Nginx HTTPS mode via certbot", "Apply config using inventory from existing generated plan"}},
-			{Title: "Examples", Lines: []string{"civa config", "civa config web-01-v2"}},
+			{Title: "Usage", Lines: []string{"civa config [plan-name]", "civa config edit [plan-name]", "civa config list", "civa config remove [nginx|caddy|all]"}},
+			{Title: "What it configures", Lines: []string{"Persisted web server profile for nginx/caddy", "Nginx HTTPS mode via certbot", "Apply edited config using inventory from existing generated plan"}},
+			{Title: "Examples", Lines: []string{"civa config", "civa config edit web-01-v2", "civa config list", "civa config remove all"}},
 		}, styled))
 	case commandPlan:
 		fmt.Println(renderSectionTitle("civa plan", styled))

@@ -192,6 +192,65 @@ func TestRunConfigFlowRequiresInteractiveTerminal(t *testing.T) {
 	}
 }
 
+func TestRunConfigFlowListWorksWithoutInteractivePrompt(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	err := runConfigFlow(&config{Command: commandConfig, ConfigAction: configActionList, NonInteractive: true})
+	if err != nil {
+		t.Fatalf("expected config list to succeed without interactive prompt, got %v", err)
+	}
+}
+
+func TestRunConfigFlowRemoveRequiresProfileWhenNonInteractive(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	err := runConfigFlow(&config{Command: commandConfig, ConfigAction: configActionRemove, NonInteractive: true})
+	if err == nil || !strings.Contains(err.Error(), "requires a profile") {
+		t.Fatalf("expected non-interactive profile requirement error, got %v", err)
+	}
+}
+
+func TestRunConfigFlowRemoveProfilePersistsRemoval(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	stored := defaultPersistedWebServerConfig()
+	stored.Nginx = webServerProfileConfig{
+		Sites: []webServerSiteSpec{{ServerName: "app.example.com", UpstreamHost: "127.0.0.1", UpstreamPort: 3000}},
+	}
+	stored.Caddy = webServerProfileConfig{
+		Sites: []webServerSiteSpec{{ServerName: "caddy.example.com", UpstreamHost: "127.0.0.1", UpstreamPort: 8080}},
+	}
+	if err := saveWebServerConfig(stored); err != nil {
+		t.Fatalf("saveWebServerConfig returned error: %v", err)
+	}
+
+	err := runConfigFlow(&config{Command: commandConfig, ConfigAction: configActionRemove, NonInteractive: true, WebServer: webServerNginx})
+	if err != nil {
+		t.Fatalf("expected config remove nginx to succeed, got %v", err)
+	}
+
+	reloaded, err := loadWebServerConfig()
+	if err != nil {
+		t.Fatalf("loadWebServerConfig returned error: %v", err)
+	}
+	if len(reloaded.Nginx.Sites) != 0 {
+		t.Fatalf("expected nginx profile removed, got %#v", reloaded.Nginx)
+	}
+	if len(reloaded.Caddy.Sites) != 1 {
+		t.Fatalf("expected caddy profile untouched, got %#v", reloaded.Caddy)
+	}
+}
+
+func TestNormalizeConfigProfileTargetRejectsUnknown(t *testing.T) {
+	_, err := normalizeConfigProfileTarget("apache")
+	if err == nil || !strings.Contains(err.Error(), "unknown config profile") {
+		t.Fatalf("expected unknown profile error, got %v", err)
+	}
+}
+
 func TestBuildSSHCopyIDCommand(t *testing.T) {
 	cfg := config{
 		SSHUser:      "root",

@@ -420,6 +420,22 @@ func promptConfigPlanName(defaultValue string) (string, error) {
 	)
 }
 
+func promptConfigRemoveProfile(defaultValue string) (string, error) {
+	value := defaultValue
+	field := huh.NewSelect[string]().
+		Title("Config profile to remove").
+		Options(
+			huh.NewOption("All profiles", configProfileAll),
+			huh.NewOption("Nginx", webServerNginx),
+			huh.NewOption("Caddy", webServerCaddy),
+		).
+		Value(&value)
+	if err := field.Run(); err != nil {
+		return "", normalizePromptError(err)
+	}
+	return value, nil
+}
+
 func promptWebServerProfileConfig(webServer string, current webServerProfileConfig) (webServerProfileConfig, error) {
 	defaultHostnames := strings.Join(current.InstallHostnames, ",")
 	targetHostnamesRaw, err := promptString(

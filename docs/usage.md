@@ -4,6 +4,9 @@
 
 - `civa plan start`
 - `civa config [plan-name]`
+- `civa config edit [plan-name]`
+- `civa config list`
+- `civa config remove [nginx|caddy|all]`
 - `civa plan list`
 - `civa plan remove <nama-plan>`
 - `civa preview <nama-plan>`
@@ -44,7 +47,9 @@ Use `civa setup` to install your local public key onto a fresh VPS with its buil
 
 Use `--web-server none|traefik|nginx|caddy` to choose which web server to prepare. The default web server remains `traefik` when the `web_server` component is selected and no explicit choice is provided.
 
-Use `civa config [plan-name]` to store web server runtime configuration interactively and immediately run a separate config playbook using inventory from an existing generated plan (`civa plan start`). If `plan-name` is omitted, civa uses the latest generated plan.
+Use `civa config [plan-name]` (or `civa config edit [plan-name]`) to store web server runtime configuration interactively and immediately run a separate config playbook using inventory from an existing generated plan (`civa plan start`). If `plan-name` is omitted, civa uses the latest generated plan.
+
+Use `civa config list` to inspect persisted web server profiles, and `civa config remove [nginx|caddy|all]` to remove one or all persisted profiles.
 
 For now this covers Nginx/Caddy reverse-proxy site definitions, target hostname(s) where the web server should be installed, and for Nginx you can enable HTTPS per-domain with Certbot.
 
@@ -66,6 +71,18 @@ Configure persisted web server profiles (interactive):
 
 ```bash
 ./bin/civa config
+```
+
+List persisted config profiles:
+
+```bash
+./bin/civa config list
+```
+
+Remove persisted nginx profile:
+
+```bash
+./bin/civa config remove nginx
 ```
 
 Apply web server config using a specific generated plan inventory:

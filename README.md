@@ -72,7 +72,9 @@ Check local prerequisites:
 ## Commands
 
 - `civa setup` — install your local public key onto a fresh server with ssh-copy-id, optionally supplying the password via `sshpass`
-- `civa config [plan-name]` — configure persistent web server profile (nginx/caddy), choose target hostname(s), and run separate config playbook using inventory from generated plan (latest by default)
+- `civa config [plan-name]` / `civa config edit [plan-name]` — configure persistent web server profile (nginx/caddy), choose target hostname(s), and run separate config playbook using inventory from generated plan (latest by default)
+- `civa config list` — list persisted web server config profiles
+- `civa config remove [nginx|caddy|all]` — remove one or all persisted web server config profiles
 - `civa plan start` — generate inventory, vars, and a Markdown plan only after key-based access is ready
 - `civa plan list` — show generated plan names under `~/.civa/runs/`
 - `civa plan remove <nama-plan>` — delete a generated plan and its artifacts

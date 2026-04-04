@@ -198,18 +198,58 @@ func (r *Root) newSetupCommand(globals *globalFlags) *cobra.Command {
 }
 
 func (r *Root) newConfigCommand(globals *globalFlags) *cobra.Command {
-	return &cobra.Command{
+	configCmd := &cobra.Command{
 		Use:   string(domain.CommandConfig) + " [plan-name]",
 		Short: "Configure persistent civa settings interactively",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			req := r.withGlobalFlags(cmd, globals, domain.Request{Command: domain.CommandConfig})
+			req := r.withGlobalFlags(cmd, globals, domain.Request{Command: domain.CommandConfig, ConfigAction: domain.ConfigActionEdit})
 			if len(args) == 1 {
 				req.PlanName = args[0]
 			}
 			return r.executor.Execute(req)
 		},
 	}
+
+	editCmd := &cobra.Command{
+		Use:   domain.ConfigActionEdit + " [plan-name]",
+		Short: "Edit persisted config and apply it to hosts from an existing plan inventory",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			req := r.withGlobalFlags(cmd, globals, domain.Request{Command: domain.CommandConfig, ConfigAction: domain.ConfigActionEdit})
+			if len(args) == 1 {
+				req.PlanName = args[0]
+			}
+			return r.executor.Execute(req)
+		},
+	}
+
+	listCmd := &cobra.Command{
+		Use:   domain.ConfigActionList,
+		Short: "List persisted web server config profiles",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			req := r.withGlobalFlags(cmd, globals, domain.Request{Command: domain.CommandConfig, ConfigAction: domain.ConfigActionList})
+			return r.executor.Execute(req)
+		},
+	}
+
+	removeCmd := &cobra.Command{
+		Use:   domain.ConfigActionRemove + " [profile]",
+		Short: "Remove a persisted config profile (nginx, caddy, or all)",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			req := r.withGlobalFlags(cmd, globals, domain.Request{Command: domain.CommandConfig, ConfigAction: domain.ConfigActionRemove})
+			if len(args) == 1 {
+				req.WebServer = strings.ToLower(args[0])
+				req.Provided.WebServer = true
+			}
+			return r.executor.Execute(req)
+		},
+	}
+
+	configCmd.AddCommand(editCmd, listCmd, removeCmd)
+	return configCmd
 }
 
 func (r *Root) newPlanCommand(globals *globalFlags) *cobra.Command {

@@ -5,14 +5,14 @@
     or inventory_hostname in (civa_web_server_target_hosts | default([]))
   block:
     - name: Install Nginx on Debian-family targets
-      when: civa_is_debian
+      when: (ansible_facts['os_family'] | default('')) == 'Debian'
       ansible.builtin.apt:
         name: nginx
         state: present
         update_cache: true
 
     - name: Install Nginx on RHEL-family targets
-      when: civa_is_rhel
+      when: (ansible_facts['os_family'] | default('')) == 'RedHat'
       ansible.builtin.dnf:
         name: nginx
         state: present
@@ -40,7 +40,7 @@
 
     - name: Install Certbot dependencies for Nginx on Debian-family targets
       when:
-        - civa_is_debian
+        - (ansible_facts['os_family'] | default('')) == 'Debian'
         - civa_nginx_ssl_enabled | default(false) | bool
       ansible.builtin.apt:
         name:
@@ -51,7 +51,7 @@
 
     - name: Install Certbot dependencies for Nginx on RHEL-family targets
       when:
-        - civa_is_rhel
+        - (ansible_facts['os_family'] | default('')) == 'RedHat'
         - civa_nginx_ssl_enabled | default(false) | bool
       ansible.builtin.dnf:
         name:

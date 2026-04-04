@@ -129,6 +129,63 @@ func TestRootRunRoutesConfigCommandWithPlanName(t *testing.T) {
 	}
 }
 
+func TestRootRunRoutesConfigListSubcommand(t *testing.T) {
+	executor := &stubExecutor{}
+	root := NewRoot(executor)
+
+	err := root.Run([]string{"config", "list"})
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+
+	if len(executor.requests) != 1 {
+		t.Fatalf("expected one request, got %d", len(executor.requests))
+	}
+	req := executor.requests[0]
+	if req.Command != domain.CommandConfig || req.ConfigAction != domain.ConfigActionList {
+		t.Fatalf("unexpected config list request: %#v", req)
+	}
+}
+
+func TestRootRunRoutesConfigEditSubcommandWithPlanName(t *testing.T) {
+	executor := &stubExecutor{}
+	root := NewRoot(executor)
+
+	err := root.Run([]string{"config", "edit", "web-01-v2"})
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+
+	if len(executor.requests) != 1 {
+		t.Fatalf("expected one request, got %d", len(executor.requests))
+	}
+	req := executor.requests[0]
+	if req.Command != domain.CommandConfig || req.ConfigAction != domain.ConfigActionEdit || req.PlanName != "web-01-v2" {
+		t.Fatalf("unexpected config edit request: %#v", req)
+	}
+}
+
+func TestRootRunRoutesConfigRemoveSubcommandWithProfile(t *testing.T) {
+	executor := &stubExecutor{}
+	root := NewRoot(executor)
+
+	err := root.Run([]string{"config", "remove", "nginx"})
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+
+	if len(executor.requests) != 1 {
+		t.Fatalf("expected one request, got %d", len(executor.requests))
+	}
+	req := executor.requests[0]
+	if req.Command != domain.CommandConfig || req.ConfigAction != domain.ConfigActionRemove || req.WebServer != "nginx" {
+		t.Fatalf("unexpected config remove request: %#v", req)
+	}
+	if !req.Provided.WebServer {
+		t.Fatalf("expected remove profile to mark provided webserver flag: %#v", req.Provided)
+	}
+}
+
 func TestRootRunReturnsExecutorError(t *testing.T) {
 	expectedErr := errors.New("executor failed")
 	executor := &stubExecutor{err: expectedErr}

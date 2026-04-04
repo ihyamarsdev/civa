@@ -50,6 +50,9 @@ func (LegacyRunner) ExecuteRequest(req domain.Request) error {
 		cfg := defaultConfig(commandConfig)
 		applyGlobalRequest(req, &cfg)
 		applySharedRequest(req, &cfg)
+		if req.ConfigAction != "" {
+			cfg.ConfigAction = req.ConfigAction
+		}
 		return runConfigFlow(&cfg)
 	case domain.CommandUninstall:
 		cfg := defaultConfig(commandUninstall)

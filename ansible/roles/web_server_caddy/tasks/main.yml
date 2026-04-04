@@ -5,11 +5,11 @@
     or inventory_hostname in (civa_web_server_target_hosts | default([]))
   block:
     - name: Apply Debian Caddy tasks
-      when: civa_is_debian
+      when: (ansible_facts['os_family'] | default('')) == 'Debian'
       ansible.builtin.include_tasks: vendors/debian.yml
 
     - name: Apply RedHat Caddy tasks
-      when: civa_is_rhel
+      when: (ansible_facts['os_family'] | default('')) == 'RedHat'
       ansible.builtin.include_tasks: vendors/redhat.yml
 
     - name: Render custom Caddyfile from configured reverse-proxy sites

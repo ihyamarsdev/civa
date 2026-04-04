@@ -23,6 +23,12 @@ const (
 )
 
 const (
+	ConfigActionEdit   = "edit"
+	ConfigActionList   = "list"
+	ConfigActionRemove = "remove"
+)
+
+const (
 	ApplyActionExecute = "execute"
 	ApplyActionReview  = "review"
 )
@@ -56,6 +62,7 @@ type Request struct {
 	HelpTarget string
 
 	PlanAction   string
+	ConfigAction string
 	ApplyAction  string
 	DoctorAction string
 
