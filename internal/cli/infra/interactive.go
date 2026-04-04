@@ -412,6 +412,14 @@ func promptConfigWebServerTarget(defaultValue string) (string, error) {
 	return value, nil
 }
 
+func promptConfigPlanName(defaultValue string) (string, error) {
+	return promptString(
+		"Plan name to use as inventory source (blank = latest generated plan)",
+		defaultValue,
+		false,
+	)
+}
+
 func promptWebServerProfileConfig(webServer string, current webServerProfileConfig) (webServerProfileConfig, error) {
 	defaultHostnames := strings.Join(current.InstallHostnames, ",")
 	targetHostnamesRaw, err := promptString(

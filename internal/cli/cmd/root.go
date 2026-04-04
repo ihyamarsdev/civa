@@ -199,11 +199,14 @@ func (r *Root) newSetupCommand(globals *globalFlags) *cobra.Command {
 
 func (r *Root) newConfigCommand(globals *globalFlags) *cobra.Command {
 	return &cobra.Command{
-		Use:   string(domain.CommandConfig),
+		Use:   string(domain.CommandConfig) + " [plan-name]",
 		Short: "Configure persistent civa settings interactively",
-		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
 			req := r.withGlobalFlags(cmd, globals, domain.Request{Command: domain.CommandConfig})
+			if len(args) == 1 {
+				req.PlanName = args[0]
+			}
 			return r.executor.Execute(req)
 		},
 	}

@@ -1015,6 +1015,64 @@ func TestResolvePlanInputFileUsesLatestVersionForBasePlanName(t *testing.T) {
 	}
 }
 
+func TestResolveConfigPlanInputFileUsesLatestPointerWhenNameEmpty(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	planPath := planPathForName("web-01-v3")
+	if err := os.MkdirAll(filepath.Dir(planPath), 0o755); err != nil {
+		t.Fatalf("failed to create plan dir: %v", err)
+	}
+	if err := os.WriteFile(planPath, []byte("# plan\n"), 0o644); err != nil {
+		t.Fatalf("failed to write plan file: %v", err)
+	}
+	if err := writeLatestPlanPointer(planPath); err != nil {
+		t.Fatalf("failed to write latest pointer: %v", err)
+	}
+
+	resolved, err := resolveConfigPlanInputFile("")
+	if err != nil {
+		t.Fatalf("resolveConfigPlanInputFile returned error: %v", err)
+	}
+	if resolved != planPath {
+		t.Fatalf("expected latest pointer plan path %s, got %s", planPath, resolved)
+	}
+}
+
+func TestResolveConfigPlanInputFileUsesNamedPlanResolution(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	for _, planName := range []string{"web-01-v2", "web-01-v3"} {
+		planPath := planPathForName(planName)
+		if err := os.MkdirAll(filepath.Dir(planPath), 0o755); err != nil {
+			t.Fatalf("failed to create plan dir: %v", err)
+		}
+		if err := os.WriteFile(planPath, []byte("# plan\n"), 0o644); err != nil {
+			t.Fatalf("failed to write plan file: %v", err)
+		}
+	}
+
+	resolved, err := resolveConfigPlanInputFile("web-01")
+	if err != nil {
+		t.Fatalf("resolveConfigPlanInputFile returned error: %v", err)
+	}
+	expected := planPathForName("web-01-v3")
+	if resolved != expected {
+		t.Fatalf("expected resolved plan path %s, got %s", expected, resolved)
+	}
+}
+
+func TestResolveConfigPlanInputFileFailsWhenNoPlanExists(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	_, err := resolveConfigPlanInputFile("")
+	if err == nil || !strings.Contains(err.Error(), "requires an existing generated plan") {
+		t.Fatalf("expected missing plan error, got %v", err)
+	}
+}
+
 func TestMaterializeAnsibleAssetsWritesEmbeddedFiles(t *testing.T) {
 	tempDir := t.TempDir()
 	ansibleDir := filepath.Join(tempDir, "ansible")
@@ -1036,6 +1094,31 @@ func TestMaterializeAnsibleAssetsWritesEmbeddedFiles(t *testing.T) {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("expected embedded asset at %s: %v", path, err)
 		}
+	}
+}
+
+func TestWriteConfigPlaybookCreatesConfigPlaybookFile(t *testing.T) {
+	tempDir := t.TempDir()
+	playbookPath := filepath.Join(tempDir, "ansible", "config.yml")
+
+	if err := writeConfigPlaybook(playbookPath); err != nil {
+		t.Fatalf("writeConfigPlaybook returned error: %v", err)
+	}
+
+	content, err := os.ReadFile(playbookPath)
+	if err != nil {
+		t.Fatalf("failed to read generated config playbook: %v", err)
+	}
+
+	playbook := string(content)
+	if !strings.Contains(playbook, "hosts: civa_targets") {
+		t.Fatalf("expected civa_targets host group in config playbook, got %s", playbook)
+	}
+	if !strings.Contains(playbook, "role: web_server_nginx") {
+		t.Fatalf("expected nginx role entry in config playbook, got %s", playbook)
+	}
+	if !strings.Contains(playbook, "role: web_server_caddy") {
+		t.Fatalf("expected caddy role entry in config playbook, got %s", playbook)
 	}
 }
 

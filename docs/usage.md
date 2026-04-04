@@ -3,7 +3,7 @@
 ## Commands
 
 - `civa plan start`
-- `civa config`
+- `civa config [plan-name]`
 - `civa plan list`
 - `civa plan remove <nama-plan>`
 - `civa preview <nama-plan>`
@@ -44,7 +44,9 @@ Use `civa setup` to install your local public key onto a fresh VPS with its buil
 
 Use `--web-server none|traefik|nginx|caddy` to choose which web server to prepare. The default web server remains `traefik` when the `web_server` component is selected and no explicit choice is provided.
 
-Use `civa config` to store web server runtime configuration interactively. For now this covers Nginx/Caddy reverse-proxy site definitions, target hostname(s) where the web server should be installed, and for Nginx you can enable HTTPS per-domain with Certbot.
+Use `civa config [plan-name]` to store web server runtime configuration interactively and immediately run a separate config playbook using inventory from an existing generated plan (`civa plan start`). If `plan-name` is omitted, civa uses the latest generated plan.
+
+For now this covers Nginx/Caddy reverse-proxy site definitions, target hostname(s) where the web server should be installed, and for Nginx you can enable HTTPS per-domain with Certbot.
 
 ## Common Examples
 
@@ -64,6 +66,12 @@ Configure persisted web server profiles (interactive):
 
 ```bash
 ./bin/civa config
+```
+
+Apply web server config using a specific generated plan inventory:
+
+```bash
+./bin/civa config web-01-v2
 ```
 
 Generate a plan for two servers:

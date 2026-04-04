@@ -271,6 +271,88 @@ func runConfigFlow(cfg *config) error {
 		return err
 	}
 
+	defaultPlanName := ""
+	if latestPath, err := readLatestPlanPointer(); err == nil {
+		defaultPlanName = filepath.Base(filepath.Dir(latestPath))
+	}
+	if strings.TrimSpace(cfg.PlanName) == "" {
+		planName, err := promptConfigPlanName(defaultPlanName)
+		if err != nil {
+			if errors.Is(err, errUserCancelled) {
+				return nil
+			}
+			return err
+		}
+		cfg.PlanName = strings.TrimSpace(planName)
+	}
+
+	planPath, err := resolveConfigPlanInputFile(cfg.PlanName)
+	if err != nil {
+		return err
+	}
+
+	loadedPlanCfg, plannedState, err := loadPlannedRun(planPath)
+	if err != nil {
+		return err
+	}
+
+	runtimeID := fmt.Sprintf("config-%s", generateRunID(time.Now()))
+	generatedDir := filepath.Join(runRootDirectoryPath(), runtimeID)
+	ansibleDir := filepath.Join(generatedDir, "ansible")
+	varsFile := filepath.Join(generatedDir, "vars.yml")
+	state := &runtimeState{
+		RunID:         runtimeID,
+		GeneratedDir:  generatedDir,
+		InventoryFile: plannedState.InventoryFile,
+		VarsFile:      varsFile,
+		AuthFile:      plannedState.AuthFile,
+		PlanFile:      planPath,
+		PlaybookFile:  filepath.Join(ansibleDir, "config.yml"),
+		ProgressTotal: 1,
+	}
+
+	if err := os.MkdirAll(generatedDir, 0o755); err != nil {
+		return err
+	}
+	if err := materializeAnsibleAssets(ansibleDir); err != nil {
+		return err
+	}
+	if err := writeConfigPlaybook(state.PlaybookFile); err != nil {
+		return err
+	}
+
+	executionCfg := defaultConfig(commandConfig)
+	executionCfg.WebServer = targetWebServer
+	executionCfg.Components = []string{"web_server"}
+	executionCfg.WebServerSites = append([]webServerSiteSpec(nil), updatedProfile.Sites...)
+	executionCfg.WebServerTargetHosts = append([]string(nil), normalizeHostnameList(updatedProfile.InstallHostnames)...)
+	executionCfg.NginxCertbotEmail = strings.TrimSpace(updatedProfile.NginxCertbotEmail)
+	if loadedPlanCfg.SSHAuthMethod != "" {
+		executionCfg.SSHAuthMethod = loadedPlanCfg.SSHAuthMethod
+	}
+	if strings.TrimSpace(loadedPlanCfg.SSHUser) != "" {
+		executionCfg.SSHUser = loadedPlanCfg.SSHUser
+	}
+	if loadedPlanCfg.SSHPort > 0 {
+		executionCfg.SSHPort = loadedPlanCfg.SSHPort
+	}
+	if strings.TrimSpace(loadedPlanCfg.DeployUser) != "" {
+		executionCfg.DeployUser = loadedPlanCfg.DeployUser
+	}
+	if strings.TrimSpace(loadedPlanCfg.SSHPublicKey) != "" {
+		executionCfg.SSHPublicKey = loadedPlanCfg.SSHPublicKey
+	}
+	if strings.TrimSpace(loadedPlanCfg.Timezone) != "" {
+		executionCfg.Timezone = loadedPlanCfg.Timezone
+	}
+
+	if err := validateWebServerRuntimeConfig(&executionCfg); err != nil {
+		return err
+	}
+	if err := writeVarsFile(&executionCfg, state); err != nil {
+		return err
+	}
+
 	printSection("Config Saved")
 	fmt.Fprintf(os.Stderr, "Web server profile: %s\n", webServerLabel(targetWebServer))
 	fmt.Fprintf(os.Stderr, "Configured sites: %d\n", len(updatedProfile.Sites))
@@ -286,6 +368,16 @@ func runConfigFlow(cfg *config) error {
 			fmt.Fprintln(os.Stderr, "HTTPS mode: disabled")
 		}
 	}
+
+	printSection("Config Apply")
+	fmt.Fprintf(os.Stderr, "Source plan: %s\n", planPath)
+	fmt.Fprintf(os.Stderr, "Inventory: %s\n", state.InventoryFile)
+
+	if err := runAnsible(&executionCfg, state); err != nil {
+		return err
+	}
+
+	showExecutionSummary(&executionCfg, state)
 
 	return nil
 }
@@ -310,9 +402,6 @@ func runPlanFlow(cfg *config) error {
 		return err
 	}
 	normalizeWebServerSelection(cfg)
-	if err := applyPersistedWebServerConfig(cfg); err != nil {
-		return err
-	}
 
 	if err := validateExecutionConfig(cfg); err != nil {
 		return err
@@ -919,6 +1008,35 @@ func validateExecutionConfig(cfg *config) error {
 	return nil
 }
 
+func validateWebServerRuntimeConfig(cfg *config) error {
+	if !supportsCustomWebServerSites(cfg.WebServer) {
+		return fmt.Errorf("config playbook only supports nginx or caddy web server profiles")
+	}
+	for idx, site := range cfg.WebServerSites {
+		if strings.TrimSpace(site.ServerName) == "" {
+			return fmt.Errorf("web server site %d requires a server name", idx+1)
+		}
+		if strings.TrimSpace(site.UpstreamHost) == "" {
+			return fmt.Errorf("web server site %d requires an upstream host", idx+1)
+		}
+		if site.UpstreamPort < 1 || site.UpstreamPort > 65535 {
+			return fmt.Errorf("web server site %d upstream port must be between 1 and 65535", idx+1)
+		}
+		if site.EnableHTTPS && cfg.WebServer != webServerNginx {
+			return fmt.Errorf("web server site %d enables HTTPS, but only nginx HTTPS via certbot is supported", idx+1)
+		}
+	}
+	if cfg.WebServer == webServerNginx && hasHTTPSWebServerSites(cfg.WebServerSites) && strings.TrimSpace(cfg.NginxCertbotEmail) == "" {
+		return fmt.Errorf("nginx HTTPS configuration requires a certbot email")
+	}
+	for idx, host := range cfg.WebServerTargetHosts {
+		if strings.TrimSpace(host) == "" {
+			return fmt.Errorf("web server install target host %d must not be empty", idx+1)
+		}
+	}
+	return nil
+}
+
 func validateSetupConfig(cfg *config) error {
 	if len(cfg.Servers) != 1 {
 		return fmt.Errorf("civa setup requires exactly one --server target")
@@ -1197,9 +1315,9 @@ func printCommandUsage(command string) {
 	case commandConfig:
 		fmt.Println(renderSectionTitle("civa config", styled))
 		fmt.Println(renderOutputBlocks([]outputBlock{
-			{Title: "Usage", Lines: []string{"civa config"}},
-			{Title: "What it configures", Lines: []string{"Persisted web server profile for nginx/caddy", "Nginx HTTPS mode via certbot"}},
-			{Title: "Examples", Lines: []string{"civa config"}},
+			{Title: "Usage", Lines: []string{"civa config [plan-name]"}},
+			{Title: "What it configures", Lines: []string{"Persisted web server profile for nginx/caddy", "Nginx HTTPS mode via certbot", "Apply config using inventory from existing generated plan"}},
+			{Title: "Examples", Lines: []string{"civa config", "civa config web-01-v2"}},
 		}, styled))
 	case commandPlan:
 		fmt.Println(renderSectionTitle("civa plan", styled))

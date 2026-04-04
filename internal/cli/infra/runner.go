@@ -182,6 +182,25 @@ func resolvePlanInputFile(cfg *config) (string, error) {
 	return "", fmt.Errorf("preview/apply require a generated plan name or --plan-file")
 }
 
+func resolveConfigPlanInputFile(planName string) (string, error) {
+	requested := strings.TrimSpace(planName)
+	if requested != "" {
+		cfg := defaultConfig(commandApply)
+		cfg.PlanName = requested
+		return resolvePlanInputFile(&cfg)
+	}
+
+	if latest, err := readLatestPlanPointer(); err == nil {
+		return latest, nil
+	}
+
+	if latest, err := latestGeneratedPlanFile(); err == nil {
+		return latest, nil
+	}
+
+	return "", fmt.Errorf("civa config requires an existing generated plan. Run `civa plan start` first")
+}
+
 func readLatestPlanPointer() (string, error) {
 	content, err := os.ReadFile(latestPlanPointerFilePath())
 	if err != nil {
@@ -765,6 +784,31 @@ func uninstallTargetPathForPath(path string) (string, error) {
 
 func materializeAnsibleAssets(ansibleDir string) error {
 	return ansible.Materialize(ansibleDir)
+}
+
+func writeConfigPlaybook(playbookPath string) error {
+	if err := os.MkdirAll(filepath.Dir(playbookPath), 0o755); err != nil {
+		return fmt.Errorf("create config playbook directory: %w", err)
+	}
+
+	content := "---\n" +
+		"- name: Apply civa web server configuration\n" +
+		"  hosts: civa_targets\n" +
+		"  become: true\n" +
+		"  gather_facts: true\n\n" +
+		"  roles:\n" +
+		"    - role: web_server_nginx\n" +
+		"      tags: [\"web_server_nginx\"]\n" +
+		"      when: civa_web_server == \"nginx\"\n\n" +
+		"    - role: web_server_caddy\n" +
+		"      tags: [\"web_server_caddy\"]\n" +
+		"      when: civa_web_server == \"caddy\"\n"
+
+	if err := os.WriteFile(playbookPath, []byte(content), 0o644); err != nil {
+		return fmt.Errorf("write config playbook: %w", err)
+	}
+
+	return nil
 }
 
 func runDoctor(cfg config) error {

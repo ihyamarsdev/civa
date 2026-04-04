@@ -159,13 +159,14 @@ func completeSetup(words []string) []string {
 func completeConfig(words []string) []string {
 	current := words[len(words)-1]
 	flags := []string{"--help", "--non-interactive"}
+	plans := generatedPlanNames(current)
 	if len(words) == 1 {
-		return flags
+		return append(flags, plans...)
 	}
 	if strings.HasPrefix(current, "-") || previousWordExpectsValue(words) {
 		return filterByPrefix(flags, current)
 	}
-	return flags
+	return plans
 }
 
 func completePlanRemove(words []string, current string) []string {

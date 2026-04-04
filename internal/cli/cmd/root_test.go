@@ -111,6 +111,24 @@ func TestRootRunRoutesConfigCommand(t *testing.T) {
 	}
 }
 
+func TestRootRunRoutesConfigCommandWithPlanName(t *testing.T) {
+	executor := &stubExecutor{}
+	root := NewRoot(executor)
+
+	err := root.Run([]string{"config", "web-01-v2"})
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+
+	if len(executor.requests) != 1 {
+		t.Fatalf("expected one request, got %d", len(executor.requests))
+	}
+	req := executor.requests[0]
+	if req.Command != domain.CommandConfig || req.PlanName != "web-01-v2" {
+		t.Fatalf("unexpected config request: %#v", req)
+	}
+}
+
 func TestRootRunReturnsExecutorError(t *testing.T) {
 	expectedErr := errors.New("executor failed")
 	executor := &stubExecutor{err: expectedErr}
