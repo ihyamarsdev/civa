@@ -39,7 +39,7 @@ Component selection in interactive mode uses a Charmbracelet Huh multi-select pr
 
 `civa plan start` assumes SSH key access and only needs the local SSH private key path. The matching public key path is derived automatically unless you override it explicitly.
 
-Use `civa setup` to install your local public key onto a fresh VPS with its built-in user account. If you pass `--ssh-password`, the setup command uses `sshpass -e ssh-copy-id`; otherwise it runs `ssh-copy-id` directly and lets that tool prompt for the password in your terminal. Before it connects, `civa setup` moves `~/.ssh/known_hosts` to `~/.ssh/known_hosts.old` so a stale host key does not block the first login. For first contact it uses `StrictHostKeyChecking=accept-new`, which is convenient but still a trust-on-first-use trade-off.
+Use `civa setup` to install your local public key onto a fresh VPS with its built-in user account. Before running SSH key installation, `civa setup` checks required local dependencies and auto-installs missing packages using your OS package manager (`apt-get`, `dnf`, or `yum`) with `sudo`. If you pass `--ssh-password`, setup uses `sshpass -e ssh-copy-id`; otherwise it runs `ssh-copy-id` directly and lets that tool prompt for the password in your terminal. Before it connects, `civa setup` moves `~/.ssh/known_hosts` to `~/.ssh/known_hosts.old` so a stale host key does not block the first login. For first contact it uses `StrictHostKeyChecking=accept-new`, which is convenient but still a trust-on-first-use trade-off.
 
 Use `--web-server none|traefik|nginx|caddy` to choose which web server to prepare. The default web server remains `traefik` when the `web_server` component is selected and no explicit choice is provided.
 

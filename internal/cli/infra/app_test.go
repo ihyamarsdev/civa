@@ -1,4 +1,4 @@
-package cli
+package infra
 
 import (
 	"bytes"
@@ -257,26 +257,6 @@ func TestRenderOutputBlocksPlainFallback(t *testing.T) {
 	}
 }
 
-func TestShouldShowCommandHelpForBarePlanPreviewApply(t *testing.T) {
-	for _, args := range [][]string{{"plan"}, {"preview"}, {"apply"}, {"completion"}, {"setup"}, {"plan", "help"}, {"preview", "--help"}, {"apply", "-h"}, {"setup", "--help"}} {
-		if args[0] == commandSetup && len(args) == 1 {
-			if shouldShowCommandHelp(args) {
-				t.Fatalf("did not expect help for bare setup args %v", args)
-			}
-			continue
-		}
-		if !shouldShowCommandHelp(args) {
-			t.Fatalf("expected help for args %v", args)
-		}
-	}
-
-	for _, args := range [][]string{{"plan", "start"}, {"preview", "my-plan"}, {"apply", "my-plan", "--yes"}} {
-		if shouldShowCommandHelp(args) {
-			t.Fatalf("did not expect help for args %v", args)
-		}
-	}
-}
-
 func TestCompletionSuggestionsTopLevelAndValues(t *testing.T) {
 	root := completionSuggestions(nil)
 	if !contains(root, commandPlan) || !contains(root, commandCompletion) {
@@ -324,90 +304,6 @@ func TestCompletionSuggestionsIncludeGeneratedPlanNames(t *testing.T) {
 	suggestions := completionSuggestions([]string{commandPreview, "20260101-010101"})
 	if !contains(suggestions, "20260101-010101-000000001") {
 		t.Fatalf("expected generated plan name suggestion, got %v", suggestions)
-	}
-}
-
-func TestParseArgsSupportsPlanSubcommandsAndPlanNames(t *testing.T) {
-	planCfg, err := parseArgs([]string{"plan", "start", "--non-interactive"})
-	if err != nil {
-		t.Fatalf("parseArgs returned error for plan start: %v", err)
-	}
-	if planCfg.PlanAction != planActionStart {
-		t.Fatalf("unexpected plan action: %s", planCfg.PlanAction)
-	}
-
-	listCfg, err := parseArgs([]string{"plan", "list"})
-	if err != nil {
-		t.Fatalf("parseArgs returned error for plan list: %v", err)
-	}
-	if listCfg.PlanAction != planActionList {
-		t.Fatalf("unexpected plan list action: %s", listCfg.PlanAction)
-	}
-
-	removeCfg, err := parseArgs([]string{"plan", "remove", "my-plan", "--yes"})
-	if err != nil {
-		t.Fatalf("parseArgs returned error for plan remove: %v", err)
-	}
-	if removeCfg.PlanAction != planActionRemove || removeCfg.PlanName != "my-plan" {
-		t.Fatalf("unexpected plan remove config: %#v", removeCfg)
-	}
-
-	previewCfg, err := parseArgs([]string{"preview", "my-plan"})
-	if err != nil {
-		t.Fatalf("parseArgs returned error for preview: %v", err)
-	}
-	if previewCfg.PlanName != "my-plan" {
-		t.Fatalf("unexpected preview plan name: %s", previewCfg.PlanName)
-	}
-
-	applyCfg, err := parseArgs([]string{"apply", "my-plan", "--yes"})
-	if err != nil {
-		t.Fatalf("parseArgs returned error for apply: %v", err)
-	}
-	if applyCfg.PlanName != "my-plan" {
-		t.Fatalf("unexpected apply plan name: %s", applyCfg.PlanName)
-	}
-	if applyCfg.ApplyAction != applyActionExecute {
-		t.Fatalf("unexpected default apply action: %s", applyCfg.ApplyAction)
-	}
-
-	applyReviewCfg, err := parseArgs([]string{"apply", "review", "my-plan"})
-	if err != nil {
-		t.Fatalf("parseArgs returned error for apply review: %v", err)
-	}
-	if applyReviewCfg.PlanName != "my-plan" {
-		t.Fatalf("unexpected apply review plan name: %s", applyReviewCfg.PlanName)
-	}
-	if applyReviewCfg.ApplyAction != applyActionReview {
-		t.Fatalf("unexpected apply review action: %s", applyReviewCfg.ApplyAction)
-	}
-
-	setupCfg, err := parseArgs([]string{"setup", "--server", "203.0.113.10", "--ssh-user", "root"})
-	if err != nil {
-		t.Fatalf("parseArgs returned error for setup: %v", err)
-	}
-	if setupCfg.Command != commandSetup || len(setupCfg.Servers) != 1 {
-		t.Fatalf("unexpected setup config: %#v", setupCfg)
-	}
-
-	doctorCfg, err := parseArgs([]string{"doctor"})
-	if err != nil {
-		t.Fatalf("parseArgs returned error for doctor: %v", err)
-	}
-	if doctorCfg.DoctorAction != doctorActionCheck {
-		t.Fatalf("unexpected doctor default action: %s", doctorCfg.DoctorAction)
-	}
-
-	doctorFixCfg, err := parseArgs([]string{"doctor", "fix"})
-	if err != nil {
-		t.Fatalf("parseArgs returned error for doctor fix: %v", err)
-	}
-	if doctorFixCfg.DoctorAction != doctorActionFix {
-		t.Fatalf("unexpected doctor fix action: %s", doctorFixCfg.DoctorAction)
-	}
-
-	if _, err := parseArgs([]string{"doctor", "repair"}); err == nil {
-		t.Fatal("expected unknown doctor subcommand error")
 	}
 }
 
