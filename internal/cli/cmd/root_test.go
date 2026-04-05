@@ -224,7 +224,7 @@ func TestRootRunRoutesToolsCloudflareZones(t *testing.T) {
 	executor := &stubExecutor{}
 	root := NewRoot(executor)
 
-	err := root.Run([]string{"tools", "cloudflare", "zones", "--token", "cf-token"})
+	err := root.Run([]string{"tools", "cloudflare", "zones", "list", "--profile", "default"})
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
@@ -233,14 +233,14 @@ func TestRootRunRoutesToolsCloudflareZones(t *testing.T) {
 		t.Fatalf("expected one request, got %d", len(executor.requests))
 	}
 	req := executor.requests[0]
-	if req.Command != domain.CommandTools || req.ToolsProvider != domain.ToolsProviderCloudflare || req.ToolsAction != domain.ToolsActionCloudflareZones {
+	if req.Command != domain.CommandTools || req.ToolsProvider != domain.ToolsProviderCloudflare || req.ToolsAction != domain.ToolsActionCloudflareZones || req.ToolsOperation != domain.ToolsOperationList {
 		t.Fatalf("unexpected tools cloudflare zones request: %#v", req)
 	}
-	if req.CloudflareToken != "cf-token" {
-		t.Fatalf("expected cloudflare token to be mapped, got %#v", req)
+	if req.AuthProfile != "default" {
+		t.Fatalf("expected auth profile to be mapped, got %#v", req)
 	}
-	if !req.Provided.CloudflareToken {
-		t.Fatalf("expected cloudflare token provided flag, got %#v", req.Provided)
+	if !req.Provided.AuthProfile {
+		t.Fatalf("expected auth profile provided flag, got %#v", req.Provided)
 	}
 }
 

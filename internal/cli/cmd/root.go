@@ -11,6 +11,7 @@ const (
 	helpTargetConfigNginx = "config-nginx"
 	helpTargetConfigCaddy = "config-caddy"
 	helpTargetConfigAll   = "config-all"
+	helpTargetAuthCF      = "auth-cloudflare"
 	helpTargetToolsCF     = "tools-cloudflare"
 )
 
@@ -75,6 +76,7 @@ func (r *Root) newRootCommand() *cobra.Command {
 		r.newCompletionCommand(),
 		r.newDoctorCommand(globals),
 		r.newSetupCommand(globals),
+		r.newAuthCommand(globals),
 		r.newToolsCommand(globals),
 		r.newSecretCommand(globals),
 		r.newConfigCommand(globals),
@@ -87,8 +89,106 @@ func (r *Root) newRootCommand() *cobra.Command {
 	return root
 }
 
-func (r *Root) newToolsCommand(globals *globalFlags) *cobra.Command {
+func (r *Root) newAuthCommand(globals *globalFlags) *cobra.Command {
 	var cloudflareToken string
+
+	authCmd := &cobra.Command{
+		Use:   string(domain.CommandAuth),
+		Short: "Manage external provider authentication profiles",
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			return r.executor.Execute(domain.Request{Command: domain.CommandHelp, HelpTarget: string(domain.CommandAuth)})
+		},
+	}
+
+	cloudflareCmd := &cobra.Command{
+		Use:   domain.AuthProviderCloudflare,
+		Short: "Manage Cloudflare API credential profiles",
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			return r.executor.Execute(domain.Request{Command: domain.CommandHelp, HelpTarget: helpTargetAuthCF})
+		},
+	}
+
+	setCmd := &cobra.Command{
+		Use:   domain.AuthActionSet + " <profile>",
+		Short: "Create or update a Cloudflare auth profile",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			req := domain.Request{
+				Command:      domain.CommandAuth,
+				AuthProvider: domain.AuthProviderCloudflare,
+				AuthAction:   domain.AuthActionSet,
+				AuthProfile:  args[0],
+				AuthToken:    cloudflareToken,
+				Provided: domain.ProvidedFlags{
+					AuthProfile: true,
+					AuthToken:   cmd.Flags().Changed("token"),
+				},
+			}
+			req = r.withGlobalFlags(cmd, globals, req)
+			return r.executor.Execute(req)
+		},
+	}
+	setCmd.Flags().StringVar(&cloudflareToken, "token", "", "Cloudflare API token to store in this profile")
+
+	getCmd := &cobra.Command{
+		Use:   domain.AuthActionGet + " <profile>",
+		Short: "Show Cloudflare auth profile details",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			req := domain.Request{
+				Command:      domain.CommandAuth,
+				AuthProvider: domain.AuthProviderCloudflare,
+				AuthAction:   domain.AuthActionGet,
+				AuthProfile:  args[0],
+				Provided:     domain.ProvidedFlags{AuthProfile: true},
+			}
+			req = r.withGlobalFlags(cmd, globals, req)
+			return r.executor.Execute(req)
+		},
+	}
+
+	listCmd := &cobra.Command{
+		Use:   domain.AuthActionList,
+		Short: "List Cloudflare auth profiles",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			req := domain.Request{Command: domain.CommandAuth, AuthProvider: domain.AuthProviderCloudflare, AuthAction: domain.AuthActionList}
+			req = r.withGlobalFlags(cmd, globals, req)
+			return r.executor.Execute(req)
+		},
+	}
+
+	removeCmd := &cobra.Command{
+		Use:   domain.AuthActionRemove + " <profile>",
+		Short: "Remove a Cloudflare auth profile",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			req := domain.Request{
+				Command:      domain.CommandAuth,
+				AuthProvider: domain.AuthProviderCloudflare,
+				AuthAction:   domain.AuthActionRemove,
+				AuthProfile:  args[0],
+				Provided:     domain.ProvidedFlags{AuthProfile: true},
+			}
+			req = r.withGlobalFlags(cmd, globals, req)
+			return r.executor.Execute(req)
+		},
+	}
+
+	cloudflareCmd.AddCommand(setCmd, getCmd, listCmd, removeCmd)
+	authCmd.AddCommand(cloudflareCmd)
+	return authCmd
+}
+
+func (r *Root) newToolsCommand(globals *globalFlags) *cobra.Command {
+	var authProfile string
+	var zoneName string
+	var zoneAccountID string
+	var zoneID string
+	var zoneType string
+	var zonePaused string
 
 	toolsCmd := &cobra.Command{
 		Use:   string(domain.CommandTools),
@@ -106,11 +206,11 @@ func (r *Root) newToolsCommand(globals *globalFlags) *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			req := domain.Request{
-				Command:         domain.CommandTools,
-				ToolsProvider:   domain.ToolsProviderCloudflare,
-				CloudflareToken: cloudflareToken,
+				Command:       domain.CommandTools,
+				ToolsProvider: domain.ToolsProviderCloudflare,
+				AuthProfile:   authProfile,
 				Provided: domain.ProvidedFlags{
-					CloudflareToken: cmd.Flags().Changed("token"),
+					AuthProfile: cmd.Flags().Changed("profile"),
 				},
 			}
 			req = r.withGlobalFlags(cmd, globals, req)
@@ -120,16 +220,16 @@ func (r *Root) newToolsCommand(globals *globalFlags) *cobra.Command {
 
 	zonesCmd := &cobra.Command{
 		Use:   domain.ToolsActionCloudflareZones,
-		Short: "List Cloudflare zones",
+		Short: "Manage Cloudflare zones (list/create/update/delete)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			req := domain.Request{
-				Command:         domain.CommandTools,
-				ToolsProvider:   domain.ToolsProviderCloudflare,
-				ToolsAction:     domain.ToolsActionCloudflareZones,
-				CloudflareToken: cloudflareToken,
+				Command:       domain.CommandTools,
+				ToolsProvider: domain.ToolsProviderCloudflare,
+				ToolsAction:   domain.ToolsActionCloudflareZones,
+				AuthProfile:   authProfile,
 				Provided: domain.ProvidedFlags{
-					CloudflareToken: cmd.Flags().Changed("token"),
+					AuthProfile: cmd.Flags().Changed("profile"),
 				},
 			}
 			req = r.withGlobalFlags(cmd, globals, req)
@@ -137,8 +237,108 @@ func (r *Root) newToolsCommand(globals *globalFlags) *cobra.Command {
 		},
 	}
 
-	cloudflareCmd.Flags().StringVar(&cloudflareToken, "token", "", "Cloudflare API token (default: CLOUDFLARE_API_TOKEN)")
-	zonesCmd.Flags().StringVar(&cloudflareToken, "token", "", "Cloudflare API token (default: CLOUDFLARE_API_TOKEN)")
+	zoneListCmd := &cobra.Command{
+		Use:   domain.ToolsOperationList,
+		Short: "List Cloudflare zones",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			req := domain.Request{
+				Command:        domain.CommandTools,
+				ToolsProvider:  domain.ToolsProviderCloudflare,
+				ToolsAction:    domain.ToolsActionCloudflareZones,
+				ToolsOperation: domain.ToolsOperationList,
+				AuthProfile:    authProfile,
+				Provided:       domain.ProvidedFlags{AuthProfile: cmd.Flags().Changed("profile")},
+			}
+			req = r.withGlobalFlags(cmd, globals, req)
+			return r.executor.Execute(req)
+		},
+	}
+
+	zoneCreateCmd := &cobra.Command{
+		Use:   domain.ToolsOperationCreate,
+		Short: "Create a Cloudflare zone",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			req := domain.Request{
+				Command:             domain.CommandTools,
+				ToolsProvider:       domain.ToolsProviderCloudflare,
+				ToolsAction:         domain.ToolsActionCloudflareZones,
+				ToolsOperation:      domain.ToolsOperationCreate,
+				AuthProfile:         authProfile,
+				CloudflareZoneName:  zoneName,
+				CloudflareAccountID: zoneAccountID,
+				CloudflareZoneType:  zoneType,
+				Provided: domain.ProvidedFlags{
+					AuthProfile:        cmd.Flags().Changed("profile"),
+					CloudflareZoneName: cmd.Flags().Changed("name"),
+					CloudflareAccount:  cmd.Flags().Changed("account-id"),
+					CloudflareZoneType: cmd.Flags().Changed("type"),
+				},
+			}
+			req = r.withGlobalFlags(cmd, globals, req)
+			return r.executor.Execute(req)
+		},
+	}
+
+	zoneUpdateCmd := &cobra.Command{
+		Use:   domain.ToolsOperationUpdate,
+		Short: "Update a Cloudflare zone",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			req := domain.Request{
+				Command:                   domain.CommandTools,
+				ToolsProvider:             domain.ToolsProviderCloudflare,
+				ToolsAction:               domain.ToolsActionCloudflareZones,
+				ToolsOperation:            domain.ToolsOperationUpdate,
+				AuthProfile:               authProfile,
+				CloudflareZoneID:          zoneID,
+				CloudflareZoneType:        zoneType,
+				CloudflareZonePausedInput: zonePaused,
+				Provided: domain.ProvidedFlags{
+					AuthProfile:        cmd.Flags().Changed("profile"),
+					CloudflareZoneID:   cmd.Flags().Changed("zone-id"),
+					CloudflareZoneType: cmd.Flags().Changed("type"),
+					CloudflarePaused:   cmd.Flags().Changed("paused"),
+				},
+			}
+			req = r.withGlobalFlags(cmd, globals, req)
+			return r.executor.Execute(req)
+		},
+	}
+
+	zoneDeleteCmd := &cobra.Command{
+		Use:   domain.ToolsOperationDelete,
+		Short: "Delete a Cloudflare zone",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			req := domain.Request{
+				Command:          domain.CommandTools,
+				ToolsProvider:    domain.ToolsProviderCloudflare,
+				ToolsAction:      domain.ToolsActionCloudflareZones,
+				ToolsOperation:   domain.ToolsOperationDelete,
+				AuthProfile:      authProfile,
+				CloudflareZoneID: zoneID,
+				Provided: domain.ProvidedFlags{
+					AuthProfile:      cmd.Flags().Changed("profile"),
+					CloudflareZoneID: cmd.Flags().Changed("zone-id"),
+				},
+			}
+			req = r.withGlobalFlags(cmd, globals, req)
+			return r.executor.Execute(req)
+		},
+	}
+
+	cloudflareCmd.PersistentFlags().StringVar(&authProfile, "profile", "", "Cloudflare auth profile name managed by civa auth cloudflare")
+	zoneCreateCmd.Flags().StringVar(&zoneName, "name", "", "Cloudflare zone name (example.com)")
+	zoneCreateCmd.Flags().StringVar(&zoneAccountID, "account-id", "", "Cloudflare account ID for zone creation")
+	zoneCreateCmd.Flags().StringVar(&zoneType, "type", "", "Cloudflare zone type: full, partial, secondary, internal")
+	zoneUpdateCmd.Flags().StringVar(&zoneID, "zone-id", "", "Cloudflare zone ID to update")
+	zoneUpdateCmd.Flags().StringVar(&zoneType, "type", "", "Cloudflare zone type: full, partial, secondary, internal")
+	zoneUpdateCmd.Flags().StringVar(&zonePaused, "paused", "", "Pause state to set: true or false")
+	zoneDeleteCmd.Flags().StringVar(&zoneID, "zone-id", "", "Cloudflare zone ID to delete")
+
+	zonesCmd.AddCommand(zoneListCmd, zoneCreateCmd, zoneUpdateCmd, zoneDeleteCmd)
 
 	cloudflareCmd.AddCommand(zonesCmd)
 	toolsCmd.AddCommand(cloudflareCmd)
@@ -790,18 +990,6 @@ func isFlagChanged(cmd *cobra.Command, name string) bool {
 
 func normalizeHelpTarget(name string) string {
 	switch name {
-	case domain.PlanActionInit, domain.PlanActionList, domain.PlanActionRemove:
-		return string(domain.CommandPlan)
-	case domain.ApplyActionReview, domain.ApplyActionDrift, domain.ApplyActionRollback:
-		return string(domain.CommandApply)
-	case domain.ToolsProviderCloudflare, domain.ToolsActionCloudflareZones:
-		return string(domain.CommandTools)
-	case domain.ConfigActionEdit:
-		return string(domain.CommandConfig)
-	case domain.SecretActionSet:
-		return string(domain.CommandSecret)
-	case domain.DoctorActionCheck, domain.DoctorActionFix:
-		return string(domain.CommandDoctor)
 	case "", "civa":
 		return ""
 	default:
@@ -818,18 +1006,41 @@ func normalizeHelpTargetCommand(cmd *cobra.Command) string {
 	}
 
 	name := cmd.Name()
-	if parent := cmd.Parent(); parent != nil {
-		switch parent.Name() {
-		case string(domain.CommandTools):
-			if name == domain.ToolsProviderCloudflare {
-				return helpTargetToolsCF
+	parent := cmd.Parent()
+	if parent != nil {
+		parentName := parent.Name()
+
+		if parentName == string(domain.CommandAuth) && name == domain.AuthProviderCloudflare {
+			return helpTargetAuthCF
+		}
+		if parentName == string(domain.CommandTools) && name == domain.ToolsProviderCloudflare {
+			return helpTargetToolsCF
+		}
+		if parentName == domain.AuthProviderCloudflare {
+			if grandParent := parent.Parent(); grandParent != nil && grandParent.Name() == string(domain.CommandAuth) {
+				if name == domain.AuthActionSet || name == domain.AuthActionGet || name == domain.AuthActionList || name == domain.AuthActionRemove || name == string(domain.CommandHelp) {
+					return helpTargetAuthCF
+				}
 			}
-		case domain.ToolsProviderCloudflare:
+		}
+		if parentName == domain.ToolsProviderCloudflare {
 			if grandParent := parent.Parent(); grandParent != nil && grandParent.Name() == string(domain.CommandTools) {
 				if name == domain.ToolsActionCloudflareZones || name == string(domain.CommandHelp) {
 					return helpTargetToolsCF
 				}
 			}
+		}
+		if parentName == domain.ToolsActionCloudflareZones {
+			if grandParent := parent.Parent(); grandParent != nil && grandParent.Name() == domain.ToolsProviderCloudflare {
+				if greatGrandParent := grandParent.Parent(); greatGrandParent != nil && greatGrandParent.Name() == string(domain.CommandTools) {
+					if name == domain.ToolsOperationList || name == domain.ToolsOperationCreate || name == domain.ToolsOperationUpdate || name == domain.ToolsOperationDelete || name == string(domain.CommandHelp) {
+						return helpTargetToolsCF
+					}
+				}
+			}
+		}
+
+		switch parentName {
 		case string(domain.CommandSecret):
 			if name == domain.SecretActionSet || name == domain.SecretActionList || name == domain.SecretActionRemove {
 				return string(domain.CommandSecret)
@@ -844,7 +1055,7 @@ func normalizeHelpTargetCommand(cmd *cobra.Command) string {
 		case "nginx", "caddy", "all":
 			if grandParent := parent.Parent(); grandParent != nil && grandParent.Name() == string(domain.CommandConfig) {
 				if name == domain.ConfigActionInit || name == domain.ConfigActionEdit || name == domain.ConfigActionList || name == domain.ConfigActionRemove || name == string(domain.CommandHelp) {
-					return configProviderHelpTarget(parent.Name())
+					return configProviderHelpTarget(parentName)
 				}
 			}
 		case string(domain.CommandApply):

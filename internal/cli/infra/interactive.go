@@ -606,6 +606,51 @@ func promptSecretValue(title string) (string, error) {
 	return strings.TrimRight(value, "\r\n"), nil
 }
 
+func promptToolsProvider(defaultValue string) (string, error) {
+	value := defaultValue
+	field := huh.NewSelect[string]().
+		Title("Tools provider").
+		Options(
+			huh.NewOption("Cloudflare", toolsProviderCloudflare),
+		).
+		Value(&value)
+	if err := field.Run(); err != nil {
+		return "", normalizePromptError(err)
+	}
+	return value, nil
+}
+
+func promptCloudflareToolsAction(defaultValue string) (string, error) {
+	value := defaultValue
+	field := huh.NewSelect[string]().
+		Title("Cloudflare action").
+		Options(
+			huh.NewOption("Manage zones", toolsActionCloudflareZone),
+		).
+		Value(&value)
+	if err := field.Run(); err != nil {
+		return "", normalizePromptError(err)
+	}
+	return value, nil
+}
+
+func promptCloudflareZonesOperation(defaultValue string) (string, error) {
+	value := defaultValue
+	field := huh.NewSelect[string]().
+		Title("Cloudflare zones operation").
+		Options(
+			huh.NewOption("List zones", toolsOperationList),
+			huh.NewOption("Create zone", toolsOperationCreate),
+			huh.NewOption("Update zone", toolsOperationUpdate),
+			huh.NewOption("Delete zone", toolsOperationDelete),
+		).
+		Value(&value)
+	if err := field.Run(); err != nil {
+		return "", normalizePromptError(err)
+	}
+	return value, nil
+}
+
 func newComponentPromptKeyMap() *huh.KeyMap {
 	keyMap := huh.NewDefaultKeyMap()
 	keyMap.MultiSelect.Toggle = key.NewBinding(

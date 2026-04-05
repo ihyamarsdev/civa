@@ -46,13 +46,35 @@ func (LegacyRunner) ExecuteRequest(req domain.Request) error {
 		}
 		cfg.Servers = servers
 		return runSetupFlow(&cfg)
+	case domain.CommandAuth:
+		cfg := defaultConfig(commandAuth)
+		applyGlobalRequest(req, &cfg)
+		cfg.AuthProvider = strings.ToLower(strings.TrimSpace(req.AuthProvider))
+		cfg.AuthAction = strings.ToLower(strings.TrimSpace(req.AuthAction))
+		cfg.AuthProfile = req.AuthProfile
+		cfg.AuthToken = req.AuthToken
+		cfg.Provided.AuthProfile = req.Provided.AuthProfile
+		cfg.Provided.AuthToken = req.Provided.AuthToken
+		return runAuthFlow(&cfg)
 	case domain.CommandTools:
 		cfg := defaultConfig(commandTools)
 		applyGlobalRequest(req, &cfg)
 		cfg.ToolsProvider = strings.ToLower(strings.TrimSpace(req.ToolsProvider))
 		cfg.ToolsAction = strings.ToLower(strings.TrimSpace(req.ToolsAction))
-		cfg.CloudflareToken = req.CloudflareToken
-		cfg.Provided.CloudflareToken = req.Provided.CloudflareToken
+		cfg.ToolsOperation = strings.ToLower(strings.TrimSpace(req.ToolsOperation))
+		cfg.AuthProfile = req.AuthProfile
+		cfg.CloudflareAccountID = req.CloudflareAccountID
+		cfg.CloudflareZoneID = req.CloudflareZoneID
+		cfg.CloudflareZoneName = req.CloudflareZoneName
+		cfg.CloudflareZoneType = req.CloudflareZoneType
+		cfg.CloudflareZonePausedInput = req.CloudflareZonePausedInput
+		cfg.Provided.AuthProfile = req.Provided.AuthProfile
+		cfg.Provided.ToolsOperation = req.Provided.ToolsOperation
+		cfg.Provided.CloudflareAccount = req.Provided.CloudflareAccount
+		cfg.Provided.CloudflareZoneID = req.Provided.CloudflareZoneID
+		cfg.Provided.CloudflareZoneName = req.Provided.CloudflareZoneName
+		cfg.Provided.CloudflareZoneType = req.Provided.CloudflareZoneType
+		cfg.Provided.CloudflarePaused = req.Provided.CloudflarePaused
 		return runToolsFlow(&cfg)
 	case domain.CommandConfig:
 		cfg := defaultConfig(commandConfig)

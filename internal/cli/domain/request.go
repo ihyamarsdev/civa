@@ -9,6 +9,7 @@ const (
 	CommandCompleteInternal Command = "__complete"
 	CommandDoctor           Command = "doctor"
 	CommandSetup            Command = "setup"
+	CommandAuth             Command = "auth"
 	CommandTools            Command = "tools"
 	CommandConfig           Command = "config"
 	CommandUninstall        Command = "uninstall"
@@ -18,11 +19,29 @@ const (
 )
 
 const (
+	AuthProviderCloudflare = "cloudflare"
+)
+
+const (
+	AuthActionSet    = "set"
+	AuthActionGet    = "get"
+	AuthActionList   = "list"
+	AuthActionRemove = "remove"
+)
+
+const (
 	ToolsProviderCloudflare = "cloudflare"
 )
 
 const (
 	ToolsActionCloudflareZones = "zones"
+)
+
+const (
+	ToolsOperationList   = "list"
+	ToolsOperationCreate = "create"
+	ToolsOperationUpdate = "update"
+	ToolsOperationDelete = "delete"
 )
 
 const (
@@ -78,19 +97,29 @@ type ProvidedFlags struct {
 	SSHPasswordSecret  bool
 	SecretValue        bool
 	SecretValueFile    bool
+	AuthToken          bool
+	AuthProfile        bool
 	CloudflareToken    bool
+	ToolsOperation     bool
+	CloudflareAccount  bool
+	CloudflareZoneID   bool
+	CloudflareZoneName bool
+	CloudflareZoneType bool
+	CloudflarePaused   bool
 }
 
 type Request struct {
 	Command    Command
 	HelpTarget string
 
-	PlanAction   string
-	ConfigAction string
-	ApplyAction  string
-	DoctorAction string
-	SecretAction string
-	ToolsAction  string
+	PlanAction     string
+	ConfigAction   string
+	ApplyAction    string
+	DoctorAction   string
+	SecretAction   string
+	AuthAction     string
+	ToolsAction    string
+	ToolsOperation string
 
 	CompletionArgs []string
 
@@ -98,27 +127,36 @@ type Request struct {
 	AssumeYes      bool
 	NonInteractive bool
 
-	SSHUser            string
-	SSHPort            int
-	SSHPassword        string
-	WebServer          string
-	SSHPrivateKey      string
-	SSHPublicKey       string
-	DeployUser         string
-	Timezone           string
-	TraefikEmail       string
-	TraefikChallenge   string
-	TraefikDNSProvider string
-	ComponentsInput    string
-	PlanInputFile      string
-	PlanFile           string
-	SecretName         string
-	SecretValue        string
-	SecretValueFile    string
-	ToolsProvider      string
-	CloudflareToken    string
-	SSHPasswordSecret  string
-	Servers            []string
+	SSHUser                   string
+	SSHPort                   int
+	SSHPassword               string
+	WebServer                 string
+	SSHPrivateKey             string
+	SSHPublicKey              string
+	DeployUser                string
+	Timezone                  string
+	TraefikEmail              string
+	TraefikChallenge          string
+	TraefikDNSProvider        string
+	ComponentsInput           string
+	PlanInputFile             string
+	PlanFile                  string
+	SecretName                string
+	SecretValue               string
+	SecretValueFile           string
+	AuthProvider              string
+	AuthProfile               string
+	AuthToken                 string
+	ToolsProvider             string
+	CloudflareToken           string
+	CloudflareAccountID       string
+	CloudflareZoneID          string
+	CloudflareZoneName        string
+	CloudflareZoneType        string
+	CloudflareZonePaused      bool
+	CloudflareZonePausedInput string
+	SSHPasswordSecret         string
+	Servers                   []string
 
 	Provided ProvidedFlags
 }

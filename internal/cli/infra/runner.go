@@ -49,6 +49,8 @@ type encryptedSecretStore struct {
 	Secrets map[string]string `json:"secrets"`
 }
 
+var errSecretNotFound = errors.New("secret not found")
+
 type rollbackState struct {
 	LastSuccessfulPlan string `json:"lastSuccessfulPlan,omitempty"`
 	LastSuccessfulAt   string `json:"lastSuccessfulAt,omitempty"`
@@ -394,7 +396,7 @@ func readSecretValue(name string) (string, error) {
 	}
 	encryptedValue, ok := store.Secrets[normalizedName]
 	if !ok {
-		return "", fmt.Errorf("secret not found: %s", normalizedName)
+		return "", fmt.Errorf("%w: %s", errSecretNotFound, normalizedName)
 	}
 	key, err := ensureSecretKey()
 	if err != nil {

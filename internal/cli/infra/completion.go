@@ -12,6 +12,7 @@ var completionCommands = []string{
 	commandApply,
 	commandPlan,
 	commandSetup,
+	commandAuth,
 	commandTools,
 	commandSecret,
 	commandConfig,
@@ -94,6 +95,8 @@ func completionSuggestions(words []string) []string {
 		return completeSetup(words)
 	case commandTools:
 		return completeTools(words)
+	case commandAuth:
+		return completeAuth(words)
 	case commandConfig:
 		return completeConfig(words)
 	case commandSecret:
@@ -179,41 +182,137 @@ func completeSetup(words []string) []string {
 func completeTools(words []string) []string {
 	current := words[len(words)-1]
 	providers := []string{toolsProviderCloudflare, commandHelp}
-	flags := []string{"--help", "--non-interactive"}
+	commonFlags := []string{"--help", "--non-interactive"}
+	profileFlags := []string{"--profile", "--help", "--non-interactive"}
 	cloudflareActions := []string{toolsActionCloudflareZone, commandHelp}
-	cloudflareFlags := []string{"--token", "--help", "--non-interactive"}
+	zoneOperations := []string{toolsOperationList, toolsOperationCreate, toolsOperationUpdate, toolsOperationDelete, commandHelp}
+	createFlags := []string{"--profile", "--name", "--account-id", "--type", "--help", "--non-interactive"}
+	updateFlags := []string{"--profile", "--zone-id", "--paused", "--type", "--help", "--non-interactive"}
+	deleteFlags := []string{"--profile", "--zone-id", "--help", "--non-interactive"}
 
 	if len(words) == 1 {
-		return append(providers, flags...)
+		return append(providers, commonFlags...)
 	}
 
 	if len(words) == 2 && !contains(providers, words[1]) && !strings.HasPrefix(words[1], "-") {
 		suggestions := append([]string{}, providers...)
-		suggestions = append(suggestions, flags...)
+		suggestions = append(suggestions, commonFlags...)
 		return filterByPrefix(suggestions, current)
 	}
 
 	if words[1] == toolsProviderCloudflare {
 		if len(words) == 2 {
 			suggestions := append([]string{}, cloudflareActions...)
-			suggestions = append(suggestions, cloudflareFlags...)
+			suggestions = append(suggestions, profileFlags...)
 			return filterByPrefix(suggestions, current)
 		}
 		if len(words) == 3 && !contains(cloudflareActions, words[2]) && !strings.HasPrefix(words[2], "-") {
 			suggestions := append([]string{}, cloudflareActions...)
-			suggestions = append(suggestions, cloudflareFlags...)
+			suggestions = append(suggestions, profileFlags...)
 			return filterByPrefix(suggestions, current)
 		}
+
+		if words[2] == toolsActionCloudflareZone {
+			if len(words) == 3 {
+				suggestions := append([]string{}, zoneOperations...)
+				suggestions = append(suggestions, profileFlags...)
+				return filterByPrefix(suggestions, current)
+			}
+			if len(words) == 4 && !contains(zoneOperations, words[3]) && !strings.HasPrefix(words[3], "-") {
+				return filterByPrefix(zoneOperations, current)
+			}
+
+			operation := words[3]
+			flagsByOperation := profileFlags
+			switch operation {
+			case toolsOperationCreate:
+				flagsByOperation = createFlags
+			case toolsOperationUpdate:
+				flagsByOperation = updateFlags
+			case toolsOperationDelete:
+				flagsByOperation = deleteFlags
+			}
+
+			if strings.HasPrefix(current, "-") || previousWordExpectsValue(words) {
+				return filterByPrefix(flagsByOperation, current)
+			}
+			if len(words) == 4 {
+				return filterByPrefix(zoneOperations, current)
+			}
+			return filterByPrefix(flagsByOperation, current)
+		}
+
 		if strings.HasPrefix(current, "-") || previousWordExpectsValue(words) {
-			return filterByPrefix(cloudflareFlags, current)
+			return filterByPrefix(profileFlags, current)
 		}
 		return filterByPrefix(cloudflareActions, current)
 	}
 
 	if strings.HasPrefix(current, "-") || previousWordExpectsValue(words) {
-		return filterByPrefix(flags, current)
+		return filterByPrefix(commonFlags, current)
 	}
 	return filterByPrefix(providers, current)
+}
+
+func completeAuth(words []string) []string {
+	current := words[len(words)-1]
+	providers := []string{authProviderCloudflare, commandHelp}
+	commonFlags := []string{"--help", "--non-interactive"}
+	actions := []string{authActionSet, authActionGet, authActionList, authActionRemove, commandHelp}
+	setFlags := []string{"--token", "--help", "--non-interactive"}
+
+	if len(words) == 1 {
+		return append(providers, commonFlags...)
+	}
+
+	if len(words) == 2 && !contains(providers, words[1]) && !strings.HasPrefix(words[1], "-") {
+		suggestions := append([]string{}, providers...)
+		suggestions = append(suggestions, commonFlags...)
+		return filterByPrefix(suggestions, current)
+	}
+
+	if words[1] != authProviderCloudflare {
+		if strings.HasPrefix(current, "-") || previousWordExpectsValue(words) {
+			return filterByPrefix(commonFlags, current)
+		}
+		return filterByPrefix(providers, current)
+	}
+
+	if len(words) == 2 {
+		suggestions := append([]string{}, actions...)
+		suggestions = append(suggestions, commonFlags...)
+		return filterByPrefix(suggestions, current)
+	}
+
+	if len(words) == 3 && !contains(actions, words[2]) && !strings.HasPrefix(words[2], "-") {
+		suggestions := append([]string{}, actions...)
+		suggestions = append(suggestions, commonFlags...)
+		return filterByPrefix(suggestions, current)
+	}
+
+	action := words[2]
+	switch action {
+	case authActionList:
+		return filterByPrefix(commonFlags, current)
+	case authActionSet:
+		if len(words) <= 3 {
+			return append(generatedCloudflareAuthProfiles(""), setFlags...)
+		}
+		if strings.HasPrefix(current, "-") || previousWordExpectsValue(words) {
+			return filterByPrefix(setFlags, current)
+		}
+		return generatedCloudflareAuthProfiles(current)
+	case authActionGet, authActionRemove:
+		if len(words) <= 3 {
+			return append(generatedCloudflareAuthProfiles(""), commonFlags...)
+		}
+		if strings.HasPrefix(current, "-") || previousWordExpectsValue(words) {
+			return filterByPrefix(commonFlags, current)
+		}
+		return generatedCloudflareAuthProfiles(current)
+	default:
+		return filterByPrefix(actions, current)
+	}
 }
 
 func completeConfig(words []string) []string {
@@ -394,6 +493,14 @@ func generatedSecretNames(prefix string) []string {
 	return filterByPrefix(names, prefix)
 }
 
+func generatedCloudflareAuthProfiles(prefix string) []string {
+	profiles, err := listCloudflareAuthProfiles()
+	if err != nil {
+		return nil
+	}
+	return filterByPrefix(profiles, prefix)
+}
+
 func completeCompletionCommand(words []string) []string {
 	current := words[len(words)-1]
 	return filterByPrefix([]string{"bash", "zsh", "fish", "help"}, current)
@@ -449,7 +556,7 @@ func previousWordExpectsValue(words []string) bool {
 	}
 
 	switch words[len(words)-2] {
-	case "--plan-file", "--ssh-private-key", "--ssh-public-key", "--output", "--ssh-user", "--ssh-port", "--ssh-password", "--ssh-password-secret", "--deployer-user", "--timezone", "--server", "--traefik-email", "--traefik-dns-provider", "--value", "--value-file", "--token":
+	case "--plan-file", "--ssh-private-key", "--ssh-public-key", "--output", "--ssh-user", "--ssh-port", "--ssh-password", "--ssh-password-secret", "--deployer-user", "--timezone", "--server", "--traefik-email", "--traefik-dns-provider", "--value", "--value-file", "--token", "--profile", "--name", "--account-id", "--zone-id", "--type", "--paused":
 		return true
 	default:
 		return false
@@ -486,8 +593,8 @@ _civa_completion() {
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
 
-  case "$prev" in
-    --plan-file|--ssh-private-key|--ssh-public-key|--output|--value-file)
+	case "$prev" in
+	    --plan-file|--ssh-private-key|--ssh-public-key|--output|--value-file)
       compopt -o default
       return 0
       ;;
@@ -508,8 +615,8 @@ _civa_completion() {
   local prev
   prev=${words[CURRENT-1]}
 
-  case "$prev" in
-    --plan-file|--ssh-private-key|--ssh-public-key|--output|--value-file)
+	case "$prev" in
+	    --plan-file|--ssh-private-key|--ssh-public-key|--output|--value-file)
       _files
       return
       ;;
@@ -531,7 +638,7 @@ end
 
 function __civa_complete_path_flag
     set prev (commandline -opc)[-1]
-    contains -- $prev --plan-file --ssh-private-key --ssh-public-key --output --value-file
+	contains -- $prev --plan-file --ssh-private-key --ssh-public-key --output --value-file
 end
 
 complete -c civa -f -n '__civa_complete_path_flag' -a '(__fish_complete_path)'

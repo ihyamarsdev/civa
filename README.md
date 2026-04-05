@@ -18,7 +18,7 @@
 ## Current Support
 
 - Target families: Debian/Ubuntu and RHEL-compatible distributions such as RHEL, Rocky, AlmaLinux, CentOS, and Oracle Linux
-- Commands: `setup`, `tools cloudflare zones`, `secret set|list|remove`, `config`, `plan init|review|edit|list|remove`, `apply <nama-plan>`, `apply review <nama-plan>`, `apply drift <nama-plan>`, `apply rollback [nama-plan]`, `completion <shell>`, `doctor`, `uninstall`, `version`, `help`
+- Commands: `setup`, `auth cloudflare set|get|list|remove`, `tools cloudflare zones`, `secret set|list|remove`, `config`, `plan init|review|edit|list|remove`, `apply <nama-plan>`, `apply review <nama-plan>`, `apply drift <nama-plan>`, `apply rollback [nama-plan]`, `completion <shell>`, `doctor`, `uninstall`, `version`, `help`
 - Runtime artifacts: `~/.civa/runs/<timestamp>/inventory.yml`, `vars.yml`, `plan.md`, and staged embedded Ansible assets
 
 ## Quick Start
@@ -73,7 +73,8 @@ Check local prerequisites:
 
 - `civa setup` — install your local public key onto a fresh server with ssh-copy-id, optionally supplying the password via `sshpass`
 - `civa tools` — run interactive external provider tools
-- `civa tools cloudflare zones` — list zones available to your Cloudflare API token (`--token` or `CLOUDFLARE_API_TOKEN`)
+- `civa auth cloudflare set|get|list|remove` — manage stored Cloudflare auth profiles
+- `civa tools cloudflare zones` — manage Cloudflare zones using token from auth profile (`--profile`, default: `default`)
 - `civa config <nginx|caddy> init [plan-name]` — initialize or update persistent web server profile (nginx/caddy), choose target hostname(s), and run separate config playbook using inventory from generated plan (latest by default)
 - `civa config <nginx|caddy|all> list` — list persisted web server config profiles by provider (or all)
 - `civa config <nginx|caddy> remove <plan-name>` — remove persisted web server config profile for one provider in a specific plan context

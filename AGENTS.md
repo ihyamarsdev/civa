@@ -5,17 +5,20 @@ Guidance for coding agents working in `civa`.
 ## Project Snapshot
 - Language: Go (`go 1.26`, module `civa`).
 - Type: interactive CLI for VPS automation using embedded Ansible assets.
-- Entry point: `main.go` -> `internal/cli.Run(...)`.
-- Core package: `internal/cli`.
+- Entry point: `main.go` -> `internal/cli.Run(...)` in `internal/cli/run.go`.
+- CLI wiring: `internal/cli/cmd/root.go` (Cobra commands and flags).
+- Request contract: `internal/cli/domain/request.go`.
+- Runtime execution: `internal/cli/infra/*` (`adapter.go`, `runner.go`, `cloudflare.go`, `interactive.go`, `completion.go`, `cli.go`).
 - Embedded assets: `ansible/` materialized at runtime.
 - Release pipeline: `.goreleaser.yaml` + `.github/workflows/release.yml`.
 
-## Operational Flow (Merged from AGENT.md)
+## Operational Flow
 - Primary flow: collect operator input -> generate run artifacts (`~/.civa/runs/<run-id>/`) -> review plan -> apply plan.
 - This repository focuses on CLI orchestration and execution planning; provisioning logic is delegated to embedded Ansible assets.
 - `civa setup` is the bootstrap command for first-time SSH key installation on a target host.
 - `civa plan init` assumes key-based SSH access (password mode is not supported for planning).
 - `plan review`/`plan edit` and `apply` operate on an existing generated plan (by plan name or `--plan-file`).
+- Cloudflare flow now uses auth profiles first (`civa auth cloudflare ...`), and tools read tokens from those profiles (`civa tools cloudflare zones ... --profile <name>`).
 
 ## Rule Sources (Cursor/Copilot)
 - `.cursor/rules/`: not found.
@@ -24,11 +27,17 @@ Guidance for coding agents working in `civa`.
 - Use this file and existing repository patterns as the authoritative guide.
 
 ## Repo Areas You Will Touch Most
-- `internal/cli/app.go`: command parsing, dispatch, config defaults/validation.
-- `internal/cli/runtime.go`: runtime artifacts, doctor/setup helpers, ansible execution.
-- `internal/cli/interactive.go`: interactive prompt flows and cancellation handling.
-- `internal/cli/completion.go`: shell completion and hidden completion support.
-- `internal/cli/app_test.go`: command/runtime tests and regression coverage.
+- `main.go`: binary entrypoint.
+- `internal/cli/run.go`: argument normalization and dependency wiring (`infra.NewLegacyRunner` -> `app.NewService` -> `cmd.NewRoot`).
+- `internal/cli/cmd/root.go`: Cobra command tree, flags, and request mapping for commands including `auth` and `tools`.
+- `internal/cli/domain/request.go`: command/action constants and request payload fields.
+- `internal/cli/app/service.go`: thin app service that delegates requests to the runner.
+- `internal/cli/infra/adapter.go`: converts `domain.Request` into runtime config and dispatches command flows.
+- `internal/cli/infra/runner.go`: core runtime operations (plan/apply/setup/config/secret/doctor and shared storage helpers).
+- `internal/cli/infra/cloudflare.go`: Cloudflare auth profile CRUD + tools/zones CRUD + API client.
+- `internal/cli/infra/interactive.go`: interactive prompt flows (huh-based).
+- `internal/cli/infra/completion.go`: shell completion generation and hidden completion routing.
+- `internal/cli/infra/cli.go`: command usage/help output and many shared CLI helpers.
 - `docs/`: user-facing command and architecture documentation.
 
 ## Build / Test / Lint Commands
@@ -52,27 +61,28 @@ go test ./...
 
 ### Run tests in one package
 ```bash
-go test ./internal/cli
+go test ./internal/cli/cmd
+go test ./internal/cli/infra
 ```
 
 ### Run a single test function (important)
 ```bash
-go test ./internal/cli -run '^TestResolveComponentsSupportsMixedTokens$'
+go test ./internal/cli/cmd -run '^TestRootRunRoutesToolsCloudflareZonesList$'
 ```
 
 ### Run a single subtest
 ```bash
-go test ./internal/cli -run 'TestParent/Subcase'
+go test ./internal/cli/infra -run 'TestName/Subcase'
 ```
 
 ### Re-run without cache
 ```bash
-go test ./internal/cli -run '^TestName$' -count=1
+go test ./internal/cli/infra -run '^TestName$' -count=1
 ```
 
 ### Verbose single-test output
 ```bash
-go test ./internal/cli -run '^TestName$' -v
+go test ./internal/cli/infra -run '^TestName$' -v
 ```
 
 ### Lint/format status in this repository
@@ -99,20 +109,20 @@ These rules are based on existing code in `internal/cli`.
 - Avoid deep nesting when a guard clause can exit early.
 
 ### Types and state modeling
-- Prefer explicit structs for state (`config`, `runtimeState`, `providedFlags`).
+- Prefer explicit structs for state (`config`, `domain.Request`, `providedFlags`).
 - Use concrete types (`int`, `[]string`, `bool`) rather than loose abstractions.
 - Do not introduce `any`/empty interface unless an API requires it.
 
 ### Naming
 - Use camelCase for unexported identifiers.
-- Use action-oriented function names (`runApplyFlow`, `validateExecutionConfig`).
-- Keep command vocabulary consistent: `setup`, `plan`, `apply`, `doctor`.
+- Use action-oriented function names (`runApplyFlow`, `validateExecutionConfig`, `runCloudflareZonesListFlow`).
+- Keep command vocabulary consistent: `setup`, `plan`, `apply`, `doctor`, `auth`, `tools`, `secret`, `config`.
 - Use constants for command names, defaults, and enum-like values.
 
 ### Error handling
 - Return errors; never silently ignore failures.
 - Wrap propagated errors with context using `%w`.
-- Use `errors.Is` for sentinel comparisons (e.g., user cancellation flows).
+- Use `errors.Is` for sentinel comparisons (e.g., user cancellation or missing secrets).
 - Keep error messages explicit and operator-friendly.
 
 ### CLI output
@@ -127,8 +137,8 @@ These rules are based on existing code in `internal/cli`.
 
 ### Filesystem and permissions
 - Follow existing permission model:
-  - directories: `0o755`
-  - sensitive files (inventory/auth/metadata): `0o600`
+  - directories: `0o755` (`~/.civa/secrets` directory is enforced as `0o700`)
+  - sensitive files (inventory/auth/metadata/secrets): `0o600`
   - non-sensitive generated docs/vars: `0o644` where current code uses it
 - Do not relax permissions for secret-bearing files.
 
@@ -142,13 +152,15 @@ These rules are based on existing code in `internal/cli`.
 ## Change Checklist for Commands/Flags
 If you add or modify a command/flag, update all applicable areas:
 
-1. Argument parsing and defaults in `internal/cli/app.go`.
-2. Validation and runtime behavior in `internal/cli/app.go` / `internal/cli/runtime.go`.
-3. Help output (`printUsage`, `printCommandUsage`).
-4. Shell completion logic in `internal/cli/completion.go`.
-5. Interactive prompt behavior in `internal/cli/interactive.go` (if relevant).
-6. Tests in `internal/cli/app_test.go`.
-7. User docs in `README.md` and `docs/`.
+1. Cobra command wiring and flag parsing in `internal/cli/cmd/root.go`.
+2. Command/action constants and request fields in `internal/cli/domain/request.go`.
+3. Runtime request mapping in `internal/cli/infra/adapter.go`.
+4. Runtime command behavior in `internal/cli/infra/runner.go` and provider-specific files (for Cloudflare: `internal/cli/infra/cloudflare.go`).
+5. Help output in `internal/cli/infra/cli.go` (`printUsage`, `printCommandUsage`).
+6. Shell completion logic in `internal/cli/infra/completion.go`.
+7. Interactive prompt behavior in `internal/cli/infra/interactive.go` (if relevant).
+8. Tests in `internal/cli/cmd/root_test.go`, `internal/cli/infra/*_test.go`, and `internal/cli/run_test.go` as applicable.
+9. User docs in `README.md` and `docs/`.
 
 ## Minimum Verification Before Finishing
 For code changes, run at least:
@@ -160,7 +172,7 @@ go build -o bin/civa .
 
 For docs-only changes, ensure commands/paths still match actual code.
 
-## Safety Boundaries (Merged from AGENT.md)
+## Safety Boundaries
 - Do not remove or restructure `ansible/collections` unless the task explicitly requires it and verification is included.
 - Do not change release automation files (`.goreleaser.yaml`, `.github/workflows/release.yml`) unless the request is release-related.
 - Avoid destructive edits to user runtime artifacts under `~/.civa/runs`; use official commands such as `plan remove`.

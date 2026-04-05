@@ -28,6 +28,8 @@ const (
 	commandCompleteInternal = "__complete"
 	commandDoctor           = "doctor"
 	commandSetup            = "setup"
+	commandAuth             = "auth"
+	commandAuthCloudflare   = "auth-cloudflare"
 	commandTools            = "tools"
 	commandToolsCloudflare  = "tools-cloudflare"
 	commandSecret           = "secret"
@@ -68,8 +70,17 @@ const (
 	secretActionSet           = "set"
 	secretActionList          = "list"
 	secretActionRemove        = "remove"
+	authProviderCloudflare    = "cloudflare"
+	authActionSet             = "set"
+	authActionGet             = "get"
+	authActionList            = "list"
+	authActionRemove          = "remove"
 	toolsProviderCloudflare   = "cloudflare"
 	toolsActionCloudflareZone = "zones"
+	toolsOperationList        = "list"
+	toolsOperationCreate      = "create"
+	toolsOperationUpdate      = "update"
+	toolsOperationDelete      = "delete"
 	doctorActionCheck         = "check"
 	doctorActionFix           = "fix"
 )
@@ -127,48 +138,67 @@ type providedFlags struct {
 	NonInteractive     bool
 	SecretValue        bool
 	SecretValueFile    bool
+	AuthToken          bool
+	AuthProfile        bool
 	CloudflareToken    bool
+	ToolsOperation     bool
+	CloudflareAccount  bool
+	CloudflareZoneID   bool
+	CloudflareZoneName bool
+	CloudflareZoneType bool
+	CloudflarePaused   bool
 }
 
 type config struct {
-	Command              string
-	PlanAction           string
-	ConfigAction         string
-	ApplyAction          string
-	SecretAction         string
-	ToolsProvider        string
-	ToolsAction          string
-	DoctorAction         string
-	PlanName             string
-	AssumeYes            bool
-	NonInteractive       bool
-	SSHUser              string
-	SSHPort              int
-	SSHAuthMethod        string
-	SSHPassword          string
-	SSHPasswordSecret    string
-	WebServer            string
-	SSHPrivateKey        string
-	SSHPublicKey         string
-	DeployUser           string
-	Timezone             string
-	SwapSize             string
-	TraefikEmail         string
-	TraefikChallenge     string
-	TraefikDNSProvider   string
-	ComponentsInput      string
-	Components           []string
-	PlanInputFile        string
-	PlanFile             string
-	SecretName           string
-	SecretValue          string
-	SecretValueFile      string
-	CloudflareToken      string
-	WebServerSites       []webServerSiteSpec
-	WebServerTargetHosts []string
-	NginxCertbotEmail    string
-	Servers              []serverSpec
-	Provided             providedFlags
+	Command                   string
+	PlanAction                string
+	ConfigAction              string
+	ApplyAction               string
+	SecretAction              string
+	AuthProvider              string
+	AuthAction                string
+	AuthProfile               string
+	AuthToken                 string
+	ToolsProvider             string
+	ToolsAction               string
+	ToolsOperation            string
+	DoctorAction              string
+	PlanName                  string
+	AssumeYes                 bool
+	NonInteractive            bool
+	SSHUser                   string
+	SSHPort                   int
+	SSHAuthMethod             string
+	SSHPassword               string
+	SSHPasswordSecret         string
+	WebServer                 string
+	SSHPrivateKey             string
+	SSHPublicKey              string
+	DeployUser                string
+	Timezone                  string
+	SwapSize                  string
+	TraefikEmail              string
+	TraefikChallenge          string
+	TraefikDNSProvider        string
+	ComponentsInput           string
+	Components                []string
+	PlanInputFile             string
+	PlanFile                  string
+	SecretName                string
+	SecretValue               string
+	SecretValueFile           string
+	CloudflareToken           string
+	CloudflareAccountID       string
+	CloudflareZoneID          string
+	CloudflareZoneName        string
+	CloudflareZoneType        string
+	CloudflareZonePaused      bool
+	CloudflareZonePausedInput string
+	WebServerSites            []webServerSiteSpec
+	WebServerTargetHosts      []string
+	NginxCertbotEmail         string
+	Servers                   []serverSpec
+	Provided                  providedFlags
 }
 
 type runtimeState struct {
@@ -1744,8 +1774,9 @@ func printUsage() {
 	blocks := []outputBlock{
 		{Title: "Usage", Lines: []string{"civa <command> [options]"}},
 		{Title: "Commands", Lines: []string{
+			"auth cloudflare           Manage Cloudflare auth profiles",
 			"tools                     Run interactive external provider tools",
-			"tools cloudflare zones    List Cloudflare zones",
+			"tools cloudflare zones    Manage Cloudflare zones (list/create/update/delete)",
 			"config <provider> init     Initialize or update persisted config profile (provider: nginx or caddy)",
 			"config <provider> list     List persisted config profile (provider: nginx, caddy, or all)",
 			"config <provider> remove   Remove persisted config profile (provider: nginx or caddy, requires <plan-name>)",
@@ -1788,13 +1819,23 @@ func printUsage() {
 			"--traefik-dns-provider <id> DNS provider name used when challenge type is dns",
 			"--output <path>            Extra exported Markdown copy for plan init",
 			"--value-file <path>        Path to secret value file for `civa secret set`",
-			"--token <value>            Cloudflare API token used by `civa tools cloudflare`",
+			"--profile <name>           Cloudflare auth profile for `civa tools cloudflare zones`",
+			"--name <domain>            Cloudflare zone name for create action",
+			"--account-id <id>          Cloudflare account ID for create action",
+			"--zone-id <id>             Cloudflare zone ID for update/delete action",
+			"--type <value>             Cloudflare zone type: full|partial|secondary|internal",
+			"--paused <bool>            Cloudflare zone paused value: true|false",
+			"--token <value>            Cloudflare API token used by `civa auth cloudflare set`",
 			"--help                     Show this help message",
 		}},
 		{Title: "Examples", Lines: []string{
+			"civa auth cloudflare set default --token $CLOUDFLARE_API_TOKEN",
+			"civa auth cloudflare list",
 			"civa tools",
-			"civa tools cloudflare zones",
-			"civa tools cloudflare zones --token $CLOUDFLARE_API_TOKEN",
+			"civa tools cloudflare zones list",
+			"civa tools cloudflare zones create --profile default --name example.com --account-id <account-id>",
+			"civa tools cloudflare zones update --profile default --zone-id <zone-id> --paused true",
+			"civa tools cloudflare zones delete --profile default --zone-id <zone-id>",
 			"civa config nginx init web-01-v2",
 			"civa config nginx list",
 			"civa config all list",
@@ -1826,20 +1867,34 @@ func printUsage() {
 func printCommandUsage(command string) {
 	styled := canStyleStdout()
 	switch command {
+	case commandAuth:
+		fmt.Println(renderSectionTitle("civa auth", styled))
+		fmt.Println(renderOutputBlocks([]outputBlock{
+			{Title: "Usage", Lines: []string{"civa auth", "civa auth cloudflare", "civa auth cloudflare set <profile> [--token <value>]", "civa auth cloudflare get <profile>", "civa auth cloudflare list", "civa auth cloudflare remove <profile>"}},
+			{Title: "Providers", Lines: []string{"cloudflare                Manage Cloudflare API token profiles"}},
+			{Title: "Examples", Lines: []string{"civa auth cloudflare set default --token $CLOUDFLARE_API_TOKEN", "civa auth cloudflare list", "civa auth cloudflare get default", "civa auth cloudflare remove default"}},
+		}, styled))
+	case commandAuthCloudflare:
+		fmt.Println(renderSectionTitle("civa auth cloudflare", styled))
+		fmt.Println(renderOutputBlocks([]outputBlock{
+			{Title: "Usage", Lines: []string{"civa auth cloudflare set <profile> [--token <value>]", "civa auth cloudflare get <profile>", "civa auth cloudflare list", "civa auth cloudflare remove <profile>"}},
+			{Title: "Notes", Lines: []string{"Token values are encrypted at rest using civa secret store", "If --token is omitted in interactive mode, civa prompts hidden token input"}},
+			{Title: "Examples", Lines: []string{"civa auth cloudflare set default --token $CLOUDFLARE_API_TOKEN", "civa auth cloudflare get default", "civa auth cloudflare list", "civa auth cloudflare remove default"}},
+		}, styled))
 	case commandTools:
 		fmt.Println(renderSectionTitle("civa tools", styled))
 		fmt.Println(renderOutputBlocks([]outputBlock{
-			{Title: "Usage", Lines: []string{"civa tools", "civa tools cloudflare", "civa tools cloudflare zones [--token <value>]"}},
+			{Title: "Usage", Lines: []string{"civa tools", "civa tools cloudflare", "civa tools cloudflare zones", "civa tools cloudflare zones <list|create|update|delete> [flags]"}},
 			{Title: "Providers", Lines: []string{"cloudflare                Cloudflare DNS/account helper utilities"}},
-			{Title: "Examples", Lines: []string{"civa tools", "civa tools cloudflare", "civa tools cloudflare zones", "civa tools cloudflare zones --token $CLOUDFLARE_API_TOKEN"}},
+			{Title: "Examples", Lines: []string{"civa tools", "civa tools cloudflare", "civa tools cloudflare zones list", "civa tools cloudflare zones create --profile default --name example.com --account-id <account-id>", "civa tools cloudflare zones update --profile default --zone-id <zone-id> --paused true", "civa tools cloudflare zones delete --profile default --zone-id <zone-id>"}},
 		}, styled))
 	case commandToolsCloudflare:
 		fmt.Println(renderSectionTitle("civa tools cloudflare", styled))
 		fmt.Println(renderOutputBlocks([]outputBlock{
-			{Title: "Usage", Lines: []string{"civa tools cloudflare", "civa tools cloudflare zones [--token <value>]"}},
-			{Title: "Actions", Lines: []string{"zones                     List zones available to the API token"}},
-			{Title: "Token Resolution", Lines: []string{"1) --token flag", "2) CLOUDFLARE_API_TOKEN env", "3) interactive hidden prompt (TTY only)"}},
-			{Title: "Examples", Lines: []string{"civa tools cloudflare", "civa tools cloudflare zones", "civa tools cloudflare zones --token $CLOUDFLARE_API_TOKEN"}},
+			{Title: "Usage", Lines: []string{"civa tools cloudflare", "civa tools cloudflare zones", "civa tools cloudflare zones list [--profile <name>]", "civa tools cloudflare zones create [--profile <name>] [--name <domain>] [--account-id <id>] [--type <value>]", "civa tools cloudflare zones update [--profile <name>] [--zone-id <id>] [--paused <bool>|--type <value>]", "civa tools cloudflare zones delete [--profile <name>] [--zone-id <id>]"}},
+			{Title: "Actions", Lines: []string{"zones list                List zones from Cloudflare", "zones create              Create a new zone", "zones update              Update one zone property (paused or type)", "zones delete              Delete an existing zone"}},
+			{Title: "Credential Source", Lines: []string{"Tools read token from `civa auth cloudflare` profiles only", "Default profile is `default` unless --profile is provided"}},
+			{Title: "Examples", Lines: []string{"civa tools cloudflare zones list", "civa tools cloudflare zones create --profile default --name example.com --account-id <account-id>", "civa tools cloudflare zones update --profile default --zone-id <zone-id> --paused true", "civa tools cloudflare zones delete --profile default --zone-id <zone-id>"}},
 		}, styled))
 	case commandConfig:
 		fmt.Println(renderSectionTitle("civa config", styled))

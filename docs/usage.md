@@ -15,6 +15,10 @@
 - `civa apply drift <nama-plan>`
 - `civa apply rollback [nama-plan]`
 - `civa setup`
+- `civa auth cloudflare set <profile> --token <value>`
+- `civa auth cloudflare get <profile>`
+- `civa auth cloudflare list`
+- `civa auth cloudflare remove <profile>`
 - `civa tools`
 - `civa tools cloudflare zones`
 - `civa secret set <name> --value-file <path>`
@@ -54,7 +58,7 @@ Component selection in interactive mode uses a Charmbracelet Huh multi-select pr
 
 Use `civa setup` to install your local public key onto a fresh VPS with its built-in user account. Before running SSH key installation, `civa setup` checks required local dependencies and auto-installs missing packages using your OS package manager (`apt-get`, `dnf`, or `yum`) with `sudo`. If you pass `--ssh-password`, setup uses `sshpass -e ssh-copy-id`; otherwise it runs `ssh-copy-id` directly and lets that tool prompt for the password in your terminal. You can also pass `--ssh-password-secret <name>` to resolve the password from civa's encrypted secret store. Before it connects, `civa setup` rewrites only the matching host entry in `~/.ssh/known_hosts` so stale host keys for the target host do not block the first login while other hosts stay untouched. For first contact it uses `StrictHostKeyChecking=accept-new`, which is convenient but still a trust-on-first-use trade-off.
 
-Use `civa tools` to run provider utilities via interactive form prompts. The first provider is Cloudflare: `civa tools cloudflare zones` lists zones from your token. Token precedence is `--token` first, then `CLOUDFLARE_API_TOKEN`, then hidden interactive prompt (TTY only).
+Use `civa auth cloudflare` to manage Cloudflare API token profiles first. Then use `civa tools` to run provider utilities via interactive form prompts. `civa tools cloudflare zones` reads token from auth profile (`--profile`, default: `default`).
 
 Use `civa secret set <name> --value-file <path>` to manage encrypted secret values at rest (preferred over inline `--value`). You can also run `civa secret set <name>` to input the value via hidden prompt in interactive terminals. Values are AES-GCM encrypted and stored in `~/.civa/secrets/store.json` with a local key in `~/.civa/secrets/key.bin` (both mode `0600`).
 
@@ -148,9 +152,11 @@ Install your public key using secret-backed password input:
 Run interactive tools menu and list Cloudflare zones:
 
 ```bash
+./bin/civa auth cloudflare set default --token "$CLOUDFLARE_API_TOKEN"
+./bin/civa auth cloudflare list
 ./bin/civa tools
 ./bin/civa tools cloudflare zones
-./bin/civa tools cloudflare zones --token "$CLOUDFLARE_API_TOKEN"
+./bin/civa tools cloudflare zones list --profile default
 ```
 
 List generated plans:

@@ -18,6 +18,7 @@ Benefits:
 - the deployer public key is read from the local machine and written to the target host
 - Docker is installed from the official Docker repositories with family-specific handling
 - Traefik files are generated but not automatically started
+- Cloudflare tooling uses profile-based auth (`civa auth cloudflare ...`) and provider tools consume the stored profile token (`civa tools cloudflare zones ... --profile <name>`)
 
 ## Current Limitations
 
@@ -31,3 +32,4 @@ Benefits:
 - run `civa plan review` before `civa apply` when working on new server groups
 - use `civa doctor` to validate local prerequisites
 - review the generated `plan.md` when auditing changes or preparing a maintenance window
+- set or rotate Cloudflare credentials via `civa auth cloudflare set <profile> --token <value>` before running zone operations
