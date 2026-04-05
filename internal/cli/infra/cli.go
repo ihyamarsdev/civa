@@ -28,6 +28,8 @@ const (
 	commandCompleteInternal = "__complete"
 	commandDoctor           = "doctor"
 	commandSetup            = "setup"
+	commandTools            = "tools"
+	commandToolsCloudflare  = "tools-cloudflare"
 	commandSecret           = "secret"
 	commandConfig           = "config"
 	commandConfigNginxHelp  = "config-nginx"
@@ -66,6 +68,8 @@ const (
 	secretActionSet           = "set"
 	secretActionList          = "list"
 	secretActionRemove        = "remove"
+	toolsProviderCloudflare   = "cloudflare"
+	toolsActionCloudflareZone = "zones"
 	doctorActionCheck         = "check"
 	doctorActionFix           = "fix"
 )
@@ -123,6 +127,7 @@ type providedFlags struct {
 	NonInteractive     bool
 	SecretValue        bool
 	SecretValueFile    bool
+	CloudflareToken    bool
 }
 
 type config struct {
@@ -131,6 +136,8 @@ type config struct {
 	ConfigAction         string
 	ApplyAction          string
 	SecretAction         string
+	ToolsProvider        string
+	ToolsAction          string
 	DoctorAction         string
 	PlanName             string
 	AssumeYes            bool
@@ -156,6 +163,7 @@ type config struct {
 	SecretName           string
 	SecretValue          string
 	SecretValueFile      string
+	CloudflareToken      string
 	WebServerSites       []webServerSiteSpec
 	WebServerTargetHosts []string
 	NginxCertbotEmail    string
@@ -1736,6 +1744,8 @@ func printUsage() {
 	blocks := []outputBlock{
 		{Title: "Usage", Lines: []string{"civa <command> [options]"}},
 		{Title: "Commands", Lines: []string{
+			"tools                     Run interactive external provider tools",
+			"tools cloudflare zones    List Cloudflare zones",
 			"config <provider> init     Initialize or update persisted config profile (provider: nginx or caddy)",
 			"config <provider> list     List persisted config profile (provider: nginx, caddy, or all)",
 			"config <provider> remove   Remove persisted config profile (provider: nginx or caddy, requires <plan-name>)",
@@ -1778,9 +1788,13 @@ func printUsage() {
 			"--traefik-dns-provider <id> DNS provider name used when challenge type is dns",
 			"--output <path>            Extra exported Markdown copy for plan init",
 			"--value-file <path>        Path to secret value file for `civa secret set`",
+			"--token <value>            Cloudflare API token used by `civa tools cloudflare`",
 			"--help                     Show this help message",
 		}},
 		{Title: "Examples", Lines: []string{
+			"civa tools",
+			"civa tools cloudflare zones",
+			"civa tools cloudflare zones --token $CLOUDFLARE_API_TOKEN",
 			"civa config nginx init web-01-v2",
 			"civa config nginx list",
 			"civa config all list",
@@ -1812,6 +1826,21 @@ func printUsage() {
 func printCommandUsage(command string) {
 	styled := canStyleStdout()
 	switch command {
+	case commandTools:
+		fmt.Println(renderSectionTitle("civa tools", styled))
+		fmt.Println(renderOutputBlocks([]outputBlock{
+			{Title: "Usage", Lines: []string{"civa tools", "civa tools cloudflare", "civa tools cloudflare zones [--token <value>]"}},
+			{Title: "Providers", Lines: []string{"cloudflare                Cloudflare DNS/account helper utilities"}},
+			{Title: "Examples", Lines: []string{"civa tools", "civa tools cloudflare", "civa tools cloudflare zones", "civa tools cloudflare zones --token $CLOUDFLARE_API_TOKEN"}},
+		}, styled))
+	case commandToolsCloudflare:
+		fmt.Println(renderSectionTitle("civa tools cloudflare", styled))
+		fmt.Println(renderOutputBlocks([]outputBlock{
+			{Title: "Usage", Lines: []string{"civa tools cloudflare", "civa tools cloudflare zones [--token <value>]"}},
+			{Title: "Actions", Lines: []string{"zones                     List zones available to the API token"}},
+			{Title: "Token Resolution", Lines: []string{"1) --token flag", "2) CLOUDFLARE_API_TOKEN env", "3) interactive hidden prompt (TTY only)"}},
+			{Title: "Examples", Lines: []string{"civa tools cloudflare", "civa tools cloudflare zones", "civa tools cloudflare zones --token $CLOUDFLARE_API_TOKEN"}},
+		}, styled))
 	case commandConfig:
 		fmt.Println(renderSectionTitle("civa config", styled))
 		fmt.Println(renderOutputBlocks([]outputBlock{

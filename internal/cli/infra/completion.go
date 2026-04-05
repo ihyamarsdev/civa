@@ -12,6 +12,7 @@ var completionCommands = []string{
 	commandApply,
 	commandPlan,
 	commandSetup,
+	commandTools,
 	commandSecret,
 	commandConfig,
 	commandDoctor,
@@ -91,6 +92,8 @@ func completionSuggestions(words []string) []string {
 		return completeApply(words)
 	case commandSetup:
 		return completeSetup(words)
+	case commandTools:
+		return completeTools(words)
 	case commandConfig:
 		return completeConfig(words)
 	case commandSecret:
@@ -171,6 +174,46 @@ func completeSetup(words []string) []string {
 		return filterByPrefix(flags, current)
 	}
 	return flags
+}
+
+func completeTools(words []string) []string {
+	current := words[len(words)-1]
+	providers := []string{toolsProviderCloudflare, commandHelp}
+	flags := []string{"--help", "--non-interactive"}
+	cloudflareActions := []string{toolsActionCloudflareZone, commandHelp}
+	cloudflareFlags := []string{"--token", "--help", "--non-interactive"}
+
+	if len(words) == 1 {
+		return append(providers, flags...)
+	}
+
+	if len(words) == 2 && !contains(providers, words[1]) && !strings.HasPrefix(words[1], "-") {
+		suggestions := append([]string{}, providers...)
+		suggestions = append(suggestions, flags...)
+		return filterByPrefix(suggestions, current)
+	}
+
+	if words[1] == toolsProviderCloudflare {
+		if len(words) == 2 {
+			suggestions := append([]string{}, cloudflareActions...)
+			suggestions = append(suggestions, cloudflareFlags...)
+			return filterByPrefix(suggestions, current)
+		}
+		if len(words) == 3 && !contains(cloudflareActions, words[2]) && !strings.HasPrefix(words[2], "-") {
+			suggestions := append([]string{}, cloudflareActions...)
+			suggestions = append(suggestions, cloudflareFlags...)
+			return filterByPrefix(suggestions, current)
+		}
+		if strings.HasPrefix(current, "-") || previousWordExpectsValue(words) {
+			return filterByPrefix(cloudflareFlags, current)
+		}
+		return filterByPrefix(cloudflareActions, current)
+	}
+
+	if strings.HasPrefix(current, "-") || previousWordExpectsValue(words) {
+		return filterByPrefix(flags, current)
+	}
+	return filterByPrefix(providers, current)
 }
 
 func completeConfig(words []string) []string {
@@ -406,7 +449,7 @@ func previousWordExpectsValue(words []string) bool {
 	}
 
 	switch words[len(words)-2] {
-	case "--plan-file", "--ssh-private-key", "--ssh-public-key", "--output", "--ssh-user", "--ssh-port", "--ssh-password", "--ssh-password-secret", "--deployer-user", "--timezone", "--server", "--traefik-email", "--traefik-dns-provider", "--value", "--value-file":
+	case "--plan-file", "--ssh-private-key", "--ssh-public-key", "--output", "--ssh-user", "--ssh-port", "--ssh-password", "--ssh-password-secret", "--deployer-user", "--timezone", "--server", "--traefik-email", "--traefik-dns-provider", "--value", "--value-file", "--token":
 		return true
 	default:
 		return false

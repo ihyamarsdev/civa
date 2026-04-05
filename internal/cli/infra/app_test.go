@@ -521,7 +521,7 @@ func TestRenderOutputBlocksPlainFallback(t *testing.T) {
 
 func TestCompletionSuggestionsTopLevelAndValues(t *testing.T) {
 	root := completionSuggestions(nil)
-	if !contains(root, commandPlan) || !contains(root, commandCompletion) || !contains(root, commandSecret) {
+	if !contains(root, commandPlan) || !contains(root, commandCompletion) || !contains(root, commandSecret) || !contains(root, commandTools) {
 		t.Fatalf("unexpected root completion set: %v", root)
 	}
 
@@ -555,6 +555,16 @@ func TestCompletionSuggestionsTopLevelAndValues(t *testing.T) {
 	configProviderSuggestions := completionSuggestions([]string{"config", "n"})
 	if !contains(configProviderSuggestions, webServerNginx) {
 		t.Fatalf("expected config provider suggestion for nginx, got %v", configProviderSuggestions)
+	}
+
+	toolsProviderSuggestions := completionSuggestions([]string{"tools", "c"})
+	if !contains(toolsProviderSuggestions, toolsProviderCloudflare) {
+		t.Fatalf("expected tools provider suggestion for cloudflare, got %v", toolsProviderSuggestions)
+	}
+
+	toolsActionSuggestions := completionSuggestions([]string{"tools", "cloudflare", "z"})
+	if !contains(toolsActionSuggestions, toolsActionCloudflareZone) {
+		t.Fatalf("expected tools cloudflare action suggestion for zones, got %v", toolsActionSuggestions)
 	}
 
 	configProviderActionSuggestions := completionSuggestions([]string{"config", "nginx", "l"})

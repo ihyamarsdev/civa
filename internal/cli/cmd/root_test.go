@@ -203,6 +203,47 @@ func TestRootRunRoutesConfigProviderRemoveSubcommand(t *testing.T) {
 	}
 }
 
+func TestRootRunRoutesToolsCommand(t *testing.T) {
+	executor := &stubExecutor{}
+	root := NewRoot(executor)
+
+	err := root.Run([]string{"tools"})
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+
+	if len(executor.requests) != 1 {
+		t.Fatalf("expected one request, got %d", len(executor.requests))
+	}
+	if req := executor.requests[0]; req.Command != domain.CommandTools {
+		t.Fatalf("unexpected tools request: %#v", req)
+	}
+}
+
+func TestRootRunRoutesToolsCloudflareZones(t *testing.T) {
+	executor := &stubExecutor{}
+	root := NewRoot(executor)
+
+	err := root.Run([]string{"tools", "cloudflare", "zones", "--token", "cf-token"})
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+
+	if len(executor.requests) != 1 {
+		t.Fatalf("expected one request, got %d", len(executor.requests))
+	}
+	req := executor.requests[0]
+	if req.Command != domain.CommandTools || req.ToolsProvider != domain.ToolsProviderCloudflare || req.ToolsAction != domain.ToolsActionCloudflareZones {
+		t.Fatalf("unexpected tools cloudflare zones request: %#v", req)
+	}
+	if req.CloudflareToken != "cf-token" {
+		t.Fatalf("expected cloudflare token to be mapped, got %#v", req)
+	}
+	if !req.Provided.CloudflareToken {
+		t.Fatalf("expected cloudflare token provided flag, got %#v", req.Provided)
+	}
+}
+
 func TestRootRunRejectsConfigAllRemoveSubcommand(t *testing.T) {
 	executor := &stubExecutor{}
 	root := NewRoot(executor)
@@ -410,5 +451,26 @@ func TestRootRunHelpRoutesConfigProviderSubcommandsToProviderHelp(t *testing.T) 
 	}
 	if req := executor.requests[2]; req.Command != domain.CommandHelp || req.HelpTarget != helpTargetConfigAll {
 		t.Fatalf("unexpected all help request: %#v", req)
+	}
+}
+
+func TestRootRunHelpRoutesToolsCloudflareSubcommandsToProviderHelp(t *testing.T) {
+	executor := &stubExecutor{}
+	root := NewRoot(executor)
+
+	if err := root.Run([]string{"tools", "cloudflare", "--help"}); err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if err := root.Run([]string{"tools", "cloudflare", "zones", "--help"}); err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+
+	if len(executor.requests) != 2 {
+		t.Fatalf("expected two help requests, got %d", len(executor.requests))
+	}
+	for idx, req := range executor.requests {
+		if req.Command != domain.CommandHelp || req.HelpTarget != helpTargetToolsCF {
+			t.Fatalf("unexpected tools help request at %d: %#v", idx, req)
+		}
 	}
 }

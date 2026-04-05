@@ -9,11 +9,20 @@ const (
 	CommandCompleteInternal Command = "__complete"
 	CommandDoctor           Command = "doctor"
 	CommandSetup            Command = "setup"
+	CommandTools            Command = "tools"
 	CommandConfig           Command = "config"
 	CommandUninstall        Command = "uninstall"
 	CommandPlan             Command = "plan"
 	CommandApply            Command = "apply"
 	CommandSecret           Command = "secret"
+)
+
+const (
+	ToolsProviderCloudflare = "cloudflare"
+)
+
+const (
+	ToolsActionCloudflareZones = "zones"
 )
 
 const (
@@ -69,6 +78,7 @@ type ProvidedFlags struct {
 	SSHPasswordSecret  bool
 	SecretValue        bool
 	SecretValueFile    bool
+	CloudflareToken    bool
 }
 
 type Request struct {
@@ -80,6 +90,7 @@ type Request struct {
 	ApplyAction  string
 	DoctorAction string
 	SecretAction string
+	ToolsAction  string
 
 	CompletionArgs []string
 
@@ -104,6 +115,8 @@ type Request struct {
 	SecretName         string
 	SecretValue        string
 	SecretValueFile    string
+	ToolsProvider      string
+	CloudflareToken    string
 	SSHPasswordSecret  string
 	Servers            []string
 

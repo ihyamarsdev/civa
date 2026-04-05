@@ -46,6 +46,14 @@ func (LegacyRunner) ExecuteRequest(req domain.Request) error {
 		}
 		cfg.Servers = servers
 		return runSetupFlow(&cfg)
+	case domain.CommandTools:
+		cfg := defaultConfig(commandTools)
+		applyGlobalRequest(req, &cfg)
+		cfg.ToolsProvider = strings.ToLower(strings.TrimSpace(req.ToolsProvider))
+		cfg.ToolsAction = strings.ToLower(strings.TrimSpace(req.ToolsAction))
+		cfg.CloudflareToken = req.CloudflareToken
+		cfg.Provided.CloudflareToken = req.Provided.CloudflareToken
+		return runToolsFlow(&cfg)
 	case domain.CommandConfig:
 		cfg := defaultConfig(commandConfig)
 		applyGlobalRequest(req, &cfg)
