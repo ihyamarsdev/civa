@@ -18,6 +18,104 @@ func (s *stubExecutor) Execute(req domain.Request) error {
 	return s.err
 }
 
+func TestRootRunNoArgsRoutesHelpWhenNonInteractive(t *testing.T) {
+	executor := &stubExecutor{}
+	root := NewRoot(executor)
+
+	err := root.Run([]string{"--non-interactive"})
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+
+	if len(executor.requests) != 1 {
+		t.Fatalf("expected one request, got %d", len(executor.requests))
+	}
+	req := executor.requests[0]
+	if req.Command != domain.CommandHelp {
+		t.Fatalf("expected help request, got %#v", req)
+	}
+}
+
+func TestRootRunNoArgsWizardRoutesSetup(t *testing.T) {
+	origTerminalFn := isTerminalFn
+	origPromptFn := promptWizardActionFn
+	t.Cleanup(func() {
+		isTerminalFn = origTerminalFn
+		promptWizardActionFn = origPromptFn
+	})
+
+	isTerminalFn = func(_ int) bool { return true }
+	promptWizardActionFn = func() (string, error) { return wizardActionSetup, nil }
+
+	executor := &stubExecutor{}
+	root := NewRoot(executor)
+
+	err := root.Run([]string{})
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+
+	if len(executor.requests) != 1 {
+		t.Fatalf("expected one request, got %d", len(executor.requests))
+	}
+	req := executor.requests[0]
+	if req.Command != domain.CommandSetup {
+		t.Fatalf("expected setup request, got %#v", req)
+	}
+}
+
+func TestRootRunNoArgsWizardRoutesPlanInit(t *testing.T) {
+	origTerminalFn := isTerminalFn
+	origPromptFn := promptWizardActionFn
+	t.Cleanup(func() {
+		isTerminalFn = origTerminalFn
+		promptWizardActionFn = origPromptFn
+	})
+
+	isTerminalFn = func(_ int) bool { return true }
+	promptWizardActionFn = func() (string, error) { return wizardActionPlanInit, nil }
+
+	executor := &stubExecutor{}
+	root := NewRoot(executor)
+
+	err := root.Run([]string{})
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+
+	if len(executor.requests) != 1 {
+		t.Fatalf("expected one request, got %d", len(executor.requests))
+	}
+	req := executor.requests[0]
+	if req.Command != domain.CommandPlan || req.PlanAction != domain.PlanActionInit {
+		t.Fatalf("expected plan init request, got %#v", req)
+	}
+}
+
+func TestRootRunNoArgsWizardExitSkipsExecution(t *testing.T) {
+	origTerminalFn := isTerminalFn
+	origPromptFn := promptWizardActionFn
+	t.Cleanup(func() {
+		isTerminalFn = origTerminalFn
+		promptWizardActionFn = origPromptFn
+	})
+
+	isTerminalFn = func(_ int) bool { return true }
+	promptWizardActionFn = func() (string, error) { return wizardActionExit, nil }
+
+	executor := &stubExecutor{}
+	root := NewRoot(executor)
+
+	err := root.Run([]string{})
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+
+	if len(executor.requests) != 0 {
+		t.Fatalf("expected no request when exiting wizard, got %d", len(executor.requests))
+	}
+}
+
 func TestRootRunRoutesPlanReviewCommand(t *testing.T) {
 	executor := &stubExecutor{}
 	root := NewRoot(executor)

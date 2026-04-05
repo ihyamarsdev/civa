@@ -2,9 +2,14 @@ package cmd
 
 import (
 	"civa/internal/cli/domain"
+	"errors"
+	"fmt"
+	"os"
 	"strings"
 
+	"github.com/charmbracelet/huh"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 const (
@@ -13,7 +18,25 @@ const (
 	helpTargetConfigAll   = "config-all"
 	helpTargetAuthCF      = "auth-cloudflare"
 	helpTargetToolsCF     = "tools-cloudflare"
+	wizardActionSetup     = "setup"
+	wizardActionPlanInit  = "plan-init"
+	wizardActionHelp      = "help"
+	wizardActionExit      = "exit"
 )
+
+var errWizardCancelled = errors.New("wizard cancelled")
+
+var promptWizardActionFn = promptWizardAction
+
+var isTerminalFn = term.IsTerminal
+
+var stdinFdFn = func() uintptr {
+	return os.Stdin.Fd()
+}
+
+var stdoutFdFn = func() uintptr {
+	return os.Stdout.Fd()
+}
 
 type Root struct {
 	executor domain.Executor
@@ -58,7 +81,20 @@ func (r *Root) newRootCommand() *cobra.Command {
 		Short:         "civa CLI for VPS automation",
 		SilenceUsage:  true,
 		SilenceErrors: true,
-		RunE: func(_ *cobra.Command, _ []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			wizardReq, handled, err := r.beginnerWizardRequest(cmd, globals)
+			if err != nil {
+				if errors.Is(err, errWizardCancelled) {
+					return nil
+				}
+				return err
+			}
+			if handled {
+				if wizardReq.Command == "" {
+					return nil
+				}
+				return r.executor.Execute(wizardReq)
+			}
 			return r.executor.Execute(domain.Request{Command: domain.CommandHelp})
 		},
 	}
@@ -968,6 +1004,70 @@ func (r *Root) withGlobalFlags(cmd *cobra.Command, globals *globalFlags, req dom
 	req.NonInteractive = globals.nonInteractive
 	req.Provided.NonInteractive = isFlagChanged(cmd, "non-interactive")
 	return req
+}
+
+func (r *Root) beginnerWizardRequest(cmd *cobra.Command, globals *globalFlags) (domain.Request, bool, error) {
+	if !shouldLaunchBeginnerWizard(globals) {
+		return domain.Request{}, false, nil
+	}
+
+	action, err := promptWizardActionFn()
+	if err != nil {
+		return domain.Request{}, true, err
+	}
+
+	switch action {
+	case wizardActionSetup:
+		return r.withGlobalFlags(cmd, globals, domain.Request{Command: domain.CommandSetup}), true, nil
+	case wizardActionPlanInit:
+		return r.withGlobalFlags(cmd, globals, domain.Request{Command: domain.CommandPlan, PlanAction: domain.PlanActionInit}), true, nil
+	case wizardActionHelp, "":
+		return r.withGlobalFlags(cmd, globals, domain.Request{Command: domain.CommandHelp}), true, nil
+	case wizardActionExit:
+		return domain.Request{}, true, nil
+	default:
+		return r.withGlobalFlags(cmd, globals, domain.Request{Command: domain.CommandHelp}), true, nil
+	}
+}
+
+func shouldLaunchBeginnerWizard(globals *globalFlags) bool {
+	if globals == nil || globals.nonInteractive {
+		return false
+	}
+	stdinFD := int(stdinFdFn())
+	stdoutFD := int(stdoutFdFn())
+	return isTerminalFn(stdinFD) && isTerminalFn(stdoutFD)
+}
+
+func promptWizardAction() (string, error) {
+	action := wizardActionPlanInit
+	field := huh.NewSelect[string]().
+		Title("Welcome to civa").
+		Description("Choose a guided flow for beginners.").
+		Options(
+			huh.NewOption("Guided setup SSH access", wizardActionSetup),
+			huh.NewOption("Guided plan initialization", wizardActionPlanInit),
+			huh.NewOption("Show help", wizardActionHelp),
+			huh.NewOption("Exit", wizardActionExit),
+		).
+		Value(&action)
+
+	if err := field.Run(); err != nil {
+		return "", normalizeWizardPromptError(err)
+	}
+
+	return strings.TrimSpace(action), nil
+}
+
+func normalizeWizardPromptError(err error) error {
+	if err == nil {
+		return nil
+	}
+	message := strings.ToLower(strings.TrimSpace(err.Error()))
+	if strings.Contains(message, "interrupt") || strings.Contains(message, "ctrl+c") || strings.Contains(message, "user aborted") {
+		return errWizardCancelled
+	}
+	return fmt.Errorf("beginner wizard: %w", err)
 }
 
 func hasAnyPlanInitInput(cmd *cobra.Command) bool {
