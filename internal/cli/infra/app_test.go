@@ -202,13 +202,33 @@ func TestRunConfigFlowListWorksWithoutInteractivePrompt(t *testing.T) {
 	}
 }
 
-func TestRunConfigFlowRemoveRequiresProfileWhenNonInteractive(t *testing.T) {
+func TestRunConfigFlowRemoveRequiresProviderAndPlanWhenNonInteractive(t *testing.T) {
 	homeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)
 
 	err := runConfigFlow(&config{Command: commandConfig, ConfigAction: configActionRemove, NonInteractive: true})
-	if err == nil || !strings.Contains(err.Error(), "requires a profile") {
-		t.Fatalf("expected non-interactive profile requirement error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "requires provider nginx/caddy and <plan-name>") {
+		t.Fatalf("expected non-interactive provider/plan requirement error, got %v", err)
+	}
+}
+
+func TestRunConfigFlowRemoveRejectsAllProvider(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	err := runConfigFlow(&config{Command: commandConfig, ConfigAction: configActionRemove, NonInteractive: true, WebServer: configProfileAll, PlanName: "web-01-v2"})
+	if err == nil || !strings.Contains(err.Error(), "does not support provider all") {
+		t.Fatalf("expected provider all rejection error, got %v", err)
+	}
+}
+
+func TestRunConfigFlowRemoveRequiresPlanWhenProviderSet(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	err := runConfigFlow(&config{Command: commandConfig, ConfigAction: configActionRemove, NonInteractive: true, WebServer: webServerNginx})
+	if err == nil || !strings.Contains(err.Error(), "requires <plan-name>") {
+		t.Fatalf("expected plan-name requirement error, got %v", err)
 	}
 }
 
@@ -227,7 +247,7 @@ func TestRunConfigFlowRemoveProfilePersistsRemoval(t *testing.T) {
 		t.Fatalf("saveWebServerConfig returned error: %v", err)
 	}
 
-	err := runConfigFlow(&config{Command: commandConfig, ConfigAction: configActionRemove, NonInteractive: true, WebServer: webServerNginx})
+	err := runConfigFlow(&config{Command: commandConfig, ConfigAction: configActionRemove, NonInteractive: true, WebServer: webServerNginx, PlanName: "web-01-v2"})
 	if err != nil {
 		t.Fatalf("expected config remove nginx to succeed, got %v", err)
 	}
@@ -447,20 +467,20 @@ func TestParseOptionalPortInputRejectsInvalidPort(t *testing.T) {
 	}
 }
 
-func TestRenderPreviewMarkdownUsesPlainFallbackForNonTTY(t *testing.T) {
-	rendered, err := renderPreviewMarkdown("plan.md", []byte("# Hello\n\nBody text\n"), false)
+func TestRenderPlanReviewMarkdownUsesPlainFallbackForNonTTY(t *testing.T) {
+	rendered, err := renderPlanReviewMarkdown("plan.md", []byte("# Hello\n\nBody text\n"), false)
 	if err != nil {
-		t.Fatalf("renderPreviewMarkdown returned error: %v", err)
+		t.Fatalf("renderPlanReviewMarkdown returned error: %v", err)
 	}
 	if !strings.Contains(rendered, "Hello") || !strings.Contains(rendered, "Body text") {
 		t.Fatalf("unexpected rendered output: %q", rendered)
 	}
 }
 
-func TestRenderPreviewMarkdownRemovesFrontmatter(t *testing.T) {
-	rendered, err := renderPreviewMarkdown("plan.md", []byte("---\ntitle: Demo\n---\n# Hello\n"), false)
+func TestRenderPlanReviewMarkdownRemovesFrontmatter(t *testing.T) {
+	rendered, err := renderPlanReviewMarkdown("plan.md", []byte("---\ntitle: Demo\n---\n# Hello\n"), false)
 	if err != nil {
-		t.Fatalf("renderPreviewMarkdown returned error: %v", err)
+		t.Fatalf("renderPlanReviewMarkdown returned error: %v", err)
 	}
 	if strings.Contains(rendered, "title: Demo") {
 		t.Fatalf("expected frontmatter to be removed, got %q", rendered)
@@ -470,11 +490,11 @@ func TestRenderPreviewMarkdownRemovesFrontmatter(t *testing.T) {
 	}
 }
 
-func TestPreviewHeaderDependsOnTTY(t *testing.T) {
-	if header := previewHeader("plan.md", false); header != "" {
+func TestPlanReviewHeaderDependsOnTTY(t *testing.T) {
+	if header := planReviewHeader("plan.md", false); header != "" {
 		t.Fatalf("expected no header for non-tty, got %q", header)
 	}
-	if header := previewHeader("plan.md", true); !strings.Contains(header, "Plan file: plan.md") {
+	if header := planReviewHeader("plan.md", true); !strings.Contains(header, "Plan file: plan.md") {
 		t.Fatalf("expected plan header for tty, got %q", header)
 	}
 }
@@ -501,11 +521,11 @@ func TestRenderOutputBlocksPlainFallback(t *testing.T) {
 
 func TestCompletionSuggestionsTopLevelAndValues(t *testing.T) {
 	root := completionSuggestions(nil)
-	if !contains(root, commandPlan) || !contains(root, commandCompletion) {
+	if !contains(root, commandPlan) || !contains(root, commandCompletion) || !contains(root, commandSecret) {
 		t.Fatalf("unexpected root completion set: %v", root)
 	}
 
-	webServerValues := completionSuggestions([]string{"plan", "start", "--web-server", "c"})
+	webServerValues := completionSuggestions([]string{"plan", "init", "--web-server", "c"})
 	if len(webServerValues) != 1 || webServerValues[0] != webServerCaddy {
 		t.Fatalf("unexpected web server value suggestions: %v", webServerValues)
 	}
@@ -518,6 +538,43 @@ func TestCompletionSuggestionsTopLevelAndValues(t *testing.T) {
 	applySuggestions := completionSuggestions([]string{"apply", "r"})
 	if !contains(applySuggestions, applyActionReview) {
 		t.Fatalf("expected apply review suggestion, got %v", applySuggestions)
+	}
+
+	if !contains(completionSuggestions([]string{"apply", "d"}), applyActionDrift) {
+		t.Fatalf("expected apply drift suggestion, got %v", completionSuggestions([]string{"apply", "d"}))
+	}
+	if !contains(completionSuggestions([]string{"apply", "ro"}), applyActionRollback) {
+		t.Fatalf("expected apply rollback suggestion, got %v", completionSuggestions([]string{"apply", "ro"}))
+	}
+
+	secretSetSuggestions := completionSuggestions([]string{"secret", "set", "db-password", "--v"})
+	if !contains(secretSetSuggestions, "--value-file") {
+		t.Fatalf("expected secret set to suggest --value-file, got %v", secretSetSuggestions)
+	}
+
+	configProviderSuggestions := completionSuggestions([]string{"config", "n"})
+	if !contains(configProviderSuggestions, webServerNginx) {
+		t.Fatalf("expected config provider suggestion for nginx, got %v", configProviderSuggestions)
+	}
+
+	configProviderActionSuggestions := completionSuggestions([]string{"config", "nginx", "l"})
+	if !contains(configProviderActionSuggestions, configActionList) {
+		t.Fatalf("expected provider-scoped list suggestion, got %v", configProviderActionSuggestions)
+	}
+
+	configProviderInitSuggestions := completionSuggestions([]string{"config", "caddy", "i"})
+	if !contains(configProviderInitSuggestions, configActionInit) {
+		t.Fatalf("expected provider-scoped init suggestion, got %v", configProviderInitSuggestions)
+	}
+
+	configProviderRemoveSuggestions := completionSuggestions([]string{"config", "all", "r"})
+	if contains(configProviderRemoveSuggestions, configActionRemove) {
+		t.Fatalf("expected no provider-scoped remove suggestion for all provider, got %v", configProviderRemoveSuggestions)
+	}
+
+	configProviderRemovePlanSuggestions := completionSuggestions([]string{"config", "nginx", "remove", "w"})
+	if !contains(configProviderRemovePlanSuggestions, "--non-interactive") {
+		t.Fatalf("expected remove plan completion to include flags, got %v", configProviderRemovePlanSuggestions)
 	}
 }
 
@@ -543,7 +600,7 @@ func TestCompletionSuggestionsIncludeGeneratedPlanNames(t *testing.T) {
 		}
 	}
 
-	suggestions := completionSuggestions([]string{commandPreview, "20260101-010101"})
+	suggestions := completionSuggestions([]string{commandPlan, planActionReview, "20260101-010101"})
 	if !contains(suggestions, "20260101-010101-000000001") {
 		t.Fatalf("expected generated plan name suggestion, got %v", suggestions)
 	}
@@ -659,11 +716,19 @@ func TestShouldPromptApplyConfirmationRespectsNonInteractive(t *testing.T) {
 
 func TestValidateExistingPlanCommandFlagsRejectsPlanGenerationFlags(t *testing.T) {
 	if err := validateExistingPlanCommandFlags(config{Provided: providedFlags{Servers: true}}); err == nil {
-		t.Fatal("expected preview/apply validation to reject server flags")
+		t.Fatal("expected plan review/edit/apply validation to reject server flags")
 	}
 
 	if err := validateExistingPlanCommandFlags(config{Provided: providedFlags{PlanFile: true}}); err == nil {
-		t.Fatal("expected preview/apply validation to reject --output flag")
+		t.Fatal("expected plan review/edit/apply validation to reject --output flag")
+	}
+
+	if err := validateExistingPlanCommandFlags(config{Provided: providedFlags{SSHPasswordSecret: true}}); err == nil {
+		t.Fatal("expected plan review/edit/apply validation to reject setup secret flags")
+	}
+
+	if err := validateExistingPlanCommandFlags(config{Provided: providedFlags{SecretValueFile: true}}); err == nil {
+		t.Fatal("expected plan review/edit/apply validation to reject secret set file flags")
 	}
 
 	if err := validateExistingPlanCommandFlags(config{Provided: providedFlags{PlanInputFile: true}}); err != nil {
@@ -757,8 +822,8 @@ func TestShouldUseAnsibleProgressBar(t *testing.T) {
 		t.Fatal("expected interactive apply review to use progress bar")
 	}
 
-	if shouldUseAnsibleProgressBar(config{Command: commandPreview}, true, true) {
-		t.Fatal("expected preview to skip progress bar")
+	if shouldUseAnsibleProgressBar(config{Command: commandPlan, PlanAction: planActionReview}, true, true) {
+		t.Fatal("expected plan review to skip progress bar")
 	}
 
 	if shouldUseAnsibleProgressBar(config{Command: commandApply}, false, true) {
@@ -1059,7 +1124,7 @@ func TestResolvePlanInputFileUsesLatestVersionForBasePlanName(t *testing.T) {
 		}
 	}
 
-	cfg := &config{Command: commandPreview, PlanName: "web-01"}
+	cfg := &config{Command: commandPlan, PlanAction: planActionReview, PlanName: "web-01"}
 	resolved, err := resolvePlanInputFile(cfg)
 	if err != nil {
 		t.Fatalf("resolvePlanInputFile returned error: %v", err)
@@ -1580,7 +1645,7 @@ func TestLoadPlannedRunFromMarkdownNormalizesLegacyDotCivaPaths(t *testing.T) {
 }
 
 func TestResolvePlanInputFileRequiresNameOrPlanFile(t *testing.T) {
-	cfg := &config{Command: commandPreview, NonInteractive: true}
+	cfg := &config{Command: commandPlan, PlanAction: planActionReview, NonInteractive: true}
 	_, err := resolvePlanInputFile(cfg)
 	if err == nil || !strings.Contains(err.Error(), "require a generated plan name or --plan-file") {
 		t.Fatalf("expected name-or-plan-file error, got %v", err)
@@ -1608,7 +1673,7 @@ func TestResolvePlanInputFileUsesPlanName(t *testing.T) {
 		t.Fatalf("failed to write plan: %v", err)
 	}
 
-	cfg := &config{Command: commandPreview, PlanName: planName}
+	cfg := &config{Command: commandPlan, PlanAction: planActionReview, PlanName: planName}
 	resolved, err := resolvePlanInputFile(cfg)
 	if err != nil {
 		t.Fatalf("resolvePlanInputFile returned error: %v", err)

@@ -23,11 +23,11 @@ Benefits:
 
 - only Debian-family and RHEL-compatible targets are supported
 - firewall configuration uses simple command-based idempotence instead of extra Ansible collections
-- preview behavior still depends on check-mode support from the underlying tasks
+- plan review behavior still depends on markdown rendering support from the local terminal environment
 - DNS challenge secrets for Traefik still need to be added to the generated `.env` file on the target host
 
 ## Operational Notes
 
-- run `civa preview` before `civa apply` when working on new server groups
+- run `civa plan review` before `civa apply` when working on new server groups
 - use `civa doctor` to validate local prerequisites
 - review the generated `plan.md` when auditing changes or preparing a maintenance window

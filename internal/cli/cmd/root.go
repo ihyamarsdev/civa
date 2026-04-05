@@ -7,6 +7,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
+const (
+	helpTargetConfigNginx = "config-nginx"
+	helpTargetConfigCaddy = "config-caddy"
+	helpTargetConfigAll   = "config-all"
+)
+
 type Root struct {
 	executor domain.Executor
 }
@@ -26,7 +32,7 @@ type globalFlags struct {
 	nonInteractive bool
 }
 
-type planStartFlags struct {
+type planInitFlags struct {
 	sshUser            string
 	sshPort            int
 	webServer          string
@@ -59,7 +65,7 @@ func (r *Root) newRootCommand() *cobra.Command {
 	root.PersistentFlags().BoolVar(&globals.nonInteractive, "non-interactive", false, "Disable prompts and rely on provided flags")
 	root.CompletionOptions.DisableDefaultCmd = true
 	root.SetHelpFunc(func(cmd *cobra.Command, _ []string) {
-		helpTarget := normalizeHelpTarget(cmd.Name())
+		helpTarget := normalizeHelpTargetCommand(cmd)
 		_ = r.executor.Execute(domain.Request{Command: domain.CommandHelp, HelpTarget: helpTarget})
 	})
 
@@ -68,9 +74,9 @@ func (r *Root) newRootCommand() *cobra.Command {
 		r.newCompletionCommand(),
 		r.newDoctorCommand(globals),
 		r.newSetupCommand(globals),
+		r.newSecretCommand(globals),
 		r.newConfigCommand(globals),
 		r.newPlanCommand(globals),
-		r.newPreviewCommand(globals),
 		r.newApplyCommand(globals),
 		r.newUninstallCommand(globals),
 		r.newHiddenCompleteCommand(),
@@ -152,11 +158,12 @@ func (r *Root) newDoctorCommand(globals *globalFlags) *cobra.Command {
 
 func (r *Root) newSetupCommand(globals *globalFlags) *cobra.Command {
 	flags := struct {
-		sshUser      string
-		sshPort      int
-		sshPassword  string
-		sshPublicKey string
-		servers      []string
+		sshUser           string
+		sshPort           int
+		sshPassword       string
+		sshPasswordSecret string
+		sshPublicKey      string
+		servers           []string
 	}{
 		sshUser:      "root",
 		sshPort:      22,
@@ -169,18 +176,20 @@ func (r *Root) newSetupCommand(globals *globalFlags) *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
 			req := domain.Request{
-				Command:      domain.CommandSetup,
-				SSHUser:      flags.sshUser,
-				SSHPort:      flags.sshPort,
-				SSHPassword:  flags.sshPassword,
-				SSHPublicKey: flags.sshPublicKey,
-				Servers:      append([]string(nil), flags.servers...),
+				Command:           domain.CommandSetup,
+				SSHUser:           flags.sshUser,
+				SSHPort:           flags.sshPort,
+				SSHPassword:       flags.sshPassword,
+				SSHPasswordSecret: flags.sshPasswordSecret,
+				SSHPublicKey:      flags.sshPublicKey,
+				Servers:           append([]string(nil), flags.servers...),
 				Provided: domain.ProvidedFlags{
-					SSHUser:      command.Flags().Changed("ssh-user"),
-					SSHPort:      command.Flags().Changed("ssh-port"),
-					SSHPassword:  command.Flags().Changed("ssh-password"),
-					SSHPublicKey: command.Flags().Changed("ssh-public-key"),
-					Servers:      command.Flags().Changed("server"),
+					SSHUser:           command.Flags().Changed("ssh-user"),
+					SSHPort:           command.Flags().Changed("ssh-port"),
+					SSHPassword:       command.Flags().Changed("ssh-password"),
+					SSHPasswordSecret: command.Flags().Changed("ssh-password-secret"),
+					SSHPublicKey:      command.Flags().Changed("ssh-public-key"),
+					Servers:           command.Flags().Changed("server"),
 				},
 			}
 			req = r.withGlobalFlags(command, globals, req)
@@ -191,95 +200,302 @@ func (r *Root) newSetupCommand(globals *globalFlags) *cobra.Command {
 	cmd.Flags().StringVar(&flags.sshUser, "ssh-user", "root", "SSH user used to connect to every target server")
 	cmd.Flags().IntVar(&flags.sshPort, "ssh-port", 22, "SSH port used to connect to every target server")
 	cmd.Flags().StringVar(&flags.sshPassword, "ssh-password", "", "SSH password used by civa setup")
+	cmd.Flags().StringVar(&flags.sshPasswordSecret, "ssh-password-secret", "", "Secret name in civa secret store for SSH password")
 	cmd.Flags().StringVar(&flags.sshPublicKey, "ssh-public-key", "~/.ssh/id_ed25519.pub", "Local public key path that will be installed for the deploy user")
 	cmd.Flags().StringArrayVar(&flags.servers, "server", nil, "Add a target server as addr[,hostname][,port]; hostname and SSH port are optional")
 
 	return cmd
 }
 
-func (r *Root) newConfigCommand(globals *globalFlags) *cobra.Command {
-	configCmd := &cobra.Command{
-		Use:   string(domain.CommandConfig) + " [plan-name]",
-		Short: "Configure persistent civa settings interactively",
-		Args:  cobra.MaximumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			req := r.withGlobalFlags(cmd, globals, domain.Request{Command: domain.CommandConfig, ConfigAction: domain.ConfigActionEdit})
-			if len(args) == 1 {
-				req.PlanName = args[0]
-			}
-			return r.executor.Execute(req)
+func (r *Root) newSecretCommand(globals *globalFlags) *cobra.Command {
+	var setValue string
+	var setValueFile string
+
+	secretCmd := &cobra.Command{
+		Use:   string(domain.CommandSecret),
+		Short: "Manage encrypted secrets used by civa runtime",
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			return r.executor.Execute(domain.Request{Command: domain.CommandHelp, HelpTarget: string(domain.CommandSecret)})
 		},
 	}
 
-	editCmd := &cobra.Command{
-		Use:   domain.ConfigActionEdit + " [plan-name]",
-		Short: "Edit persisted config and apply it to hosts from an existing plan inventory",
-		Args:  cobra.MaximumNArgs(1),
+	setCmd := &cobra.Command{
+		Use:   domain.SecretActionSet + " <name>",
+		Short: "Store or update an encrypted secret value",
+		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			req := r.withGlobalFlags(cmd, globals, domain.Request{Command: domain.CommandConfig, ConfigAction: domain.ConfigActionEdit})
-			if len(args) == 1 {
-				req.PlanName = args[0]
+			req := domain.Request{
+				Command:         domain.CommandSecret,
+				SecretAction:    domain.SecretActionSet,
+				SecretName:      args[0],
+				SecretValue:     setValue,
+				SecretValueFile: setValueFile,
+				Provided: domain.ProvidedFlags{
+					SecretValue:     cmd.Flags().Changed("value"),
+					SecretValueFile: cmd.Flags().Changed("value-file"),
+				},
 			}
+			req = r.withGlobalFlags(cmd, globals, req)
 			return r.executor.Execute(req)
 		},
 	}
+	setCmd.Flags().StringVar(&setValue, "value", "", "Secret value to encrypt and store")
+	setCmd.Flags().StringVar(&setValueFile, "value-file", "", "Path to file containing secret value to encrypt and store")
 
 	listCmd := &cobra.Command{
-		Use:   domain.ConfigActionList,
-		Short: "List persisted web server config profiles",
+		Use:   domain.SecretActionList,
+		Short: "List secret names in the encrypted store",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			req := r.withGlobalFlags(cmd, globals, domain.Request{Command: domain.CommandConfig, ConfigAction: domain.ConfigActionList})
+			req := r.withGlobalFlags(cmd, globals, domain.Request{Command: domain.CommandSecret, SecretAction: domain.SecretActionList})
 			return r.executor.Execute(req)
 		},
 	}
 
 	removeCmd := &cobra.Command{
-		Use:   domain.ConfigActionRemove + " [profile]",
-		Short: "Remove a persisted config profile (nginx, caddy, or all)",
-		Args:  cobra.MaximumNArgs(1),
+		Use:   domain.SecretActionRemove + " <name>",
+		Short: "Remove an encrypted secret",
+		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			req := r.withGlobalFlags(cmd, globals, domain.Request{Command: domain.CommandConfig, ConfigAction: domain.ConfigActionRemove})
-			if len(args) == 1 {
-				req.WebServer = strings.ToLower(args[0])
-				req.Provided.WebServer = true
-			}
+			req := r.withGlobalFlags(cmd, globals, domain.Request{Command: domain.CommandSecret, SecretAction: domain.SecretActionRemove, SecretName: args[0]})
 			return r.executor.Execute(req)
 		},
 	}
 
-	configCmd.AddCommand(editCmd, listCmd, removeCmd)
+	secretCmd.AddCommand(setCmd, listCmd, removeCmd)
+	return secretCmd
+}
+
+func (r *Root) newConfigCommand(globals *globalFlags) *cobra.Command {
+	configCmd := &cobra.Command{
+		Use:   string(domain.CommandConfig),
+		Short: "Configure persistent civa settings with provider-scoped init/list/remove",
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			return r.executor.Execute(domain.Request{Command: domain.CommandHelp, HelpTarget: string(domain.CommandConfig)})
+		},
+	}
+
+	legacyEditCmd := &cobra.Command{
+		Use:   domain.ConfigActionEdit + " [plan-name]",
+		Short: "Deprecated: use civa config <nginx|caddy> init [plan-name]",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			req := r.withGlobalFlags(cmd, globals, domain.Request{Command: domain.CommandConfig, ConfigAction: domain.ConfigActionInit})
+			if len(args) == 1 {
+				req.PlanName = args[0]
+			}
+			return r.executor.Execute(req)
+		},
+	}
+	legacyEditCmd.Hidden = true
+
+	legacyInitCmd := &cobra.Command{
+		Use:   domain.ConfigActionInit + " [plan-name]",
+		Short: "Deprecated: use civa config <nginx|caddy> init [plan-name]",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			req := r.withGlobalFlags(cmd, globals, domain.Request{Command: domain.CommandConfig, ConfigAction: domain.ConfigActionInit})
+			if len(args) == 1 {
+				req.PlanName = args[0]
+			}
+			return r.executor.Execute(req)
+		},
+	}
+	legacyInitCmd.Hidden = true
+
+	legacyListCmd := &cobra.Command{
+		Use:   domain.ConfigActionList,
+		Short: "Deprecated: use civa config <provider> list",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			req := r.withGlobalFlags(cmd, globals, domain.Request{Command: domain.CommandConfig, ConfigAction: domain.ConfigActionList, WebServer: "all", Provided: domain.ProvidedFlags{WebServer: true}})
+			return r.executor.Execute(req)
+		},
+	}
+	legacyListCmd.Hidden = true
+
+	legacyRemoveCmd := &cobra.Command{
+		Use:   domain.ConfigActionRemove + " <provider> <plan-name>",
+		Short: "Deprecated: use civa config <nginx|caddy> remove <plan-name>",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			req := r.withGlobalFlags(cmd, globals, domain.Request{Command: domain.CommandConfig, ConfigAction: domain.ConfigActionRemove})
+			req.WebServer = strings.ToLower(args[0])
+			req.Provided.WebServer = true
+			req.PlanName = args[1]
+			return r.executor.Execute(req)
+		},
+	}
+	legacyRemoveCmd.Hidden = true
+
+	providerCommand := func(provider string, enableInit bool, enableRemove bool) *cobra.Command {
+		providerCmd := &cobra.Command{
+			Use:   provider,
+			Short: "Provider-scoped config actions (init/list/remove)",
+			Args:  cobra.NoArgs,
+			RunE: func(_ *cobra.Command, _ []string) error {
+				return r.executor.Execute(domain.Request{Command: domain.CommandHelp, HelpTarget: configProviderHelpTarget(provider)})
+			},
+		}
+
+		if enableInit {
+			initCmd := &cobra.Command{
+				Use:   domain.ConfigActionInit + " [plan-name]",
+				Short: "Initialize or update persisted config profile for this provider",
+				Args:  cobra.MaximumNArgs(1),
+				RunE: func(cmd *cobra.Command, args []string) error {
+					req := r.withGlobalFlags(cmd, globals, domain.Request{Command: domain.CommandConfig, ConfigAction: domain.ConfigActionInit, WebServer: provider, Provided: domain.ProvidedFlags{WebServer: true}})
+					if len(args) == 1 {
+						req.PlanName = args[0]
+					}
+					return r.executor.Execute(req)
+				},
+			}
+
+			legacyEditCmd := &cobra.Command{
+				Use:        domain.ConfigActionEdit + " [plan-name]",
+				Short:      "Deprecated: use init",
+				Deprecated: "use civa config " + provider + " init [plan-name]",
+				Hidden:     true,
+				Args:       cobra.MaximumNArgs(1),
+				RunE: func(cmd *cobra.Command, args []string) error {
+					req := r.withGlobalFlags(cmd, globals, domain.Request{Command: domain.CommandConfig, ConfigAction: domain.ConfigActionInit, WebServer: provider, Provided: domain.ProvidedFlags{WebServer: true}})
+					if len(args) == 1 {
+						req.PlanName = args[0]
+					}
+					return r.executor.Execute(req)
+				},
+			}
+
+			providerCmd.AddCommand(initCmd, legacyEditCmd)
+		}
+
+		listCmd := &cobra.Command{
+			Use:   domain.ConfigActionList,
+			Short: "List persisted config profile for this provider",
+			Args:  cobra.NoArgs,
+			RunE: func(cmd *cobra.Command, _ []string) error {
+				req := r.withGlobalFlags(cmd, globals, domain.Request{Command: domain.CommandConfig, ConfigAction: domain.ConfigActionList, WebServer: provider, Provided: domain.ProvidedFlags{WebServer: true}})
+				return r.executor.Execute(req)
+			},
+		}
+
+		if enableRemove {
+			removeCmd := &cobra.Command{
+				Use:   domain.ConfigActionRemove + " <plan-name>",
+				Short: "Remove persisted config profile for this provider",
+				Args:  cobra.ExactArgs(1),
+				RunE: func(cmd *cobra.Command, args []string) error {
+					req := r.withGlobalFlags(cmd, globals, domain.Request{Command: domain.CommandConfig, ConfigAction: domain.ConfigActionRemove, WebServer: provider, Provided: domain.ProvidedFlags{WebServer: true}})
+					req.PlanName = args[0]
+					return r.executor.Execute(req)
+				},
+			}
+			providerCmd.AddCommand(listCmd, removeCmd)
+			return providerCmd
+		}
+
+		providerCmd.AddCommand(listCmd)
+		return providerCmd
+	}
+
+	configCmd.AddCommand(providerCommand("nginx", true, true), providerCommand("caddy", true, true), providerCommand("all", false, false), legacyEditCmd, legacyInitCmd, legacyListCmd, legacyRemoveCmd)
 	return configCmd
 }
 
+func configProviderHelpTarget(provider string) string {
+	switch provider {
+	case "nginx":
+		return helpTargetConfigNginx
+	case "caddy":
+		return helpTargetConfigCaddy
+	case "all":
+		return helpTargetConfigAll
+	default:
+		return string(domain.CommandConfig)
+	}
+}
+
 func (r *Root) newPlanCommand(globals *globalFlags) *cobra.Command {
-	planFlags := defaultPlanStartFlags()
+	planFlags := defaultPlanInitFlags()
+	var reviewPlanFile string
+	var editPlanFile string
 
 	planCmd := &cobra.Command{
 		Use:   string(domain.CommandPlan),
 		Short: "Generate and manage execution plans",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if !hasAnyPlanStartInput(cmd) {
+			if !hasAnyPlanInitInput(cmd) {
 				return r.executor.Execute(domain.Request{Command: domain.CommandHelp, HelpTarget: string(domain.CommandPlan)})
 			}
-			req := r.planStartRequest(cmd, globals, planFlags)
+			req := r.planInitRequest(cmd, globals, planFlags)
 			return r.executor.Execute(req)
 		},
 	}
-	r.bindPlanStartFlags(planCmd, planFlags)
+	r.bindPlanInitFlags(planCmd, planFlags)
 
-	startFlags := defaultPlanStartFlags()
-	startCmd := &cobra.Command{
-		Use:   domain.PlanActionStart,
+	initFlags := defaultPlanInitFlags()
+	initCmd := &cobra.Command{
+		Use:   domain.PlanActionInit,
 		Short: "Generate inventory, vars, and execution plan only",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			req := r.planStartRequest(cmd, globals, startFlags)
+			req := r.planInitRequest(cmd, globals, initFlags)
 			return r.executor.Execute(req)
 		},
 	}
-	r.bindPlanStartFlags(startCmd, startFlags)
+	r.bindPlanInitFlags(initCmd, initFlags)
+
+	reviewCmd := &cobra.Command{
+		Use:   domain.PlanActionReview + " [plan-name]",
+		Short: "Show an existing generated plan",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 0 && strings.TrimSpace(reviewPlanFile) == "" {
+				return r.executor.Execute(domain.Request{Command: domain.CommandHelp, HelpTarget: string(domain.CommandPlan)})
+			}
+
+			req := domain.Request{
+				Command:       domain.CommandPlan,
+				PlanAction:    domain.PlanActionReview,
+				PlanInputFile: reviewPlanFile,
+				Provided:      domain.ProvidedFlags{PlanInputFile: cmd.Flags().Changed("plan-file")},
+			}
+			if len(args) == 1 {
+				req.PlanName = args[0]
+			}
+			req = r.withGlobalFlags(cmd, globals, req)
+			return r.executor.Execute(req)
+		},
+	}
+	reviewCmd.Flags().StringVar(&reviewPlanFile, "plan-file", "", "Existing plan file override used by plan review or apply")
+
+	editCmd := &cobra.Command{
+		Use:   domain.PlanActionEdit + " [plan-name]",
+		Short: "Edit an existing generated plan with your editor",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 0 && strings.TrimSpace(editPlanFile) == "" {
+				return r.executor.Execute(domain.Request{Command: domain.CommandHelp, HelpTarget: string(domain.CommandPlan)})
+			}
+
+			req := domain.Request{
+				Command:       domain.CommandPlan,
+				PlanAction:    domain.PlanActionEdit,
+				PlanInputFile: editPlanFile,
+				Provided:      domain.ProvidedFlags{PlanInputFile: cmd.Flags().Changed("plan-file")},
+			}
+			if len(args) == 1 {
+				req.PlanName = args[0]
+			}
+			req = r.withGlobalFlags(cmd, globals, req)
+			return r.executor.Execute(req)
+		},
+	}
+	editCmd.Flags().StringVar(&editPlanFile, "plan-file", "", "Existing plan file override used by plan edit or apply")
 
 	listCmd := &cobra.Command{
 		Use:   domain.PlanActionList + " [plan-name]",
@@ -309,42 +525,15 @@ func (r *Root) newPlanCommand(globals *globalFlags) *cobra.Command {
 		},
 	}
 
-	planCmd.AddCommand(startCmd, listCmd, removeCmd)
+	planCmd.AddCommand(initCmd, reviewCmd, editCmd, listCmd, removeCmd)
 	return planCmd
-}
-
-func (r *Root) newPreviewCommand(globals *globalFlags) *cobra.Command {
-	var planFile string
-
-	previewCmd := &cobra.Command{
-		Use:   string(domain.CommandPreview) + " [plan-name]",
-		Short: "Show an existing generated plan",
-		Args:  cobra.MaximumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) == 0 && strings.TrimSpace(planFile) == "" {
-				return r.executor.Execute(domain.Request{Command: domain.CommandHelp, HelpTarget: string(domain.CommandPreview)})
-			}
-
-			req := domain.Request{
-				Command:       domain.CommandPreview,
-				PlanInputFile: planFile,
-				Provided:      domain.ProvidedFlags{PlanInputFile: cmd.Flags().Changed("plan-file")},
-			}
-			if len(args) == 1 {
-				req.PlanName = args[0]
-			}
-			req = r.withGlobalFlags(cmd, globals, req)
-			return r.executor.Execute(req)
-		},
-	}
-
-	previewCmd.Flags().StringVar(&planFile, "plan-file", "", "Existing plan file override used by preview or apply")
-	return previewCmd
 }
 
 func (r *Root) newApplyCommand(globals *globalFlags) *cobra.Command {
 	var applyPlanFile string
 	var reviewPlanFile string
+	var driftPlanFile string
+	var rollbackPlanFile string
 
 	applyCmd := &cobra.Command{
 		Use:   string(domain.CommandApply) + " [plan-name]",
@@ -368,7 +557,7 @@ func (r *Root) newApplyCommand(globals *globalFlags) *cobra.Command {
 			return r.executor.Execute(req)
 		},
 	}
-	applyCmd.Flags().StringVar(&applyPlanFile, "plan-file", "", "Existing plan file override used by preview or apply")
+	applyCmd.Flags().StringVar(&applyPlanFile, "plan-file", "", "Existing plan file override used by plan review/edit or apply")
 
 	reviewCmd := &cobra.Command{
 		Use:   domain.ApplyActionReview + " [plan-name]",
@@ -388,9 +577,49 @@ func (r *Root) newApplyCommand(globals *globalFlags) *cobra.Command {
 			return r.executor.Execute(req)
 		},
 	}
-	reviewCmd.Flags().StringVar(&reviewPlanFile, "plan-file", "", "Existing plan file override used by preview or apply")
+	reviewCmd.Flags().StringVar(&reviewPlanFile, "plan-file", "", "Existing plan file override used by plan review/edit or apply")
 
-	applyCmd.AddCommand(reviewCmd)
+	driftCmd := &cobra.Command{
+		Use:   domain.ApplyActionDrift + " [plan-name]",
+		Short: "Detect infrastructure drift using ansible check mode",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			req := domain.Request{
+				Command:       domain.CommandApply,
+				ApplyAction:   domain.ApplyActionDrift,
+				PlanInputFile: driftPlanFile,
+				Provided:      domain.ProvidedFlags{PlanInputFile: cmd.Flags().Changed("plan-file")},
+			}
+			if len(args) == 1 {
+				req.PlanName = args[0]
+			}
+			req = r.withGlobalFlags(cmd, globals, req)
+			return r.executor.Execute(req)
+		},
+	}
+	driftCmd.Flags().StringVar(&driftPlanFile, "plan-file", "", "Existing plan file override used by plan review/edit or apply")
+
+	rollbackCmd := &cobra.Command{
+		Use:   domain.ApplyActionRollback + " [plan-name]",
+		Short: "Rollback to the last successful plan or a specific plan",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			req := domain.Request{
+				Command:       domain.CommandApply,
+				ApplyAction:   domain.ApplyActionRollback,
+				PlanInputFile: rollbackPlanFile,
+				Provided:      domain.ProvidedFlags{PlanInputFile: cmd.Flags().Changed("plan-file")},
+			}
+			if len(args) == 1 {
+				req.PlanName = args[0]
+			}
+			req = r.withGlobalFlags(cmd, globals, req)
+			return r.executor.Execute(req)
+		},
+	}
+	rollbackCmd.Flags().StringVar(&rollbackPlanFile, "plan-file", "", "Existing plan file override used by plan review/edit or apply")
+
+	applyCmd.AddCommand(reviewCmd, driftCmd, rollbackCmd)
 	return applyCmd
 }
 
@@ -406,7 +635,7 @@ func (r *Root) newUninstallCommand(globals *globalFlags) *cobra.Command {
 	}
 }
 
-func (r *Root) bindPlanStartFlags(cmd *cobra.Command, flags *planStartFlags) {
+func (r *Root) bindPlanInitFlags(cmd *cobra.Command, flags *planInitFlags) {
 	cmd.Flags().StringVar(&flags.sshUser, "ssh-user", "root", "SSH user used to connect to every target server")
 	cmd.Flags().IntVar(&flags.sshPort, "ssh-port", 22, "SSH port used to connect to every target server")
 	cmd.Flags().StringVar(&flags.webServer, "web-server", "none", "Web server to prepare: traefik, nginx, caddy, or none")
@@ -419,11 +648,11 @@ func (r *Root) bindPlanStartFlags(cmd *cobra.Command, flags *planStartFlags) {
 	cmd.Flags().StringVar(&flags.traefikEmail, "traefik-email", "", "Email used by Let's Encrypt ACME")
 	cmd.Flags().StringVar(&flags.traefikChallenge, "traefik-challenge", "http", "Traefik challenge type: http or dns")
 	cmd.Flags().StringVar(&flags.traefikDNSProvider, "traefik-dns-provider", "cloudflare", "DNS provider name used when challenge type is dns")
-	cmd.Flags().StringVar(&flags.planFile, "output", "", "Extra exported Markdown copy for plan start")
+	cmd.Flags().StringVar(&flags.planFile, "output", "", "Extra exported Markdown copy for plan init")
 }
 
-func defaultPlanStartFlags() *planStartFlags {
-	return &planStartFlags{
+func defaultPlanInitFlags() *planInitFlags {
+	return &planInitFlags{
 		sshUser:            "root",
 		sshPort:            22,
 		webServer:          "none",
@@ -437,10 +666,10 @@ func defaultPlanStartFlags() *planStartFlags {
 	}
 }
 
-func (r *Root) planStartRequest(cmd *cobra.Command, globals *globalFlags, flags *planStartFlags) domain.Request {
+func (r *Root) planInitRequest(cmd *cobra.Command, globals *globalFlags, flags *planInitFlags) domain.Request {
 	req := domain.Request{
 		Command:            domain.CommandPlan,
-		PlanAction:         domain.PlanActionStart,
+		PlanAction:         domain.PlanActionInit,
 		SSHUser:            flags.sshUser,
 		SSHPort:            flags.sshPort,
 		WebServer:          strings.ToLower(flags.webServer),
@@ -481,7 +710,7 @@ func (r *Root) withGlobalFlags(cmd *cobra.Command, globals *globalFlags, req dom
 	return req
 }
 
-func hasAnyPlanStartInput(cmd *cobra.Command) bool {
+func hasAnyPlanInitInput(cmd *cobra.Command) bool {
 	if cmd.Flags().NFlag() > 0 {
 		return true
 	}
@@ -501,10 +730,14 @@ func isFlagChanged(cmd *cobra.Command, name string) bool {
 
 func normalizeHelpTarget(name string) string {
 	switch name {
-	case domain.PlanActionStart, domain.PlanActionList, domain.PlanActionRemove:
+	case domain.PlanActionInit, domain.PlanActionList, domain.PlanActionRemove:
 		return string(domain.CommandPlan)
-	case domain.ApplyActionReview:
+	case domain.ApplyActionReview, domain.ApplyActionDrift, domain.ApplyActionRollback:
 		return string(domain.CommandApply)
+	case domain.ConfigActionEdit:
+		return string(domain.CommandConfig)
+	case domain.SecretActionSet:
+		return string(domain.CommandSecret)
 	case domain.DoctorActionCheck, domain.DoctorActionFix:
 		return string(domain.CommandDoctor)
 	case "", "civa":
@@ -515,4 +748,47 @@ func normalizeHelpTarget(name string) string {
 		}
 		return name
 	}
+}
+
+func normalizeHelpTargetCommand(cmd *cobra.Command) string {
+	if cmd == nil {
+		return ""
+	}
+
+	name := cmd.Name()
+	if parent := cmd.Parent(); parent != nil {
+		switch parent.Name() {
+		case string(domain.CommandSecret):
+			if name == domain.SecretActionSet || name == domain.SecretActionList || name == domain.SecretActionRemove {
+				return string(domain.CommandSecret)
+			}
+		case string(domain.CommandConfig):
+			if name == "nginx" || name == "caddy" || name == "all" {
+				return configProviderHelpTarget(name)
+			}
+			if name == domain.ConfigActionInit || name == domain.ConfigActionEdit || name == domain.ConfigActionList || name == domain.ConfigActionRemove {
+				return string(domain.CommandConfig)
+			}
+		case "nginx", "caddy", "all":
+			if grandParent := parent.Parent(); grandParent != nil && grandParent.Name() == string(domain.CommandConfig) {
+				if name == domain.ConfigActionInit || name == domain.ConfigActionEdit || name == domain.ConfigActionList || name == domain.ConfigActionRemove || name == string(domain.CommandHelp) {
+					return configProviderHelpTarget(parent.Name())
+				}
+			}
+		case string(domain.CommandApply):
+			if name == domain.ApplyActionReview || name == domain.ApplyActionDrift || name == domain.ApplyActionRollback {
+				return string(domain.CommandApply)
+			}
+		case string(domain.CommandPlan):
+			if name == domain.PlanActionInit || name == domain.PlanActionReview || name == domain.PlanActionEdit || name == domain.PlanActionList || name == domain.PlanActionRemove {
+				return string(domain.CommandPlan)
+			}
+		case string(domain.CommandDoctor):
+			if name == domain.DoctorActionCheck || name == domain.DoctorActionFix {
+				return string(domain.CommandDoctor)
+			}
+		}
+	}
+
+	return normalizeHelpTarget(name)
 }

@@ -11,11 +11,11 @@ Local machine requirements:
 - `tar`
 - `curl` or `wget`
 - a valid SSH public key to install for `civa setup`
-- a valid SSH private key for `civa plan start`
+- a valid SSH private key for `civa plan init`
 
-If you plan to use `civa setup` against a fresh server that still needs password login, install `ssh-copy-id` on the local machine. Install `sshpass` as well if you want to pass the password non-interactively with `--ssh-password`.
+If you plan to use `civa setup` against a fresh server that still needs password login, install `ssh-copy-id` on the local machine. Install `sshpass` as well if you want to pass the password non-interactively with `--ssh-password` or `--ssh-password-secret`.
 
-`civa setup` is the bootstrap step for installing your SSH public key onto the server. `civa plan start` is key-only and expects that your public key has already been installed on the server.
+`civa setup` is the bootstrap step for installing your SSH public key onto the server. `civa plan init` is key-only and expects that your public key has already been installed on the server.
 
 ## Option 1: Build From Source
 
@@ -92,9 +92,11 @@ Both scripts honor `INSTALL_DIR`, so you can install or remove `civa` from a cus
 ```bash
 civa help
 civa version
+civa secret set vps-root-password --value-file ~/.secrets/vps-root-password.txt
+civa setup --server 203.0.113.10 --ssh-user root --ssh-password-secret vps-root-password --ssh-public-key ~/.ssh/id_rsa.pub
 civa setup --server 203.0.113.10 --ssh-user root --ssh-password 'super-secret-password' --ssh-public-key ~/.ssh/id_rsa.pub
 civa doctor
 civa doctor fix
 ```
 
-When `--ssh-password` is provided, `civa setup` runs `sshpass -e ssh-copy-id`. Without `--ssh-password`, it runs `ssh-copy-id` directly and lets that tool prompt for the password in your terminal. In both cases it uses `StrictHostKeyChecking=accept-new` on the first connection for convenience, which is still a trust-on-first-use trade-off compared with pre-verifying the host key yourself.
+When `--ssh-password` (or secret-backed `--ssh-password-secret`) is provided, `civa setup` runs `sshpass -e ssh-copy-id`. Without either flag, it runs `ssh-copy-id` directly and lets that tool prompt for the password in your terminal. In both cases it uses `StrictHostKeyChecking=accept-new` on the first connection for convenience, which is still a trust-on-first-use trade-off compared with pre-verifying the host key yourself.

@@ -14,8 +14,8 @@ Guidance for coding agents working in `civa`.
 - Primary flow: collect operator input -> generate run artifacts (`~/.civa/runs/<run-id>/`) -> review plan -> apply plan.
 - This repository focuses on CLI orchestration and execution planning; provisioning logic is delegated to embedded Ansible assets.
 - `civa setup` is the bootstrap command for first-time SSH key installation on a target host.
-- `civa plan start` assumes key-based SSH access (password mode is not supported for planning).
-- `preview` and `apply` operate on an existing generated plan (by plan name or `--plan-file`).
+- `civa plan init` assumes key-based SSH access (password mode is not supported for planning).
+- `plan review`/`plan edit` and `apply` operate on an existing generated plan (by plan name or `--plan-file`).
 
 ## Rule Sources (Cursor/Copilot)
 - `.cursor/rules/`: not found.
@@ -106,7 +106,7 @@ These rules are based on existing code in `internal/cli`.
 ### Naming
 - Use camelCase for unexported identifiers.
 - Use action-oriented function names (`runApplyFlow`, `validateExecutionConfig`).
-- Keep command vocabulary consistent: `setup`, `plan`, `preview`, `apply`, `doctor`.
+- Keep command vocabulary consistent: `setup`, `plan`, `apply`, `doctor`.
 - Use constants for command names, defaults, and enum-like values.
 
 ### Error handling
@@ -120,6 +120,10 @@ These rules are based on existing code in `internal/cli`.
 - Keep sectioned summaries consistent (`printSection`, run summaries, doctor output).
 - Do not print secrets or plaintext credentials in logs/summaries.
 - Keep password displays redacted (`[hidden password]` pattern).
+
+### Interactive forms
+- Use `github.com/charmbracelet/huh` for interactive form/prompt flows.
+- Avoid ad-hoc stdin reads for form input; prefer `huh` input/select/confirm components.
 
 ### Filesystem and permissions
 - Follow existing permission model:

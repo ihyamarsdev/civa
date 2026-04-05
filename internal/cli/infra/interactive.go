@@ -425,7 +425,6 @@ func promptConfigRemoveProfile(defaultValue string) (string, error) {
 	field := huh.NewSelect[string]().
 		Title("Config profile to remove").
 		Options(
-			huh.NewOption("All profiles", configProfileAll),
 			huh.NewOption("Nginx", webServerNginx),
 			huh.NewOption("Caddy", webServerCaddy),
 		).
@@ -587,6 +586,24 @@ func promptSSHPassword() (string, error) {
 		return "", normalizePromptError(err)
 	}
 	return value, nil
+}
+
+func promptSecretValue(title string) (string, error) {
+	value := ""
+	field := huh.NewInput().
+		Title(title).
+		EchoMode(huh.EchoModePassword).
+		Value(&value).
+		Validate(func(input string) error {
+			if strings.TrimSpace(input) == "" {
+				return fmt.Errorf("this value cannot be empty")
+			}
+			return nil
+		})
+	if err := field.Run(); err != nil {
+		return "", normalizePromptError(err)
+	}
+	return strings.TrimRight(value, "\r\n"), nil
 }
 
 func newComponentPromptKeyMap() *huh.KeyMap {

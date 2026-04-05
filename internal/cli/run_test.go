@@ -10,7 +10,7 @@ func TestNormalizeLegacyCompatibleArgsSupportsPlanNameListPattern(t *testing.T) 
 }
 
 func TestNormalizeLegacyCompatibleArgsLeavesOtherArgsUntouched(t *testing.T) {
-	input := []string{"plan", "start", "--server", "203.0.113.10"}
+	input := []string{"plan", "init", "--server", "203.0.113.10"}
 	got := normalizeLegacyCompatibleArgs(input)
 	if len(got) != len(input) {
 		t.Fatalf("expected same arg length, got %#v", got)

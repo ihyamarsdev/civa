@@ -21,12 +21,12 @@ func TestServiceExecuteDelegatesToRunner(t *testing.T) {
 	runner := &stubRunner{}
 	service := NewService(runner)
 
-	request := domain.Request{Command: domain.CommandPlan, PlanAction: domain.PlanActionStart}
+	request := domain.Request{Command: domain.CommandPlan, PlanAction: domain.PlanActionInit}
 	if err := service.Execute(request); err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
 
-	if runner.req.Command != domain.CommandPlan || runner.req.PlanAction != domain.PlanActionStart {
+	if runner.req.Command != domain.CommandPlan || runner.req.PlanAction != domain.PlanActionInit {
 		t.Fatalf("unexpected request forwarded to runner: %#v", runner.req)
 	}
 }

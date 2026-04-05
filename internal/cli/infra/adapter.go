@@ -54,6 +54,19 @@ func (LegacyRunner) ExecuteRequest(req domain.Request) error {
 			cfg.ConfigAction = req.ConfigAction
 		}
 		return runConfigFlow(&cfg)
+	case domain.CommandSecret:
+		cfg := defaultConfig(commandSecret)
+		applyGlobalRequest(req, &cfg)
+		cfg.SecretAction = req.SecretAction
+		cfg.SecretName = req.SecretName
+		cfg.SecretValue = req.SecretValue
+		cfg.SecretValueFile = req.SecretValueFile
+		cfg.Provided.SecretValue = req.Provided.SecretValue
+		cfg.Provided.SecretValueFile = req.Provided.SecretValueFile
+		if cfg.SecretAction == "" {
+			cfg.SecretAction = secretActionList
+		}
+		return runSecretFlow(&cfg)
 	case domain.CommandUninstall:
 		cfg := defaultConfig(commandUninstall)
 		applyGlobalRequest(req, &cfg)
@@ -75,20 +88,17 @@ func (LegacyRunner) ExecuteRequest(req domain.Request) error {
 		switch cfg.PlanAction {
 		case planActionList:
 			return runPlanListFlow(&cfg)
+		case planActionReview:
+			return runPlanReviewFlow(&cfg)
+		case planActionEdit:
+			return runPlanEditFlow(&cfg)
 		case planActionRemove:
 			cfg.PlanName = req.PlanName
 			return runPlanRemoveFlow(&cfg)
 		default:
-			cfg.PlanAction = planActionStart
+			cfg.PlanAction = planActionInit
 			return runPlanFlow(&cfg)
 		}
-	case domain.CommandPreview:
-		cfg := defaultConfig(commandPreview)
-		applyGlobalRequest(req, &cfg)
-		cfg.PlanName = req.PlanName
-		cfg.PlanInputFile = req.PlanInputFile
-		cfg.Provided.PlanInputFile = req.Provided.PlanInputFile
-		return runPreviewFlow(&cfg)
 	case domain.CommandApply:
 		cfg := defaultConfig(commandApply)
 		applyGlobalRequest(req, &cfg)
@@ -99,8 +109,13 @@ func (LegacyRunner) ExecuteRequest(req domain.Request) error {
 		cfg.PlanInputFile = req.PlanInputFile
 		cfg.Provided.PlanInputFile = req.Provided.PlanInputFile
 
-		if cfg.ApplyAction == applyActionReview {
+		switch cfg.ApplyAction {
+		case applyActionReview:
 			return runApplyReviewFlow(&cfg)
+		case applyActionDrift:
+			return runApplyDriftFlow(&cfg)
+		case applyActionRollback:
+			return runApplyRollbackFlow(&cfg)
 		}
 		cfg.ApplyAction = applyActionExecute
 		return runApplyFlow(&cfg)
@@ -120,6 +135,7 @@ func applySharedRequest(req domain.Request, cfg *config) {
 	cfg.SSHUser = req.SSHUser
 	cfg.SSHPort = req.SSHPort
 	cfg.SSHPassword = req.SSHPassword
+	cfg.SSHPasswordSecret = req.SSHPasswordSecret
 	cfg.WebServer = strings.ToLower(req.WebServer)
 	cfg.SSHPrivateKey = req.SSHPrivateKey
 	cfg.SSHPublicKey = req.SSHPublicKey
@@ -135,6 +151,7 @@ func applySharedRequest(req domain.Request, cfg *config) {
 	cfg.Provided.SSHUser = req.Provided.SSHUser
 	cfg.Provided.SSHPort = req.Provided.SSHPort
 	cfg.Provided.SSHPassword = req.Provided.SSHPassword
+	cfg.Provided.SSHPasswordSecret = req.Provided.SSHPasswordSecret
 	cfg.Provided.WebServer = req.Provided.WebServer
 	cfg.Provided.SSHPrivateKey = req.Provided.SSHPrivateKey
 	cfg.Provided.SSHPublicKey = req.Provided.SSHPublicKey
@@ -147,6 +164,8 @@ func applySharedRequest(req domain.Request, cfg *config) {
 	cfg.Provided.TraefikChallenge = req.Provided.TraefikChallenge
 	cfg.Provided.TraefikDNSProvider = req.Provided.TraefikDNSProvider
 	cfg.Provided.Servers = req.Provided.Servers
+	cfg.Provided.SecretValue = req.Provided.SecretValue
+	cfg.Provided.SecretValueFile = req.Provided.SecretValueFile
 }
 
 func parseServers(raw []string) ([]serverSpec, error) {

@@ -6,6 +6,12 @@ import (
 	ansible "civa/ansible"
 	infssh "civa/internal/cli/infra/ssh"
 	"civa/internal/cli/infra/storage"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,6 +24,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/charmbracelet/bubbles/progress"
 	tea "github.com/charmbracelet/bubbletea"
@@ -37,6 +44,30 @@ type plannedRunMetadata struct {
 	PlaybookFile  string   `json:"playbookFile"`
 }
 
+type encryptedSecretStore struct {
+	Version int               `json:"version"`
+	Secrets map[string]string `json:"secrets"`
+}
+
+type rollbackState struct {
+	LastSuccessfulPlan string `json:"lastSuccessfulPlan,omitempty"`
+	LastSuccessfulAt   string `json:"lastSuccessfulAt,omitempty"`
+	LastFailedPlan     string `json:"lastFailedPlan,omitempty"`
+	LastFailedAt       string `json:"lastFailedAt,omitempty"`
+	LastFailureReason  string `json:"lastFailureReason,omitempty"`
+}
+
+type driftSnapshot struct {
+	PlanPath      string `json:"planPath"`
+	PlanHash      string `json:"planHash"`
+	InventoryHash string `json:"inventoryHash"`
+	VarsHash      string `json:"varsHash"`
+	AuthHash      string `json:"authHash,omitempty"`
+	CapturedAt    string `json:"capturedAt"`
+}
+
+const secretStoreVersion = 1
+
 func civaHomeDirectory() string {
 	return storage.CivaHomeDirectory()
 }
@@ -51,6 +82,26 @@ func latestPlanPointerFilePath() string {
 
 func webServerConfigFilePath() string {
 	return storage.WebServerConfigFilePath()
+}
+
+func secretsDirectoryPath() string {
+	return storage.SecretsDirectoryPath()
+}
+
+func secretsStoreFilePath() string {
+	return storage.SecretsStoreFilePath()
+}
+
+func secretsKeyFilePath() string {
+	return storage.SecretsKeyFilePath()
+}
+
+func driftDirectoryPath() string {
+	return storage.DriftDirectoryPath()
+}
+
+func rollbackStateFilePath() string {
+	return storage.RollbackStateFilePath()
 }
 
 func defaultPersistedWebServerConfig() persistedWebServerConfig {
@@ -146,6 +197,476 @@ func saveWebServerConfig(cfg persistedWebServerConfig) error {
 	return nil
 }
 
+func normalizeSecretName(name string) (string, error) {
+	normalized := strings.ToLower(strings.TrimSpace(name))
+	if normalized == "" {
+		return "", fmt.Errorf("secret name must not be empty")
+	}
+	for _, r := range normalized {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' || r == '-' || r == '.' {
+			continue
+		}
+		return "", fmt.Errorf("secret name %q contains unsupported character %q", name, string(r))
+	}
+	return normalized, nil
+}
+
+func defaultEncryptedSecretStore() encryptedSecretStore {
+	return encryptedSecretStore{Version: secretStoreVersion, Secrets: map[string]string{}}
+}
+
+func ensureSecretsDirectory() error {
+	if err := os.MkdirAll(secretsDirectoryPath(), 0o700); err != nil {
+		return fmt.Errorf("create secrets directory: %w", err)
+	}
+	if err := os.Chmod(secretsDirectoryPath(), 0o700); err != nil {
+		return fmt.Errorf("enforce secrets directory permissions: %w", err)
+	}
+	return nil
+}
+
+func enforceFileMode(path string, mode os.FileMode, description string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode().Perm() == mode {
+		return nil
+	}
+	if err := os.Chmod(path, mode); err != nil {
+		return fmt.Errorf("enforce %s permissions %04o: %w", description, mode, err)
+	}
+	return nil
+}
+
+func ensureSecretKey() ([]byte, error) {
+	if err := ensureSecretsDirectory(); err != nil {
+		return nil, err
+	}
+
+	path := secretsKeyFilePath()
+	if key, err := os.ReadFile(path); err == nil {
+		if err := enforceFileMode(path, 0o600, "secret key file"); err != nil {
+			return nil, err
+		}
+		if len(key) != 32 {
+			return nil, fmt.Errorf("invalid secret key length in %s", path)
+		}
+		return key, nil
+	} else if !os.IsNotExist(err) {
+		return nil, fmt.Errorf("read secret key: %w", err)
+	}
+
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		return nil, fmt.Errorf("generate secret key: %w", err)
+	}
+	if err := os.WriteFile(path, key, 0o600); err != nil {
+		return nil, fmt.Errorf("write secret key: %w", err)
+	}
+	return key, nil
+}
+
+func loadSecretStore() (encryptedSecretStore, error) {
+	store := defaultEncryptedSecretStore()
+	content, err := os.ReadFile(secretsStoreFilePath())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return store, nil
+		}
+		return store, fmt.Errorf("read secret store: %w", err)
+	}
+	if err := enforceFileMode(secretsStoreFilePath(), 0o600, "secret store file"); err != nil {
+		return store, err
+	}
+	if strings.TrimSpace(string(content)) == "" {
+		return store, nil
+	}
+	if err := json.Unmarshal(content, &store); err != nil {
+		return store, fmt.Errorf("parse secret store: %w", err)
+	}
+	if store.Version == 0 {
+		store.Version = secretStoreVersion
+	}
+	if store.Secrets == nil {
+		store.Secrets = map[string]string{}
+	}
+	return store, nil
+}
+
+func saveSecretStore(store encryptedSecretStore) error {
+	if err := ensureSecretsDirectory(); err != nil {
+		return err
+	}
+	if store.Version == 0 {
+		store.Version = secretStoreVersion
+	}
+	if store.Secrets == nil {
+		store.Secrets = map[string]string{}
+	}
+	content, err := json.MarshalIndent(store, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal secret store: %w", err)
+	}
+	content = append(content, '\n')
+	if err := os.WriteFile(secretsStoreFilePath(), content, 0o600); err != nil {
+		return fmt.Errorf("write secret store: %w", err)
+	}
+	return nil
+}
+
+func encryptSecretValue(key []byte, plaintext string) (string, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return "", fmt.Errorf("initialize AES cipher: %w", err)
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", fmt.Errorf("initialize GCM cipher: %w", err)
+	}
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		return "", fmt.Errorf("generate GCM nonce: %w", err)
+	}
+	ciphertext := gcm.Seal(nil, nonce, []byte(plaintext), nil)
+	encoded := append(nonce, ciphertext...)
+	return base64.StdEncoding.EncodeToString(encoded), nil
+}
+
+func decryptSecretValue(key []byte, encoded string) (string, error) {
+	raw, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return "", fmt.Errorf("decode secret payload: %w", err)
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return "", fmt.Errorf("initialize AES cipher: %w", err)
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", fmt.Errorf("initialize GCM cipher: %w", err)
+	}
+	if len(raw) < gcm.NonceSize() {
+		return "", fmt.Errorf("secret payload is too short")
+	}
+	nonce := raw[:gcm.NonceSize()]
+	ciphertext := raw[gcm.NonceSize():]
+	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
+	if err != nil {
+		return "", fmt.Errorf("decrypt secret payload: %w", err)
+	}
+	return string(plaintext), nil
+}
+
+func writeSecretValue(name, value string) error {
+	normalizedName, err := normalizeSecretName(name)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(value) == "" {
+		return fmt.Errorf("secret value must not be empty")
+	}
+
+	store, err := loadSecretStore()
+	if err != nil {
+		return err
+	}
+	key, err := ensureSecretKey()
+	if err != nil {
+		return err
+	}
+	encryptedValue, err := encryptSecretValue(key, value)
+	if err != nil {
+		return err
+	}
+	store.Secrets[normalizedName] = encryptedValue
+	return saveSecretStore(store)
+}
+
+func readSecretValue(name string) (string, error) {
+	normalizedName, err := normalizeSecretName(name)
+	if err != nil {
+		return "", err
+	}
+	store, err := loadSecretStore()
+	if err != nil {
+		return "", err
+	}
+	encryptedValue, ok := store.Secrets[normalizedName]
+	if !ok {
+		return "", fmt.Errorf("secret not found: %s", normalizedName)
+	}
+	key, err := ensureSecretKey()
+	if err != nil {
+		return "", err
+	}
+	return decryptSecretValue(key, encryptedValue)
+}
+
+func removeSecretValue(name string) (bool, error) {
+	normalizedName, err := normalizeSecretName(name)
+	if err != nil {
+		return false, err
+	}
+	store, err := loadSecretStore()
+	if err != nil {
+		return false, err
+	}
+	if _, ok := store.Secrets[normalizedName]; !ok {
+		return false, nil
+	}
+	delete(store.Secrets, normalizedName)
+	if err := saveSecretStore(store); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func listSecretNames() ([]string, error) {
+	store, err := loadSecretStore()
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(store.Secrets))
+	for name := range store.Secrets {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
+func rollbackDirectoryPath() string {
+	return filepath.Dir(rollbackStateFilePath())
+}
+
+func loadRollbackState() (rollbackState, error) {
+	state := rollbackState{}
+	content, err := os.ReadFile(rollbackStateFilePath())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return state, nil
+		}
+		return state, fmt.Errorf("read rollback state: %w", err)
+	}
+	if strings.TrimSpace(string(content)) == "" {
+		return state, nil
+	}
+	if err := json.Unmarshal(content, &state); err != nil {
+		return state, fmt.Errorf("parse rollback state: %w", err)
+	}
+	return state, nil
+}
+
+func saveRollbackState(state rollbackState) error {
+	if err := os.MkdirAll(rollbackDirectoryPath(), 0o755); err != nil {
+		return fmt.Errorf("create rollback directory: %w", err)
+	}
+	content, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal rollback state: %w", err)
+	}
+	content = append(content, '\n')
+	if err := os.WriteFile(rollbackStateFilePath(), content, 0o600); err != nil {
+		return fmt.Errorf("write rollback state: %w", err)
+	}
+	return nil
+}
+
+func writeRollbackSuccess(planPath string) error {
+	state, err := loadRollbackState()
+	if err != nil {
+		return err
+	}
+	state.LastSuccessfulPlan = strings.TrimSpace(planPath)
+	state.LastSuccessfulAt = time.Now().Format(time.RFC3339)
+	state.LastFailedPlan = ""
+	state.LastFailedAt = ""
+	state.LastFailureReason = ""
+	return saveRollbackState(state)
+}
+
+func writeRollbackFailure(planPath string, failure error) error {
+	state, err := loadRollbackState()
+	if err != nil {
+		return err
+	}
+	state.LastFailedPlan = strings.TrimSpace(planPath)
+	state.LastFailedAt = time.Now().Format(time.RFC3339)
+	if failure != nil {
+		state.LastFailureReason = strings.TrimSpace(failure.Error())
+	}
+	return saveRollbackState(state)
+}
+
+func resolveRollbackPlanPath(cfg *config) (string, error) {
+	if strings.TrimSpace(cfg.PlanName) != "" || strings.TrimSpace(cfg.PlanInputFile) != "" {
+		return resolvePlanInputFile(cfg)
+	}
+
+	state, err := loadRollbackState()
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(state.LastSuccessfulPlan) == "" {
+		return "", fmt.Errorf("rollback target is not available yet. Run a successful `civa apply` first or pass [plan-name]/--plan-file")
+	}
+	if _, err := os.Stat(state.LastSuccessfulPlan); err != nil {
+		return "", fmt.Errorf("rollback target not found: %s", state.LastSuccessfulPlan)
+	}
+	cfg.PlanInputFile = state.LastSuccessfulPlan
+	cfg.Provided.PlanInputFile = true
+	return state.LastSuccessfulPlan, nil
+}
+
+func driftSnapshotFilePath(planPath string) string {
+	sum := sha256.Sum256([]byte(filepath.Clean(planPath)))
+	return filepath.Join(driftDirectoryPath(), hex.EncodeToString(sum[:])+".json")
+}
+
+func fileSHA256(path string) (string, error) {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(content)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+func newDriftSnapshot(planPath string, state *runtimeState) (driftSnapshot, error) {
+	snapshot := driftSnapshot{
+		PlanPath:   strings.TrimSpace(planPath),
+		CapturedAt: time.Now().Format(time.RFC3339),
+	}
+
+	var err error
+	if snapshot.PlanHash, err = fileSHA256(planPath); err != nil {
+		return driftSnapshot{}, fmt.Errorf("hash plan file: %w", err)
+	}
+	if snapshot.InventoryHash, err = fileSHA256(state.InventoryFile); err != nil {
+		return driftSnapshot{}, fmt.Errorf("hash inventory file: %w", err)
+	}
+	if snapshot.VarsHash, err = fileSHA256(state.VarsFile); err != nil {
+		return driftSnapshot{}, fmt.Errorf("hash vars file: %w", err)
+	}
+	if strings.TrimSpace(state.AuthFile) != "" {
+		authHash, err := fileSHA256(state.AuthFile)
+		if err != nil {
+			return driftSnapshot{}, fmt.Errorf("hash auth file: %w", err)
+		}
+		snapshot.AuthHash = authHash
+	}
+
+	return snapshot, nil
+}
+
+func loadDriftSnapshot(planPath string) (driftSnapshot, bool, error) {
+	path := driftSnapshotFilePath(planPath)
+	content, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return driftSnapshot{}, false, nil
+		}
+		return driftSnapshot{}, false, fmt.Errorf("read drift snapshot: %w", err)
+	}
+	var snapshot driftSnapshot
+	if err := json.Unmarshal(content, &snapshot); err != nil {
+		return driftSnapshot{}, false, fmt.Errorf("parse drift snapshot: %w", err)
+	}
+	return snapshot, true, nil
+}
+
+func saveDriftSnapshot(planPath string, snapshot driftSnapshot) error {
+	if err := os.MkdirAll(driftDirectoryPath(), 0o755); err != nil {
+		return fmt.Errorf("create drift directory: %w", err)
+	}
+	content, err := json.MarshalIndent(snapshot, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal drift snapshot: %w", err)
+	}
+	content = append(content, '\n')
+	if err := os.WriteFile(driftSnapshotFilePath(planPath), content, 0o600); err != nil {
+		return fmt.Errorf("write drift snapshot: %w", err)
+	}
+	return nil
+}
+
+func compareDriftSnapshot(planPath string, state *runtimeState) (driftSnapshot, bool, error) {
+	current, err := newDriftSnapshot(planPath, state)
+	if err != nil {
+		return driftSnapshot{}, false, err
+	}
+	previous, ok, err := loadDriftSnapshot(planPath)
+	if err != nil {
+		return driftSnapshot{}, false, err
+	}
+	if !ok {
+		return current, false, nil
+	}
+	drifted := previous.PlanHash != current.PlanHash || previous.InventoryHash != current.InventoryHash || previous.VarsHash != current.VarsHash || previous.AuthHash != current.AuthHash
+	return current, drifted, nil
+}
+
+func runRollbackPreflight(cfg *config, state *runtimeState) error {
+	reviewCfg := *cfg
+	reviewCfg.ApplyAction = applyActionReview
+	return runAnsible(&reviewCfg, state)
+}
+
+func buildAnsibleArgs(cfg *config, state *runtimeState, forceCheckMode bool) []string {
+	args := []string{
+		"-i", state.InventoryFile,
+		state.PlaybookFile,
+		"-e", "@" + state.VarsFile,
+	}
+	if state.AuthFile != "" {
+		args = append(args, "-e", "@"+state.AuthFile)
+	}
+	tags := selectedAnsibleTags(*cfg)
+	if len(tags) > 0 {
+		args = append(args, "--tags", strings.Join(tags, ","))
+	}
+	if forceCheckMode || shouldUseAnsibleCheckMode(*cfg) {
+		args = append(args, "--check", "--diff")
+	}
+	return args
+}
+
+var ansibleChangedCountPattern = regexp.MustCompile(`changed=([0-9]+)`)
+
+func outputHasAnsibleChanges(output string) bool {
+	matches := ansibleChangedCountPattern.FindAllStringSubmatch(output, -1)
+	for _, match := range matches {
+		if len(match) != 2 {
+			continue
+		}
+		count, err := strconv.Atoi(match[1])
+		if err != nil {
+			continue
+		}
+		if count > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func detectAnsibleDrift(cfg *config, state *runtimeState) (bool, error) {
+	args := buildAnsibleArgs(cfg, state, true)
+	cmd := exec.Command("ansible-playbook", args...)
+	cmd.Stdin = os.Stdin
+	cmd.Env = append(os.Environ(), "ANSIBLE_ROLES_PATH="+filepath.Join(filepath.Dir(state.PlaybookFile), "roles"))
+
+	output, err := cmd.CombinedOutput()
+	if len(output) > 0 {
+		fmt.Fprint(os.Stdout, string(output))
+	}
+	if err != nil {
+		return false, fmt.Errorf("ansible drift check failed: %w", err)
+	}
+
+	return outputHasAnsibleChanges(string(output)), nil
+}
+
 func resolvePlanInputFile(cfg *config) (string, error) {
 	if err := finalizePaths(cfg); err != nil {
 		return "", err
@@ -179,7 +700,7 @@ func resolvePlanInputFile(cfg *config) (string, error) {
 		return cfg.PlanInputFile, nil
 	}
 
-	return "", fmt.Errorf("preview/apply require a generated plan name or --plan-file")
+	return "", fmt.Errorf("plan review/edit and apply require a generated plan name or --plan-file")
 }
 
 func resolveConfigPlanInputFile(planName string) (string, error) {
@@ -198,7 +719,7 @@ func resolveConfigPlanInputFile(planName string) (string, error) {
 		return latest, nil
 	}
 
-	return "", fmt.Errorf("civa config requires an existing generated plan. Run `civa plan start` first")
+	return "", fmt.Errorf("civa config requires an existing generated plan. Run `civa plan init` first")
 }
 
 func readLatestPlanPointer() (string, error) {
@@ -1247,21 +1768,7 @@ func writePlanFile(cfg *config, state *runtimeState) error {
 }
 
 func runAnsible(cfg *config, state *runtimeState) error {
-	args := []string{
-		"-i", state.InventoryFile,
-		state.PlaybookFile,
-		"-e", "@" + state.VarsFile,
-	}
-	if state.AuthFile != "" {
-		args = append(args, "-e", "@"+state.AuthFile)
-	}
-	tags := selectedAnsibleTags(*cfg)
-	if len(tags) > 0 {
-		args = append(args, "--tags", strings.Join(tags, ","))
-	}
-	if shouldUseAnsibleCheckMode(*cfg) {
-		args = append(args, "--check", "--diff")
-	}
+	args := buildAnsibleArgs(cfg, state, false)
 
 	cmd := exec.Command("ansible-playbook", args...)
 	cmd.Stdin = os.Stdin
@@ -1820,20 +2327,8 @@ func buildAnsibleCommand(cfg *config, state *runtimeState) string {
 	parts := []string{
 		"ANSIBLE_ROLES_PATH=" + filepath.Join(filepath.Dir(state.PlaybookFile), "roles"),
 		"ansible-playbook",
-		"-i", state.InventoryFile,
-		state.PlaybookFile,
-		"-e", "@" + state.VarsFile,
 	}
-	if state.AuthFile != "" {
-		parts = append(parts, "-e", "@"+state.AuthFile)
-	}
-	tags := selectedAnsibleTags(*cfg)
-	if len(tags) > 0 {
-		parts = append(parts, "--tags", strings.Join(tags, ","))
-	}
-	if shouldUseAnsibleCheckMode(*cfg) {
-		parts = append(parts, "--check", "--diff")
-	}
+	parts = append(parts, buildAnsibleArgs(cfg, state, false)...)
 
 	quoted := make([]string, 0, len(parts))
 	for _, part := range parts {
@@ -1862,7 +2357,7 @@ func shellQuote(value string) string {
 }
 
 func shouldUseAnsibleCheckMode(cfg config) bool {
-	return cfg.Command == commandPreview || cfg.ApplyAction == applyActionReview
+	return cfg.ApplyAction == applyActionReview
 }
 
 func uniqueInventoryAlias(server serverSpec, index int, used map[string]int) string {
@@ -2034,10 +2529,17 @@ func executionSummaryLines(cfg *config, state *runtimeState) []string {
 	}
 
 	switch cfg.Command {
-	case commandPreview:
-		lines = append(lines, "Result: preview completed with ansible check mode")
 	case commandApply:
-		lines = append(lines, "Result: apply completed")
+		switch cfg.ApplyAction {
+		case applyActionReview:
+			lines = append(lines, "Result: apply review completed")
+		case applyActionDrift:
+			lines = append(lines, "Result: drift detection completed")
+		case applyActionRollback:
+			lines = append(lines, "Result: rollback apply completed")
+		default:
+			lines = append(lines, "Result: apply completed")
+		}
 	case commandPlan:
 		lines = append(lines, "Result: plan generated without executing ansible-playbook")
 	}
@@ -2047,11 +2549,15 @@ func executionSummaryLines(cfg *config, state *runtimeState) []string {
 
 func executionResultLabel(cfg *config) string {
 	switch cfg.Command {
-	case commandPreview:
-		return "preview completed with ansible check mode"
 	case commandApply:
 		if cfg.ApplyAction == applyActionReview {
 			return "apply review completed and current state was checked against the saved plan"
+		}
+		if cfg.ApplyAction == applyActionDrift {
+			return "drift detection completed"
+		}
+		if cfg.ApplyAction == applyActionRollback {
+			return "rollback apply completed"
 		}
 		return "apply completed"
 	case commandPlan:

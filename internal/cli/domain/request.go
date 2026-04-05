@@ -12,25 +12,36 @@ const (
 	CommandConfig           Command = "config"
 	CommandUninstall        Command = "uninstall"
 	CommandPlan             Command = "plan"
-	CommandPreview          Command = "preview"
 	CommandApply            Command = "apply"
+	CommandSecret           Command = "secret"
 )
 
 const (
-	PlanActionStart  = "start"
+	PlanActionInit   = "init"
+	PlanActionReview = "review"
+	PlanActionEdit   = "edit"
 	PlanActionList   = "list"
 	PlanActionRemove = "remove"
 )
 
 const (
+	ConfigActionInit   = "init"
 	ConfigActionEdit   = "edit"
 	ConfigActionList   = "list"
 	ConfigActionRemove = "remove"
 )
 
 const (
-	ApplyActionExecute = "execute"
-	ApplyActionReview  = "review"
+	ApplyActionExecute  = "execute"
+	ApplyActionReview   = "review"
+	ApplyActionDrift    = "drift"
+	ApplyActionRollback = "rollback"
+)
+
+const (
+	SecretActionSet    = "set"
+	SecretActionList   = "list"
+	SecretActionRemove = "remove"
 )
 
 const (
@@ -55,6 +66,9 @@ type ProvidedFlags struct {
 	TraefikDNSProvider bool
 	Servers            bool
 	NonInteractive     bool
+	SSHPasswordSecret  bool
+	SecretValue        bool
+	SecretValueFile    bool
 }
 
 type Request struct {
@@ -65,6 +79,7 @@ type Request struct {
 	ConfigAction string
 	ApplyAction  string
 	DoctorAction string
+	SecretAction string
 
 	CompletionArgs []string
 
@@ -86,6 +101,10 @@ type Request struct {
 	ComponentsInput    string
 	PlanInputFile      string
 	PlanFile           string
+	SecretName         string
+	SecretValue        string
+	SecretValueFile    string
+	SSHPasswordSecret  string
 	Servers            []string
 
 	Provided ProvidedFlags

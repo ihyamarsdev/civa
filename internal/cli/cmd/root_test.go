@@ -18,18 +18,34 @@ func (s *stubExecutor) Execute(req domain.Request) error {
 	return s.err
 }
 
-func TestRootRunRoutesPreviewCommand(t *testing.T) {
+func TestRootRunRoutesPlanReviewCommand(t *testing.T) {
 	executor := &stubExecutor{}
 	root := NewRoot(executor)
 
-	if err := root.Run([]string{"preview", "my-plan"}); err != nil {
+	if err := root.Run([]string{"plan", "review", "my-plan"}); err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
 
 	if len(executor.requests) != 1 {
 		t.Fatalf("expected one request, got %d", len(executor.requests))
 	}
-	if executor.requests[0].Command != domain.CommandPreview || executor.requests[0].PlanName != "my-plan" {
+	if executor.requests[0].Command != domain.CommandPlan || executor.requests[0].PlanAction != domain.PlanActionReview || executor.requests[0].PlanName != "my-plan" {
+		t.Fatalf("unexpected request: %#v", executor.requests[0])
+	}
+}
+
+func TestRootRunRoutesPlanEditCommand(t *testing.T) {
+	executor := &stubExecutor{}
+	root := NewRoot(executor)
+
+	if err := root.Run([]string{"plan", "edit", "my-plan"}); err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+
+	if len(executor.requests) != 1 {
+		t.Fatalf("expected one request, got %d", len(executor.requests))
+	}
+	if executor.requests[0].Command != domain.CommandPlan || executor.requests[0].PlanAction != domain.PlanActionEdit || executor.requests[0].PlanName != "my-plan" {
 		t.Fatalf("unexpected request: %#v", executor.requests[0])
 	}
 }
@@ -51,11 +67,11 @@ func TestRootRunRoutesPlanWithoutFlagsToHelp(t *testing.T) {
 	}
 }
 
-func TestRootRunRoutesPlanStartFlags(t *testing.T) {
+func TestRootRunRoutesPlanInitFlags(t *testing.T) {
 	executor := &stubExecutor{}
 	root := NewRoot(executor)
 
-	err := root.Run([]string{"plan", "start", "--server", "203.0.113.10,web-01,2201", "--ssh-user", "ubuntu", "--non-interactive"})
+	err := root.Run([]string{"plan", "init", "--server", "203.0.113.10,web-01,2201", "--ssh-user", "ubuntu", "--non-interactive"})
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
@@ -64,8 +80,8 @@ func TestRootRunRoutesPlanStartFlags(t *testing.T) {
 		t.Fatalf("expected one request, got %d", len(executor.requests))
 	}
 	req := executor.requests[0]
-	if req.Command != domain.CommandPlan || req.PlanAction != domain.PlanActionStart {
-		t.Fatalf("unexpected plan start request: %#v", req)
+	if req.Command != domain.CommandPlan || req.PlanAction != domain.PlanActionInit {
+		t.Fatalf("unexpected plan init request: %#v", req)
 	}
 	if req.SSHUser != "ubuntu" || len(req.Servers) != 1 || req.Servers[0] != "203.0.113.10,web-01,2201" {
 		t.Fatalf("unexpected mapped flags: %#v", req)
@@ -106,34 +122,29 @@ func TestRootRunRoutesConfigCommand(t *testing.T) {
 		t.Fatalf("expected one request, got %d", len(executor.requests))
 	}
 	req := executor.requests[0]
-	if req.Command != domain.CommandConfig {
-		t.Fatalf("unexpected config request: %#v", req)
+	if req.Command != domain.CommandHelp || req.HelpTarget != string(domain.CommandConfig) {
+		t.Fatalf("unexpected config help request: %#v", req)
 	}
 }
 
-func TestRootRunRoutesConfigCommandWithPlanName(t *testing.T) {
+func TestRootRunRejectsDirectConfigWithPlanName(t *testing.T) {
 	executor := &stubExecutor{}
 	root := NewRoot(executor)
 
 	err := root.Run([]string{"config", "web-01-v2"})
-	if err != nil {
-		t.Fatalf("expected nil error, got %v", err)
+	if err == nil {
+		t.Fatal("expected error for direct config with plan-name")
 	}
-
-	if len(executor.requests) != 1 {
-		t.Fatalf("expected one request, got %d", len(executor.requests))
-	}
-	req := executor.requests[0]
-	if req.Command != domain.CommandConfig || req.PlanName != "web-01-v2" {
-		t.Fatalf("unexpected config request: %#v", req)
+	if !strings.Contains(err.Error(), "unknown command") {
+		t.Fatalf("expected unknown command error, got %v", err)
 	}
 }
 
-func TestRootRunRoutesConfigListSubcommand(t *testing.T) {
+func TestRootRunRoutesConfigProviderListSubcommand(t *testing.T) {
 	executor := &stubExecutor{}
 	root := NewRoot(executor)
 
-	err := root.Run([]string{"config", "list"})
+	err := root.Run([]string{"config", "nginx", "list"})
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
@@ -142,16 +153,19 @@ func TestRootRunRoutesConfigListSubcommand(t *testing.T) {
 		t.Fatalf("expected one request, got %d", len(executor.requests))
 	}
 	req := executor.requests[0]
-	if req.Command != domain.CommandConfig || req.ConfigAction != domain.ConfigActionList {
+	if req.Command != domain.CommandConfig || req.ConfigAction != domain.ConfigActionList || req.WebServer != "nginx" {
 		t.Fatalf("unexpected config list request: %#v", req)
 	}
+	if !req.Provided.WebServer {
+		t.Fatalf("expected provided webserver flag for provider list: %#v", req.Provided)
+	}
 }
 
-func TestRootRunRoutesConfigEditSubcommandWithPlanName(t *testing.T) {
+func TestRootRunRoutesConfigProviderInitSubcommandWithPlanName(t *testing.T) {
 	executor := &stubExecutor{}
 	root := NewRoot(executor)
 
-	err := root.Run([]string{"config", "edit", "web-01-v2"})
+	err := root.Run([]string{"config", "nginx", "init", "web-01-v2"})
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
@@ -160,16 +174,19 @@ func TestRootRunRoutesConfigEditSubcommandWithPlanName(t *testing.T) {
 		t.Fatalf("expected one request, got %d", len(executor.requests))
 	}
 	req := executor.requests[0]
-	if req.Command != domain.CommandConfig || req.ConfigAction != domain.ConfigActionEdit || req.PlanName != "web-01-v2" {
-		t.Fatalf("unexpected config edit request: %#v", req)
+	if req.Command != domain.CommandConfig || req.ConfigAction != domain.ConfigActionInit || req.PlanName != "web-01-v2" || req.WebServer != "nginx" {
+		t.Fatalf("unexpected config init request: %#v", req)
+	}
+	if !req.Provided.WebServer {
+		t.Fatalf("expected provided webserver flag for provider init: %#v", req.Provided)
 	}
 }
 
-func TestRootRunRoutesConfigRemoveSubcommandWithProfile(t *testing.T) {
+func TestRootRunRoutesConfigProviderRemoveSubcommand(t *testing.T) {
 	executor := &stubExecutor{}
 	root := NewRoot(executor)
 
-	err := root.Run([]string{"config", "remove", "nginx"})
+	err := root.Run([]string{"config", "nginx", "remove", "web-01-v2"})
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
@@ -178,11 +195,24 @@ func TestRootRunRoutesConfigRemoveSubcommandWithProfile(t *testing.T) {
 		t.Fatalf("expected one request, got %d", len(executor.requests))
 	}
 	req := executor.requests[0]
-	if req.Command != domain.CommandConfig || req.ConfigAction != domain.ConfigActionRemove || req.WebServer != "nginx" {
+	if req.Command != domain.CommandConfig || req.ConfigAction != domain.ConfigActionRemove || req.WebServer != "nginx" || req.PlanName != "web-01-v2" {
 		t.Fatalf("unexpected config remove request: %#v", req)
 	}
 	if !req.Provided.WebServer {
 		t.Fatalf("expected remove profile to mark provided webserver flag: %#v", req.Provided)
+	}
+}
+
+func TestRootRunRejectsConfigAllRemoveSubcommand(t *testing.T) {
+	executor := &stubExecutor{}
+	root := NewRoot(executor)
+
+	err := root.Run([]string{"config", "all", "remove", "web-01-v2"})
+	if err == nil {
+		t.Fatal("expected error for config all remove")
+	}
+	if !strings.Contains(err.Error(), "unknown command") {
+		t.Fatalf("expected unknown command error, got %v", err)
 	}
 }
 
@@ -207,5 +237,178 @@ func TestRootRunUnknownCommandReturnsError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "unknown command") {
 		t.Fatalf("expected unknown command error, got %v", err)
+	}
+}
+
+func TestRootRunRoutesApplyDriftSubcommand(t *testing.T) {
+	executor := &stubExecutor{}
+	root := NewRoot(executor)
+
+	err := root.Run([]string{"apply", "drift", "web-01"})
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if len(executor.requests) != 1 {
+		t.Fatalf("expected one request, got %d", len(executor.requests))
+	}
+	req := executor.requests[0]
+	if req.Command != domain.CommandApply || req.ApplyAction != domain.ApplyActionDrift || req.PlanName != "web-01" {
+		t.Fatalf("unexpected apply drift request: %#v", req)
+	}
+}
+
+func TestRootRunRoutesApplyRollbackSubcommand(t *testing.T) {
+	executor := &stubExecutor{}
+	root := NewRoot(executor)
+
+	err := root.Run([]string{"apply", "rollback", "--yes"})
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if len(executor.requests) != 1 {
+		t.Fatalf("expected one request, got %d", len(executor.requests))
+	}
+	req := executor.requests[0]
+	if req.Command != domain.CommandApply || req.ApplyAction != domain.ApplyActionRollback || !req.AssumeYes {
+		t.Fatalf("unexpected apply rollback request: %#v", req)
+	}
+}
+
+func TestRootRunRoutesSecretSet(t *testing.T) {
+	executor := &stubExecutor{}
+	root := NewRoot(executor)
+
+	err := root.Run([]string{"secret", "set", "vps-password", "--value", "hunter2"})
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if len(executor.requests) != 1 {
+		t.Fatalf("expected one request, got %d", len(executor.requests))
+	}
+	req := executor.requests[0]
+	if req.Command != domain.CommandSecret || req.SecretAction != domain.SecretActionSet || req.SecretName != "vps-password" || req.SecretValue != "hunter2" {
+		t.Fatalf("unexpected secret set request: %#v", req)
+	}
+	if !req.Provided.SecretValue {
+		t.Fatalf("expected secret value to be marked as provided: %#v", req.Provided)
+	}
+	if req.Provided.SecretValueFile {
+		t.Fatalf("expected secret value file flag to be false: %#v", req.Provided)
+	}
+}
+
+func TestRootRunRoutesSecretSetValueFile(t *testing.T) {
+	executor := &stubExecutor{}
+	root := NewRoot(executor)
+
+	err := root.Run([]string{"secret", "set", "vps-password", "--value-file", "/tmp/secret.txt"})
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if len(executor.requests) != 1 {
+		t.Fatalf("expected one request, got %d", len(executor.requests))
+	}
+	req := executor.requests[0]
+	if req.Command != domain.CommandSecret || req.SecretAction != domain.SecretActionSet || req.SecretName != "vps-password" || req.SecretValueFile != "/tmp/secret.txt" {
+		t.Fatalf("unexpected secret set value-file request: %#v", req)
+	}
+	if !req.Provided.SecretValueFile {
+		t.Fatalf("expected secret value file to be marked as provided: %#v", req.Provided)
+	}
+	if req.Provided.SecretValue {
+		t.Fatalf("expected secret value flag to be false when using --value-file: %#v", req.Provided)
+	}
+}
+
+func TestRootRunRoutesSecretListAndRemove(t *testing.T) {
+	executor := &stubExecutor{}
+	root := NewRoot(executor)
+
+	err := root.Run([]string{"secret", "list"})
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	err = root.Run([]string{"secret", "remove", "vps-password"})
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+
+	if len(executor.requests) != 2 {
+		t.Fatalf("expected two requests, got %d", len(executor.requests))
+	}
+	if executor.requests[0].Command != domain.CommandSecret || executor.requests[0].SecretAction != domain.SecretActionList {
+		t.Fatalf("unexpected secret list request: %#v", executor.requests[0])
+	}
+	if executor.requests[1].Command != domain.CommandSecret || executor.requests[1].SecretAction != domain.SecretActionRemove || executor.requests[1].SecretName != "vps-password" {
+		t.Fatalf("unexpected secret remove request: %#v", executor.requests[1])
+	}
+}
+
+func TestRootRunRoutesSetupPasswordSecretFlag(t *testing.T) {
+	executor := &stubExecutor{}
+	root := NewRoot(executor)
+
+	err := root.Run([]string{"setup", "--server", "203.0.113.10", "--ssh-user", "root", "--ssh-password-secret", "vps-password", "--ssh-public-key", "~/.ssh/id_ed25519.pub"})
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if len(executor.requests) != 1 {
+		t.Fatalf("expected one request, got %d", len(executor.requests))
+	}
+	req := executor.requests[0]
+	if req.Command != domain.CommandSetup || req.SSHPasswordSecret != "vps-password" {
+		t.Fatalf("unexpected setup request: %#v", req)
+	}
+	if !req.Provided.SSHPasswordSecret {
+		t.Fatalf("expected SSH password secret flag to be marked provided: %#v", req.Provided)
+	}
+}
+
+func TestRootRunHelpRoutesSecretSubcommandsToSecretHelp(t *testing.T) {
+	executor := &stubExecutor{}
+	root := NewRoot(executor)
+
+	if err := root.Run([]string{"secret", "list", "--help"}); err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if err := root.Run([]string{"secret", "remove", "--help"}); err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+
+	if len(executor.requests) != 2 {
+		t.Fatalf("expected two help requests, got %d", len(executor.requests))
+	}
+	for idx, req := range executor.requests {
+		if req.Command != domain.CommandHelp || req.HelpTarget != string(domain.CommandSecret) {
+			t.Fatalf("unexpected help request at %d: %#v", idx, req)
+		}
+	}
+}
+
+func TestRootRunHelpRoutesConfigProviderSubcommandsToProviderHelp(t *testing.T) {
+	executor := &stubExecutor{}
+	root := NewRoot(executor)
+
+	if err := root.Run([]string{"config", "nginx", "list", "--help"}); err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if err := root.Run([]string{"config", "caddy", "init", "--help"}); err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if err := root.Run([]string{"config", "all", "list", "--help"}); err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+
+	if len(executor.requests) != 3 {
+		t.Fatalf("expected three help requests, got %d", len(executor.requests))
+	}
+	if req := executor.requests[0]; req.Command != domain.CommandHelp || req.HelpTarget != helpTargetConfigNginx {
+		t.Fatalf("unexpected nginx help request: %#v", req)
+	}
+	if req := executor.requests[1]; req.Command != domain.CommandHelp || req.HelpTarget != helpTargetConfigCaddy {
+		t.Fatalf("unexpected caddy help request: %#v", req)
+	}
+	if req := executor.requests[2]; req.Command != domain.CommandHelp || req.HelpTarget != helpTargetConfigAll {
+		t.Fatalf("unexpected all help request: %#v", req)
 	}
 }

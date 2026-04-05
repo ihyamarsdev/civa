@@ -24,12 +24,15 @@ const version = "1.1.10"
 const (
 	commandApply            = "apply"
 	commandPlan             = "plan"
-	commandPreview          = "preview"
 	commandCompletion       = "completion"
 	commandCompleteInternal = "__complete"
 	commandDoctor           = "doctor"
 	commandSetup            = "setup"
+	commandSecret           = "secret"
 	commandConfig           = "config"
+	commandConfigNginxHelp  = "config-nginx"
+	commandConfigCaddyHelp  = "config-caddy"
+	commandConfigAllHelp    = "config-all"
 	commandUninstall        = "uninstall"
 	commandVersion          = "version"
 	commandHelp             = "help"
@@ -46,15 +49,23 @@ const (
 	defaultSwapSize           = "2G"
 	defaultTraefikChallenge   = "http"
 	defaultTraefikDNSProvider = "cloudflare"
-	planActionStart           = "start"
+	planActionInit            = "init"
+	planActionReview          = "review"
+	planActionEdit            = "edit"
 	planActionList            = "list"
 	planActionRemove          = "remove"
+	configActionInit          = "init"
 	configActionEdit          = "edit"
 	configActionList          = "list"
 	configActionRemove        = "remove"
 	configProfileAll          = "all"
 	applyActionExecute        = "execute"
 	applyActionReview         = "review"
+	applyActionDrift          = "drift"
+	applyActionRollback       = "rollback"
+	secretActionSet           = "set"
+	secretActionList          = "list"
+	secretActionRemove        = "remove"
 	doctorActionCheck         = "check"
 	doctorActionFix           = "fix"
 )
@@ -96,6 +107,7 @@ type providedFlags struct {
 	SSHPort            bool
 	SSHAuthMethod      bool
 	SSHPassword        bool
+	SSHPasswordSecret  bool
 	WebServer          bool
 	SSHPrivateKey      bool
 	SSHPublicKey       bool
@@ -109,6 +121,8 @@ type providedFlags struct {
 	TraefikDNSProvider bool
 	Servers            bool
 	NonInteractive     bool
+	SecretValue        bool
+	SecretValueFile    bool
 }
 
 type config struct {
@@ -116,6 +130,7 @@ type config struct {
 	PlanAction           string
 	ConfigAction         string
 	ApplyAction          string
+	SecretAction         string
 	DoctorAction         string
 	PlanName             string
 	AssumeYes            bool
@@ -124,6 +139,7 @@ type config struct {
 	SSHPort              int
 	SSHAuthMethod        string
 	SSHPassword          string
+	SSHPasswordSecret    string
 	WebServer            string
 	SSHPrivateKey        string
 	SSHPublicKey         string
@@ -137,6 +153,9 @@ type config struct {
 	Components           []string
 	PlanInputFile        string
 	PlanFile             string
+	SecretName           string
+	SecretValue          string
+	SecretValueFile      string
 	WebServerSites       []webServerSiteSpec
 	WebServerTargetHosts []string
 	NginxCertbotEmail    string
@@ -172,9 +191,10 @@ var componentOptions = []componentOption{
 func defaultConfig(command string) config {
 	return config{
 		Command:            command,
-		PlanAction:         planActionStart,
-		ConfigAction:       configActionEdit,
+		PlanAction:         planActionInit,
+		ConfigAction:       configActionInit,
 		ApplyAction:        applyActionExecute,
+		SecretAction:       secretActionList,
 		DoctorAction:       doctorActionCheck,
 		SSHUser:            defaultSSHUser,
 		SSHPort:            defaultSSHPort,
@@ -215,6 +235,9 @@ func runSetupFlow(cfg *config) error {
 	if err := finalizePaths(cfg); err != nil {
 		return err
 	}
+	if err := resolveSetupSecretPassword(cfg); err != nil {
+		return err
+	}
 	if err := validateSetupConfig(cfg); err != nil {
 		return err
 	}
@@ -233,20 +256,134 @@ func runSetupFlow(cfg *config) error {
 	return runSSHCopyID(*cfg)
 }
 
+func resolveSetupSecretPassword(cfg *config) error {
+	secretName := strings.TrimSpace(cfg.SSHPasswordSecret)
+	if secretName == "" {
+		return nil
+	}
+	if strings.TrimSpace(cfg.SSHPassword) != "" {
+		return fmt.Errorf("--ssh-password and --ssh-password-secret cannot be used together")
+	}
+
+	value, err := readSecretValue(secretName)
+	if err != nil {
+		return fmt.Errorf("resolve setup password from secret %q: %w", secretName, err)
+	}
+	cfg.SSHPassword = value
+	return nil
+}
+
+func runSecretFlow(cfg *config) error {
+	switch cfg.SecretAction {
+	case secretActionSet:
+		if strings.TrimSpace(cfg.SecretName) == "" {
+			return fmt.Errorf("civa secret set requires a secret name")
+		}
+		secretValue, err := resolveSecretSetValue(cfg)
+		if err != nil {
+			return err
+		}
+		if err := writeSecretValue(cfg.SecretName, secretValue); err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "✅ Secret %q stored in encrypted secret store\n", strings.TrimSpace(cfg.SecretName))
+		return nil
+	case secretActionRemove:
+		if strings.TrimSpace(cfg.SecretName) == "" {
+			return fmt.Errorf("civa secret remove requires a secret name")
+		}
+		removed, err := removeSecretValue(cfg.SecretName)
+		if err != nil {
+			return err
+		}
+		if !removed {
+			fmt.Fprintf(os.Stderr, "Secret %q was not found\n", strings.TrimSpace(cfg.SecretName))
+			return nil
+		}
+		fmt.Fprintf(os.Stderr, "✅ Secret %q removed\n", strings.TrimSpace(cfg.SecretName))
+		return nil
+	case secretActionList, "":
+		names, err := listSecretNames()
+		if err != nil {
+			return err
+		}
+		if len(names) == 0 {
+			fmt.Fprintln(os.Stderr, "No secrets stored. Use `civa secret set <name> --value-file <path>`.")
+			return nil
+		}
+		printSection("Stored Secrets")
+		for _, name := range names {
+			fmt.Fprintf(os.Stderr, "- %s\n", name)
+		}
+		return nil
+	default:
+		return fmt.Errorf("unknown secret action: %s", cfg.SecretAction)
+	}
+}
+
+func resolveSecretSetValue(cfg *config) (string, error) {
+	if cfg.Provided.SecretValue && cfg.Provided.SecretValueFile {
+		return "", fmt.Errorf("civa secret set accepts either --value or --value-file, not both")
+	}
+
+	if cfg.Provided.SecretValueFile {
+		path := strings.TrimSpace(cfg.SecretValueFile)
+		if path == "" {
+			return "", fmt.Errorf("civa secret set requires a non-empty --value-file path")
+		}
+		expandedPath, err := expandHomePath(path)
+		if err != nil {
+			return "", fmt.Errorf("expand --value-file path: %w", err)
+		}
+		content, err := os.ReadFile(expandedPath)
+		if err != nil {
+			return "", fmt.Errorf("read --value-file: %w", err)
+		}
+		value := strings.TrimRight(string(content), "\r\n")
+		if strings.TrimSpace(value) == "" {
+			return "", fmt.Errorf("secret value from --value-file must not be empty")
+		}
+		return value, nil
+	}
+
+	if cfg.Provided.SecretValue {
+		if strings.TrimSpace(cfg.SecretValue) == "" {
+			return "", fmt.Errorf("secret value from --value must not be empty")
+		}
+		return cfg.SecretValue, nil
+	}
+
+	if shouldPrompt(cfg) {
+		return promptHiddenSecretValue()
+	}
+
+	return "", fmt.Errorf("civa secret set requires --value or --value-file")
+}
+
+func promptHiddenSecretValue() (string, error) {
+	value, err := promptSecretValue("Secret value")
+	if err != nil {
+		return "", fmt.Errorf("read secret value: %w", err)
+	}
+	return value, nil
+}
+
 func runConfigFlow(cfg *config) error {
 	switch cfg.ConfigAction {
 	case configActionList:
 		return runConfigListFlow(cfg)
 	case configActionRemove:
 		return runConfigRemoveFlow(cfg)
+	case configActionInit, configActionEdit, "":
+		return runConfigInitFlow(cfg)
 	default:
-		return runConfigEditFlow(cfg)
+		return runConfigInitFlow(cfg)
 	}
 }
 
-func runConfigEditFlow(cfg *config) error {
+func runConfigInitFlow(cfg *config) error {
 	if !shouldPrompt(cfg) {
-		return fmt.Errorf("civa config currently requires an interactive terminal")
+		return fmt.Errorf("civa config <provider> init currently requires an interactive terminal")
 	}
 
 	store, err := loadWebServerConfig()
@@ -255,14 +392,25 @@ func runConfigEditFlow(cfg *config) error {
 	}
 
 	printSection("civa Config")
-	logLine("Configure persisted web server settings. Plan start will only install web server components.")
+	logLine("Configure persisted web server settings. Plan init will only install web server components.")
 
-	targetWebServer, err := promptConfigWebServerTarget(webServerNginx)
+	profile, err := normalizeConfigProfileTarget(cfg.WebServer)
 	if err != nil {
-		if errors.Is(err, errUserCancelled) {
-			return nil
-		}
 		return err
+	}
+
+	targetWebServer := profile
+	if targetWebServer == "" {
+		targetWebServer, err = promptConfigWebServerTarget(webServerNginx)
+		if err != nil {
+			if errors.Is(err, errUserCancelled) {
+				return nil
+			}
+			return err
+		}
+	}
+	if targetWebServer == configProfileAll {
+		return fmt.Errorf("config init requires provider nginx or caddy")
 	}
 
 	currentProfile := store.Caddy
@@ -399,13 +547,27 @@ func runConfigEditFlow(cfg *config) error {
 	return nil
 }
 
-func runConfigListFlow(_ *config) error {
+func runConfigListFlow(cfg *config) error {
 	store, err := loadWebServerConfig()
 	if err != nil {
 		return err
 	}
 
+	profile, err := normalizeConfigProfileTarget(cfg.WebServer)
+	if err != nil {
+		return err
+	}
+
 	printSection("Configured Web Server Profiles")
+	if profile == webServerNginx {
+		printConfigProfileSummary(webServerNginx, store.Nginx)
+		return nil
+	}
+	if profile == webServerCaddy {
+		printConfigProfileSummary(webServerCaddy, store.Caddy)
+		return nil
+	}
+
 	printConfigProfileSummary(webServerNginx, store.Nginx)
 	printConfigProfileSummary(webServerCaddy, store.Caddy)
 	return nil
@@ -424,9 +586,9 @@ func runConfigRemoveFlow(cfg *config) error {
 
 	if profile == "" {
 		if !shouldPrompt(cfg) {
-			return fmt.Errorf("config remove requires a profile: nginx, caddy, or all")
+			return fmt.Errorf("config remove requires provider nginx/caddy and <plan-name>")
 		}
-		value, err := promptConfigRemoveProfile(configProfileAll)
+		value, err := promptConfigRemoveProfile(webServerNginx)
 		if err != nil {
 			if errors.Is(err, errUserCancelled) {
 				return nil
@@ -436,14 +598,36 @@ func runConfigRemoveFlow(cfg *config) error {
 		profile = value
 	}
 
+	if profile == configProfileAll {
+		return fmt.Errorf("config remove does not support provider all; use nginx or caddy")
+	}
+
+	if strings.TrimSpace(cfg.PlanName) == "" {
+		if !shouldPrompt(cfg) {
+			return fmt.Errorf("config remove requires <plan-name>")
+		}
+		defaultPlanName := ""
+		if latestPath, err := readLatestPlanPointer(); err == nil {
+			defaultPlanName = filepath.Base(filepath.Dir(latestPath))
+		}
+		planName, err := promptConfigPlanName(defaultPlanName)
+		if err != nil {
+			if errors.Is(err, errUserCancelled) {
+				return nil
+			}
+			return err
+		}
+		cfg.PlanName = strings.TrimSpace(planName)
+		if cfg.PlanName == "" {
+			return fmt.Errorf("config remove requires <plan-name>")
+		}
+	}
+
 	emptyProfile := webServerProfileConfig{Sites: []webServerSiteSpec{}, InstallHostnames: []string{}}
 	switch profile {
 	case webServerNginx:
 		store.Nginx = emptyProfile
 	case webServerCaddy:
-		store.Caddy = emptyProfile
-	case configProfileAll:
-		store.Nginx = emptyProfile
 		store.Caddy = emptyProfile
 	}
 
@@ -453,6 +637,7 @@ func runConfigRemoveFlow(cfg *config) error {
 
 	printSection("Config Removed")
 	fmt.Fprintf(os.Stderr, "Removed profile: %s\n", strings.ToUpper(profile))
+	fmt.Fprintf(os.Stderr, "Plan context: %s\n", cfg.PlanName)
 	return nil
 }
 
@@ -535,7 +720,7 @@ func runPlanFlow(cfg *config) error {
 	return executeRuntime(cfg, state)
 }
 
-func runPreviewFlow(cfg *config) error {
+func runPlanReviewFlow(cfg *config) error {
 	if err := validateExistingPlanCommandFlags(*cfg); err != nil {
 		return err
 	}
@@ -551,11 +736,11 @@ func runPreviewFlow(cfg *config) error {
 	}
 
 	isTTY := term.IsTerminal(int(os.Stdout.Fd()))
-	if header := previewHeader(planPath, isTTY); header != "" {
+	if header := planReviewHeader(planPath, isTTY); header != "" {
 		fmt.Print(header)
 	}
 
-	rendered, err := renderPreviewMarkdown(planPath, content, isTTY)
+	rendered, err := renderPlanReviewMarkdown(planPath, content, isTTY)
 	if err != nil {
 		return err
 	}
@@ -567,7 +752,46 @@ func runPreviewFlow(cfg *config) error {
 	return nil
 }
 
-func previewHeader(planPath string, isTTY bool) string {
+func runPlanEditFlow(cfg *config) error {
+	if err := validateExistingPlanCommandFlags(*cfg); err != nil {
+		return err
+	}
+
+	planPath, err := resolvePlanInputFile(cfg)
+	if err != nil {
+		return err
+	}
+
+	if !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())) {
+		return fmt.Errorf("plan edit requires an interactive terminal")
+	}
+
+	editor := strings.TrimSpace(os.Getenv("VISUAL"))
+	if editor == "" {
+		editor = strings.TrimSpace(os.Getenv("EDITOR"))
+	}
+	if editor == "" {
+		editor = "vi"
+	}
+
+	parts := strings.Fields(editor)
+	if len(parts) == 0 {
+		return fmt.Errorf("failed to resolve editor command")
+	}
+
+	cmd := exec.Command(parts[0], append(parts[1:], planPath)...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to open editor %q for plan %s: %w", editor, planPath, err)
+	}
+
+	fmt.Fprintf(os.Stderr, "Updated plan file: %s\n", planPath)
+	return nil
+}
+
+func planReviewHeader(planPath string, isTTY bool) string {
 	if !isTTY {
 		return ""
 	}
@@ -575,7 +799,7 @@ func previewHeader(planPath string, isTTY bool) string {
 	return fmt.Sprintf("Plan file: %s\n\n", planPath)
 }
 
-func renderPreviewMarkdown(planPath string, content []byte, isTTY bool) (string, error) {
+func renderPlanReviewMarkdown(planPath string, content []byte, isTTY bool) (string, error) {
 	style := styles.AutoStyle
 	if !isTTY {
 		style = styles.NoTTYStyle
@@ -604,7 +828,7 @@ func renderPreviewMarkdown(planPath string, content []byte, isTTY bool) (string,
 
 	rendered, err := renderer.Render(string(glowutils.RemoveFrontmatter(content)))
 	if err != nil {
-		return "", fmt.Errorf("failed to render preview for %s: %w", planPath, err)
+		return "", fmt.Errorf("failed to render plan review for %s: %w", planPath, err)
 	}
 
 	return rendered, nil
@@ -656,14 +880,24 @@ func runApplyFlow(cfg *config) error {
 
 	state.progressStep("⚙️ Running ansible-playbook from existing plan")
 	if err := runAnsible(loadedCfg, state); err != nil {
+		_ = writeRollbackFailure(planPath, err)
 		return err
 	}
 	state.appendCompletedPhase("✅ ansible-playbook execution")
 	state.progressStep("🔧 Updating local SSH config from applied inventory")
 	if err := syncSSHConfigAfterApply(loadedCfg, state); err != nil {
+		_ = writeRollbackFailure(planPath, err)
 		return err
 	}
 	state.appendCompletedPhase("✅ local SSH config synchronized")
+	if err := writeRollbackSuccess(planPath); err != nil {
+		return err
+	}
+	if snapshot, err := newDriftSnapshot(planPath, state); err != nil {
+		fmt.Fprintf(os.Stderr, "⚠️ Unable to capture drift snapshot after apply: %v\n", err)
+	} else if err := saveDriftSnapshot(planPath, snapshot); err != nil {
+		fmt.Fprintf(os.Stderr, "⚠️ Unable to persist drift snapshot after apply: %v\n", err)
+	}
 	showExecutionSummary(loadedCfg, state)
 	return nil
 }
@@ -707,6 +941,153 @@ func runApplyReviewFlow(cfg *config) error {
 
 	state.progressStep("📝 Rendering detailed review summary")
 	state.appendCompletedPhase("✅ Prepared detailed review summary for server state verification")
+	showExecutionSummary(loadedCfg, state)
+	return nil
+}
+
+func runApplyDriftFlow(cfg *config) error {
+	if err := validateExistingPlanCommandFlags(*cfg); err != nil {
+		return err
+	}
+
+	planPath, err := resolvePlanInputFile(cfg)
+	if err != nil {
+		return err
+	}
+
+	loadedCfg, state, err := loadPlannedRun(planPath)
+	if err != nil {
+		return err
+	}
+
+	loadedCfg.Command = commandApply
+	loadedCfg.ApplyAction = applyActionDrift
+	state.ProgressCurrent = 0
+	state.ProgressTotal = 3
+	state.CompletedPhases = nil
+
+	printSection("🧭 Drift Detection")
+	state.progressStep("📦 Loading planned artifacts for drift analysis")
+	for _, line := range applyArtifactLines(planPath, state) {
+		fmt.Fprintln(os.Stderr, line)
+	}
+	state.appendCompletedPhase("Loaded plan artifacts for drift detection")
+
+	state.progressStep("🧪 Running ansible check mode to detect server drift")
+	ansibleDrift, err := detectAnsibleDrift(loadedCfg, state)
+	if err != nil {
+		return err
+	}
+	if ansibleDrift {
+		state.appendCompletedPhase("Detected drift from ansible check-mode output")
+	} else {
+		state.appendCompletedPhase("No drift detected from ansible check-mode output")
+	}
+
+	state.progressStep("🗃️ Comparing local plan artifacts against baseline snapshot")
+	_, hasBaseline, err := loadDriftSnapshot(planPath)
+	if err != nil {
+		return err
+	}
+	snapshot, localDrift, err := compareDriftSnapshot(planPath, state)
+	if err != nil {
+		return err
+	}
+	if err := saveDriftSnapshot(planPath, snapshot); err != nil {
+		return err
+	}
+	if !hasBaseline {
+		state.appendCompletedPhase("Initialized local artifact drift baseline snapshot (first drift check)")
+	} else if localDrift {
+		state.appendCompletedPhase("Detected local artifact drift since previous drift snapshot")
+	} else {
+		state.appendCompletedPhase("No local artifact drift detected")
+	}
+
+	fmt.Fprintln(os.Stderr)
+	if ansibleDrift || localDrift {
+		fmt.Fprintln(os.Stderr, "⚠️ Drift detected. Review `civa apply review` output and reconcile before production apply.")
+	} else if !hasBaseline {
+		fmt.Fprintln(os.Stderr, "ℹ️ Drift baseline initialized. Re-run `civa apply drift` to compare local artifacts against this baseline.")
+	} else {
+		fmt.Fprintln(os.Stderr, "✅ No drift detected against current plan artifacts and server check-mode output.")
+	}
+
+	showExecutionSummary(loadedCfg, state)
+	return nil
+}
+
+func runApplyRollbackFlow(cfg *config) error {
+	if err := validateExistingPlanCommandFlags(*cfg); err != nil {
+		return err
+	}
+
+	planPath, err := resolveRollbackPlanPath(cfg)
+	if err != nil {
+		return err
+	}
+
+	loadedCfg, state, err := loadPlannedRun(planPath)
+	if err != nil {
+		return err
+	}
+
+	if !cfg.AssumeYes {
+		if !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())) {
+			return fmt.Errorf("non-interactive apply rollback requires --yes")
+		}
+
+		confirmed, err := promptApplyExistingPlanConfirmation(planPath)
+		if err != nil {
+			if errors.Is(err, errUserCancelled) {
+				return nil
+			}
+			return err
+		}
+		if !confirmed {
+			fmt.Fprintln(os.Stderr, "🛑 civa apply rollback was cancelled by the user before ansible-playbook started.")
+			return nil
+		}
+	}
+
+	loadedCfg.Command = commandApply
+	loadedCfg.ApplyAction = applyActionRollback
+	state.ProgressCurrent = 0
+	state.ProgressTotal = 4
+	state.CompletedPhases = nil
+
+	printSection("⏪ Apply Rollback")
+	state.progressStep("📦 Loading rollback plan artifacts")
+	for _, line := range applyArtifactLines(planPath, state) {
+		fmt.Fprintln(os.Stderr, line)
+	}
+	state.appendCompletedPhase("Loaded rollback plan artifacts")
+
+	state.progressStep("🧪 Running rollback preflight in check mode")
+	if err := runRollbackPreflight(loadedCfg, state); err != nil {
+		_ = writeRollbackFailure(planPath, err)
+		return fmt.Errorf("rollback preflight failed: %w", err)
+	}
+	state.appendCompletedPhase("Rollback preflight completed in check mode")
+
+	state.progressStep("⚙️ Executing rollback apply")
+	if err := runAnsible(loadedCfg, state); err != nil {
+		_ = writeRollbackFailure(planPath, err)
+		return err
+	}
+	state.appendCompletedPhase("Rollback ansible apply completed")
+
+	state.progressStep("🔧 Updating local SSH config from rollback inventory")
+	if err := syncSSHConfigAfterApply(loadedCfg, state); err != nil {
+		_ = writeRollbackFailure(planPath, err)
+		return err
+	}
+	state.appendCompletedPhase("Local SSH config synchronized")
+
+	if err := writeRollbackSuccess(planPath); err != nil {
+		return err
+	}
+
 	showExecutionSummary(loadedCfg, state)
 	return nil
 }
@@ -887,11 +1268,7 @@ func executeRuntime(cfg *config, state *runtimeState) error {
 
 	if cfg.Command != commandPlan {
 		state.progressStep("Running ansible-playbook")
-		if cfg.Command == commandPreview {
-			state.appendCompletedPhase("ansible-playbook check run")
-		} else {
-			state.appendCompletedPhase("ansible-playbook execution")
-		}
+		state.appendCompletedPhase("ansible-playbook execution")
 		if err := runAnsible(cfg, state); err != nil {
 			return err
 		}
@@ -1060,7 +1437,7 @@ func validateExecutionConfig(cfg *config) error {
 		return fmt.Errorf("at least one component must be selected")
 	}
 	if cfg.Provided.SSHAuthMethod || cfg.Provided.SSHPassword {
-		return fmt.Errorf("civa plan start only supports SSH key auth; use civa setup to install the public key first")
+		return fmt.Errorf("civa plan init only supports SSH key auth; use civa setup to install the public key first")
 	}
 	if _, err := os.Stat(cfg.SSHPrivateKey); err != nil {
 		return fmt.Errorf("SSH private key not found: %s", cfg.SSHPrivateKey)
@@ -1359,15 +1736,21 @@ func printUsage() {
 	blocks := []outputBlock{
 		{Title: "Usage", Lines: []string{"civa <command> [options]"}},
 		{Title: "Commands", Lines: []string{
-			"config [plan-name]         Edit config and apply via existing plan inventory",
-			"config list                List persisted web server config profiles",
-			"config remove [profile]    Remove persisted config profile (nginx, caddy, or all)",
+			"config <provider> init     Initialize or update persisted config profile (provider: nginx or caddy)",
+			"config <provider> list     List persisted config profile (provider: nginx, caddy, or all)",
+			"config <provider> remove   Remove persisted config profile (provider: nginx or caddy, requires <plan-name>)",
+			"secret list                List stored encrypted secret names",
+			"secret set <name>          Store or update an encrypted secret",
+			"secret remove <name>       Remove an encrypted secret",
 			"apply <plan-name>          Execute an existing generated plan",
 			"apply review <plan-name>   Verify an applied plan with ansible check mode",
-			"plan start                 Generate inventory, vars, and the execution plan only",
+			"apply drift <plan-name>    Detect server and artifact drift from an existing plan",
+			"apply rollback [plan-name] Roll back to last successful plan or a specific plan",
+			"plan init                  Generate inventory, vars, and the execution plan only",
+			"plan review <plan-name>    Render an existing generated plan",
+			"plan edit <plan-name>      Edit an existing generated plan in your editor",
 			"plan list                  List generated plans",
 			"plan remove <plan-name>    Remove a generated plan and its artifacts",
-			"preview <plan-name>        Show an existing generated plan",
 			"setup                      Install a public SSH key on a server with ssh-copy-id",
 			"completion <shell>         Print shell completion for bash, zsh, or fish",
 			"doctor [fix]               Check or install local dependencies for civa",
@@ -1381,34 +1764,42 @@ func printUsage() {
 			"--ssh-user <name>          SSH user used to connect to every target server",
 			"--ssh-port <port>          SSH port used to connect to every target server",
 			"--ssh-password <value>     SSH password used by civa setup",
+			"--ssh-password-secret <name> Secret name used by civa setup for SSH password",
 			"--web-server <name>        Web server to prepare: traefik, nginx, caddy, or none",
 			"--ssh-private-key <path>   Local private key path used by Ansible for SSH",
 			"--ssh-public-key <path>    Local public key path that will be installed for the deploy user",
 			"--deployer-user <name>     User created and configured on the target servers",
 			"--timezone <tz>            Timezone applied to the target servers",
 			"--components <list>        Components to run: all or a comma list such as 1,2,4 or docker,traefik",
-			"--plan-file <path>         Existing plan file override used by preview or apply",
+			"--plan-file <path>         Existing plan file override used by plan review/edit or apply",
 			"--server <addr[,hostname][,port]> Add a target server; hostname and SSH port are optional",
 			"--traefik-email <email>    Email used by Let's Encrypt ACME",
 			"--traefik-challenge <type> Traefik challenge type: http or dns",
 			"--traefik-dns-provider <id> DNS provider name used when challenge type is dns",
-			"--output <path>            Extra exported Markdown copy for plan start",
+			"--output <path>            Extra exported Markdown copy for plan init",
+			"--value-file <path>        Path to secret value file for `civa secret set`",
 			"--help                     Show this help message",
 		}},
 		{Title: "Examples", Lines: []string{
-			"civa config",
-			"civa config edit web-01-v2",
-			"civa config list",
-			"civa config remove nginx",
-			"civa plan start --non-interactive --server 203.0.113.10,web-01,2201 --server 203.0.113.11,api-01,2202 --components 1,2,3,4",
+			"civa config nginx init web-01-v2",
+			"civa config nginx list",
+			"civa config all list",
+			"civa config caddy remove web-01-v2",
+			"civa plan init --non-interactive --server 203.0.113.10,web-01,2201 --server 203.0.113.11,api-01,2202 --components 1,2,3,4",
 			"civa plan list",
-			"civa preview web-01",
+			"civa plan review web-01",
+			"civa plan edit web-01",
 			"civa setup --server 203.0.113.10 --ssh-user root --ssh-password 'secret' --ssh-public-key ~/.ssh/id_ed25519.pub",
+			"civa setup --server 203.0.113.10 --ssh-password-secret vps-root-password --ssh-public-key ~/.ssh/id_ed25519.pub",
+			"civa secret set vps-root-password --value-file ~/.secrets/vps-root-password.txt",
+			"civa secret list",
 			"civa doctor",
 			"civa doctor fix",
 			"civa completion bash",
 			"civa apply web-01 --yes",
 			"civa apply review web-01",
+			"civa apply drift web-01",
+			"civa apply rollback --yes",
 			"civa plan remove web-01 --yes",
 			"civa uninstall --yes",
 		}},
@@ -1424,28 +1815,46 @@ func printCommandUsage(command string) {
 	case commandConfig:
 		fmt.Println(renderSectionTitle("civa config", styled))
 		fmt.Println(renderOutputBlocks([]outputBlock{
-			{Title: "Usage", Lines: []string{"civa config [plan-name]", "civa config edit [plan-name]", "civa config list", "civa config remove [nginx|caddy|all]"}},
-			{Title: "What it configures", Lines: []string{"Persisted web server profile for nginx/caddy", "Nginx HTTPS mode via certbot", "Apply edited config using inventory from existing generated plan"}},
-			{Title: "Examples", Lines: []string{"civa config", "civa config edit web-01-v2", "civa config list", "civa config remove all"}},
+			{Title: "Usage", Lines: []string{"civa config <nginx|caddy> init [plan-name]", "civa config <nginx|caddy|all> list", "civa config <nginx|caddy> remove <plan-name>"}},
+			{Title: "What it configures", Lines: []string{"Persisted web server profile for nginx/caddy", "Nginx HTTPS mode via certbot", "Apply configured profile using inventory from existing generated plan"}},
+			{Title: "Examples", Lines: []string{"civa config nginx init web-01-v2", "civa config nginx list", "civa config all list", "civa config caddy remove web-01-v2"}},
+		}, styled))
+	case commandConfigNginxHelp:
+		fmt.Println(renderSectionTitle("civa config nginx", styled))
+		fmt.Println(renderOutputBlocks([]outputBlock{
+			{Title: "Usage", Lines: []string{"civa config nginx init [plan-name]", "civa config nginx list", "civa config nginx remove <plan-name>"}},
+			{Title: "Examples", Lines: []string{"civa config nginx init web-01-v2", "civa config nginx list", "civa config nginx remove web-01-v2"}},
+		}, styled))
+	case commandConfigCaddyHelp:
+		fmt.Println(renderSectionTitle("civa config caddy", styled))
+		fmt.Println(renderOutputBlocks([]outputBlock{
+			{Title: "Usage", Lines: []string{"civa config caddy init [plan-name]", "civa config caddy list", "civa config caddy remove <plan-name>"}},
+			{Title: "Examples", Lines: []string{"civa config caddy init web-01-v2", "civa config caddy list", "civa config caddy remove web-01-v2"}},
+		}, styled))
+	case commandConfigAllHelp:
+		fmt.Println(renderSectionTitle("civa config all", styled))
+		fmt.Println(renderOutputBlocks([]outputBlock{
+			{Title: "Usage", Lines: []string{"civa config all list"}},
+			{Title: "Examples", Lines: []string{"civa config all list"}},
 		}, styled))
 	case commandPlan:
 		fmt.Println(renderSectionTitle("civa plan", styled))
 		fmt.Println(renderOutputBlocks([]outputBlock{
-			{Title: "Usage", Lines: []string{"civa plan start [options]", "civa plan list [plan-name]", "civa plan remove <plan-name> [--yes]"}},
-			{Title: "Subcommands", Lines: []string{"start                        Generate a new versioned plan under ~/.civa/runs/", "list [plan-name]             List all plans or versions for one plan name", "remove <plan-name>           Remove a generated plan and its artifacts"}},
-			{Title: "Examples", Lines: []string{"civa plan start --non-interactive --server 203.0.113.10,web-01,2201 --components all", "civa plan list", "civa plan list web-01", "civa plan web-01 list", "civa plan remove web-01-v2 --yes"}},
-		}, styled))
-	case commandPreview:
-		fmt.Println(renderSectionTitle("civa preview", styled))
-		fmt.Println(renderOutputBlocks([]outputBlock{
-			{Title: "Usage", Lines: []string{"civa preview <plan-name>", "civa preview --plan-file <path>"}},
-			{Title: "Examples", Lines: []string{"civa preview web-01", "civa preview --plan-file ~/.civa/runs/web-01/plan.md"}},
+			{Title: "Usage", Lines: []string{"civa plan init [options]", "civa plan review <plan-name>", "civa plan edit <plan-name>", "civa plan list [plan-name]", "civa plan remove <plan-name> [--yes]", "civa plan review --plan-file <path>", "civa plan edit --plan-file <path>"}},
+			{Title: "Subcommands", Lines: []string{"init                         Generate a new versioned plan under ~/.civa/runs/", "review <plan-name>           Render an existing Markdown plan", "edit <plan-name>             Edit an existing Markdown plan in your editor", "list [plan-name]             List all plans or versions for one plan name", "remove <plan-name>           Remove a generated plan and its artifacts"}},
+			{Title: "Examples", Lines: []string{"civa plan init --non-interactive --server 203.0.113.10,web-01,2201 --components all", "civa plan review web-01", "civa plan edit web-01", "civa plan list", "civa plan list web-01", "civa plan web-01 list", "civa plan remove web-01-v2 --yes"}},
 		}, styled))
 	case commandApply:
 		fmt.Println(renderSectionTitle("civa apply", styled))
 		fmt.Println(renderOutputBlocks([]outputBlock{
-			{Title: "Usage", Lines: []string{"civa apply <plan-name> [--yes]", "civa apply review <plan-name>", "civa apply --plan-file <path> [--yes]", "civa apply review --plan-file <path>"}},
-			{Title: "Examples", Lines: []string{"civa apply web-01 --yes", "civa apply review web-01", "civa apply --plan-file ~/.civa/runs/web-01/plan.md --yes"}},
+			{Title: "Usage", Lines: []string{"civa apply <plan-name> [--yes]", "civa apply review <plan-name>", "civa apply drift <plan-name>", "civa apply rollback [plan-name] [--yes]", "civa apply --plan-file <path> [--yes]", "civa apply review --plan-file <path>", "civa apply drift --plan-file <path>", "civa apply rollback --plan-file <path> [--yes]"}},
+			{Title: "Examples", Lines: []string{"civa apply web-01 --yes", "civa apply review web-01", "civa apply drift web-01", "civa apply rollback --yes", "civa apply --plan-file ~/.civa/runs/web-01/plan.md --yes"}},
+		}, styled))
+	case commandSecret:
+		fmt.Println(renderSectionTitle("civa secret", styled))
+		fmt.Println(renderOutputBlocks([]outputBlock{
+			{Title: "Usage", Lines: []string{"civa secret list", "civa secret set <name> --value-file <path>", "civa secret set <name> --value <secret>", "civa secret set <name>  # prompts for hidden input", "civa secret remove <name>"}},
+			{Title: "Examples", Lines: []string{"civa secret set vps-root-password --value-file ~/.secrets/vps-root-password.txt", "civa secret set vps-root-password", "civa secret list", "civa secret remove vps-root-password"}},
 		}, styled))
 	case commandCompletion:
 		fmt.Println(renderSectionTitle("civa completion", styled))
@@ -1467,8 +1876,8 @@ func printCommandUsage(command string) {
 		fmt.Println(renderOutputBlocks([]outputBlock{
 			{Title: "Usage", Lines: []string{"civa setup [options]"}},
 			{Title: "Required options", Lines: []string{"--server <addr>", "--ssh-user <name>", "--ssh-public-key <path>"}},
-			{Title: "Optional", Lines: []string{"--ssh-password <value>"}},
-			{Title: "Examples", Lines: []string{"civa setup --server 203.0.113.10 --ssh-user root --ssh-password 'secret' --ssh-public-key ~/.ssh/id_ed25519.pub", "civa setup --server 203.0.113.10 --ssh-user root --ssh-public-key ~/.ssh/id_ed25519.pub", "civa setup --server 203.0.113.10 --ssh-user ubuntu --ssh-port 2222 --ssh-password 'secret' --ssh-public-key ~/.ssh/id_ed25519.pub"}},
+			{Title: "Optional", Lines: []string{"--ssh-password <value>", "--ssh-password-secret <name>"}},
+			{Title: "Examples", Lines: []string{"civa setup --server 203.0.113.10 --ssh-user root --ssh-password 'secret' --ssh-public-key ~/.ssh/id_ed25519.pub", "civa setup --server 203.0.113.10 --ssh-user root --ssh-password-secret vps-root-password --ssh-public-key ~/.ssh/id_ed25519.pub", "civa setup --server 203.0.113.10 --ssh-user root --ssh-public-key ~/.ssh/id_ed25519.pub", "civa setup --server 203.0.113.10 --ssh-user ubuntu --ssh-port 2222 --ssh-password 'secret' --ssh-public-key ~/.ssh/id_ed25519.pub"}},
 		}, styled))
 	default:
 		printUsage()
@@ -1531,8 +1940,8 @@ func hasHTTPSWebServerSites(sites []webServerSiteSpec) bool {
 }
 
 func validateExistingPlanCommandFlags(cfg config) error {
-	if cfg.Provided.SSHUser || cfg.Provided.SSHPort || cfg.Provided.SSHAuthMethod || cfg.Provided.SSHPassword || cfg.Provided.WebServer || cfg.Provided.SSHPrivateKey || cfg.Provided.SSHPublicKey || cfg.Provided.DeployUser || cfg.Provided.Timezone || cfg.Provided.Components || cfg.Provided.PlanFile || cfg.Provided.TraefikEmail || cfg.Provided.TraefikChallenge || cfg.Provided.TraefikDNSProvider || cfg.Provided.Servers {
-		return fmt.Errorf("preview/apply only accept --plan-file, --yes, --non-interactive, and --help")
+	if cfg.Provided.SSHUser || cfg.Provided.SSHPort || cfg.Provided.SSHAuthMethod || cfg.Provided.SSHPassword || cfg.Provided.SSHPasswordSecret || cfg.Provided.WebServer || cfg.Provided.SSHPrivateKey || cfg.Provided.SSHPublicKey || cfg.Provided.DeployUser || cfg.Provided.Timezone || cfg.Provided.Components || cfg.Provided.PlanFile || cfg.Provided.TraefikEmail || cfg.Provided.TraefikChallenge || cfg.Provided.TraefikDNSProvider || cfg.Provided.Servers || cfg.Provided.SecretValue || cfg.Provided.SecretValueFile {
+		return fmt.Errorf("plan review/edit and apply only accept --plan-file, --yes, --non-interactive, and --help")
 	}
 	return nil
 }

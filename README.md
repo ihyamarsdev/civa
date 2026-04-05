@@ -18,7 +18,7 @@
 ## Current Support
 
 - Target families: Debian/Ubuntu and RHEL-compatible distributions such as RHEL, Rocky, AlmaLinux, CentOS, and Oracle Linux
-- Commands: `setup`, `config`, `plan start|list|remove`, `preview <nama-plan>`, `apply <nama-plan>`, `apply review <nama-plan>`, `completion <shell>`, `doctor`, `uninstall`, `version`, `help`
+- Commands: `setup`, `secret set|list|remove`, `config`, `plan init|review|edit|list|remove`, `apply <nama-plan>`, `apply review <nama-plan>`, `apply drift <nama-plan>`, `apply rollback [nama-plan]`, `completion <shell>`, `doctor`, `uninstall`, `version`, `help`
 - Runtime artifacts: `~/.civa/runs/<timestamp>/inventory.yml`, `vars.yml`, `plan.md`, and staged embedded Ansible assets
 
 ## Quick Start
@@ -41,13 +41,13 @@ Install your public key on a fresh server:
 Run an interactive plan:
 
 ```bash
-./bin/civa plan start
+./bin/civa plan init
 ```
 
-Configure persisted web server settings interactively:
+Configure persisted web server settings interactively per provider:
 
 ```bash
-./bin/civa config
+./bin/civa config nginx init
 ```
 
 Bootstrap a fresh server for key-based access:
@@ -59,7 +59,7 @@ Bootstrap a fresh server for key-based access:
 Then generate a key-based plan:
 
 ```bash
-./bin/civa plan start --ssh-private-key ~/.ssh/id_rsa
+./bin/civa plan init --ssh-private-key ~/.ssh/id_rsa
 ```
 
 Check local prerequisites:
@@ -72,15 +72,20 @@ Check local prerequisites:
 ## Commands
 
 - `civa setup` — install your local public key onto a fresh server with ssh-copy-id, optionally supplying the password via `sshpass`
-- `civa config [plan-name]` / `civa config edit [plan-name]` — configure persistent web server profile (nginx/caddy), choose target hostname(s), and run separate config playbook using inventory from generated plan (latest by default)
-- `civa config list` — list persisted web server config profiles
-- `civa config remove [nginx|caddy|all]` — remove one or all persisted web server config profiles
-- `civa plan start` — generate inventory, vars, and a Markdown plan only after key-based access is ready
+- `civa config <nginx|caddy> init [plan-name]` — initialize or update persistent web server profile (nginx/caddy), choose target hostname(s), and run separate config playbook using inventory from generated plan (latest by default)
+- `civa config <nginx|caddy|all> list` — list persisted web server config profiles by provider (or all)
+- `civa config <nginx|caddy> remove <plan-name>` — remove persisted web server config profile for one provider in a specific plan context
+- `civa plan init` — generate inventory, vars, and a Markdown plan only after key-based access is ready
 - `civa plan list` — show generated plan names under `~/.civa/runs/`
 - `civa plan remove <nama-plan>` — delete a generated plan and its artifacts
-- `civa preview <nama-plan>` — display an existing generated `plan.md`
+- `civa plan review <nama-plan>` — display an existing generated `plan.md`
+- `civa plan edit <nama-plan>` — edit an existing generated `plan.md` with your editor
 - `civa apply <nama-plan>` — execute the artifacts referenced by an existing generated plan
 - `civa apply review <nama-plan>` — verify an applied plan with Ansible check mode (`--check --diff`)
+- `civa apply drift <nama-plan>` — run drift detection with check-mode output and local artifact snapshot comparison
+- `civa apply rollback [nama-plan]` — rollback to the last successful applied plan (or a specific plan)
+- `civa secret set <name> --value-file <path>` — encrypt and store runtime secrets locally under `~/.civa/secrets/` (preferred over inline `--value`)
+- `civa secret list` / `civa secret remove <name>` — inspect or remove stored secret names
 - `civa doctor` — validate local Go, Ansible, and Python requirements
 - `civa doctor fix` — install or update missing local doctor dependencies
 - `civa uninstall` — remove the installed binary

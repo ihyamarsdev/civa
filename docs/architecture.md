@@ -26,7 +26,7 @@ It does not harden servers by itself. Instead, it:
 
 ## Runtime Artifacts
 
-Each `civa plan start` run creates a timestamped directory under `~/.civa/runs/`.
+Each `civa plan init` run creates a timestamped directory under `~/.civa/runs/`.
 
 Artifacts include:
 
@@ -36,6 +36,12 @@ Artifacts include:
 - `plan.md`
 - `ansible/main.yml`
 - `ansible/roles/**`
+
+Additional runtime state directories:
+
+- `~/.civa/secrets/` (`store.json`, `key.bin`) for encrypted local secret management
+- `~/.civa/drift/` for per-plan drift snapshots
+- `~/.civa/rollback/state.json` for last successful/failed rollback metadata
 
 These files make it easier to:
 
@@ -50,11 +56,15 @@ These files make it easier to:
 
 ## Execution Modes
 
-- `plan start` — generate reusable artifacts only
+- `plan init` — generate reusable artifacts only
+- `plan review <nama-plan>` — render an existing Markdown plan
+- `plan edit <nama-plan>` — edit an existing Markdown plan in your editor
 - `plan list` — enumerate generated plan names from `~/.civa/runs/`
 - `plan remove <nama-plan>` — remove a generated plan directory and its artifacts
-- `preview <nama-plan>` — display an existing Markdown plan
 - `apply <nama-plan>` — execute the artifacts recorded by an existing plan
+- `apply review <nama-plan>` — verify with `--check --diff` without changing server state
+- `apply drift <nama-plan>` — detect drift from check-mode recap plus local artifact snapshot comparison
+- `apply rollback [nama-plan]` — run rollback preflight and apply from last successful plan (or explicit target)
 
 ## Safety Model
 

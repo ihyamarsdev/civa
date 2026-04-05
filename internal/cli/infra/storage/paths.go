@@ -49,3 +49,27 @@ func ConfigDirectoryPath() string {
 func WebServerConfigFilePath() string {
 	return filepath.Join(ConfigDirectoryPath(), "web-server.json")
 }
+
+func SecretsDirectoryPath() string {
+	return filepath.Join(CivaHomeDirectory(), "secrets")
+}
+
+func SecretsStoreFilePath() string {
+	return filepath.Join(SecretsDirectoryPath(), "store.json")
+}
+
+func SecretsKeyFilePath() string {
+	return filepath.Join(SecretsDirectoryPath(), "key.bin")
+}
+
+func DriftDirectoryPath() string {
+	return filepath.Join(CivaHomeDirectory(), "drift")
+}
+
+func RollbackDirectoryPath() string {
+	return filepath.Join(CivaHomeDirectory(), "rollback")
+}
+
+func RollbackStateFilePath() string {
+	return filepath.Join(RollbackDirectoryPath(), "state.json")
+}
