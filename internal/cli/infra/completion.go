@@ -35,7 +35,7 @@ var componentCompletionValues = []string{"all", "1", "2", "3", "4", "5", "6", "7
 
 func runCompletionCommand(args []string) error {
 	if len(args) == 0 || args[0] == commandHelp || args[0] == "--help" || args[0] == "-h" {
-		printCommandUsage(commandCompletion)
+		printCommandUsage(commandCompletion, true)
 		return nil
 	}
 

@@ -15,6 +15,15 @@ import (
 
 var errUserCancelled = errors.New("user cancelled prompt")
 
+var (
+	promptSecretValueFn               = promptSecretValue
+	promptCloudflareAuthProfileFn     = promptCloudflareAuthProfile
+	promptCloudflareZoneSelectionFn   = promptCloudflareZoneSelection
+	promptCloudflareZoneTypeFn        = promptCloudflareZoneType
+	promptCloudflareZonePausedFn      = promptCloudflareZonePaused
+	promptCloudflareZoneUpdateFieldFn = promptCloudflareZoneUpdateField
+)
+
 const (
 	defaultWizardServerAddress = "203.0.113.10"
 	defaultWizardPrimaryHost   = "web-01"
@@ -894,6 +903,108 @@ func promptCloudflareZonesOperation(defaultValue string) (string, error) {
 		return "", normalizePromptError(err)
 	}
 	return value, nil
+}
+
+func promptCloudflareAuthProfile(defaultValue string, profiles []string) (string, error) {
+	if len(profiles) == 0 {
+		return "", fmt.Errorf("no cloudflare auth profiles available")
+	}
+
+	value := defaultValue
+	options := make([]huh.Option[string], 0, len(profiles))
+	for _, profile := range profiles {
+		options = append(options, huh.NewOption(profile, profile))
+	}
+
+	field := huh.NewSelect[string]().
+		Title("Cloudflare auth profile").
+		Description("Choose which stored Cloudflare token profile should be used.").
+		Options(options...).
+		Value(&value)
+	if err := field.Run(); err != nil {
+		return "", normalizePromptError(err)
+	}
+	return strings.TrimSpace(value), nil
+}
+
+func promptCloudflareZoneSelection(title string, availableZones []cloudflareZone, defaultValue string) (string, error) {
+	if len(availableZones) == 0 {
+		return "", fmt.Errorf("no Cloudflare zones available")
+	}
+
+	value := defaultValue
+	options := make([]huh.Option[string], 0, len(availableZones))
+	for _, zone := range availableZones {
+		label := fmt.Sprintf("%s (%s)", zone.Name, zone.ID)
+		if zone.Type != "" || zone.Status != "" {
+			label = fmt.Sprintf("%s — type=%s status=%s", label, zone.Type, zone.Status)
+		}
+		options = append(options, huh.NewOption(label, zone.ID))
+	}
+
+	field := huh.NewSelect[string]().
+		Title(title).
+		Description("Pick a zone from the authenticated Cloudflare account.").
+		Options(options...).
+		Value(&value)
+	if err := field.Run(); err != nil {
+		return "", normalizePromptError(err)
+	}
+	return strings.TrimSpace(value), nil
+}
+
+func promptCloudflareZoneType(defaultValue string, allowBlank bool) (string, error) {
+	value := strings.TrimSpace(defaultValue)
+	options := []huh.Option[string]{}
+	if allowBlank {
+		options = append(options, huh.NewOption("Use provider default", ""))
+	}
+	options = append(
+		options,
+		huh.NewOption("full", "full"),
+		huh.NewOption("partial", "partial"),
+		huh.NewOption("secondary", "secondary"),
+		huh.NewOption("internal", "internal"),
+	)
+
+	field := huh.NewSelect[string]().
+		Title("Cloudflare zone type").
+		Options(options...).
+		Value(&value)
+	if err := field.Run(); err != nil {
+		return "", normalizePromptError(err)
+	}
+	return strings.TrimSpace(value), nil
+}
+
+func promptCloudflareZonePaused(defaultValue string) (string, error) {
+	value := strings.TrimSpace(defaultValue)
+	field := huh.NewSelect[string]().
+		Title("Cloudflare zone paused state").
+		Options(
+			huh.NewOption("false", "false"),
+			huh.NewOption("true", "true"),
+		).
+		Value(&value)
+	if err := field.Run(); err != nil {
+		return "", normalizePromptError(err)
+	}
+	return strings.TrimSpace(value), nil
+}
+
+func promptCloudflareZoneUpdateField() (string, error) {
+	value := "paused"
+	field := huh.NewSelect[string]().
+		Title("What do you want to update on this zone?").
+		Options(
+			huh.NewOption("Paused state", "paused"),
+			huh.NewOption("Zone type", "type"),
+		).
+		Value(&value)
+	if err := field.Run(); err != nil {
+		return "", normalizePromptError(err)
+	}
+	return strings.TrimSpace(value), nil
 }
 
 func newComponentPromptKeyMap() *huh.KeyMap {

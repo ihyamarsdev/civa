@@ -7,6 +7,31 @@ import (
 	"testing"
 )
 
+func setInteractivePromptMode(t *testing.T, enabled bool) {
+	t.Helper()
+	original := shouldPromptIsTerminalFn
+	shouldPromptIsTerminalFn = func(int) bool { return enabled }
+	t.Cleanup(func() { shouldPromptIsTerminalFn = original })
+}
+
+func setCloudflarePromptOverrides(t *testing.T) {
+	t.Helper()
+	originalSecret := promptSecretValueFn
+	originalProfile := promptCloudflareAuthProfileFn
+	originalZoneSelection := promptCloudflareZoneSelectionFn
+	originalZoneType := promptCloudflareZoneTypeFn
+	originalZonePaused := promptCloudflareZonePausedFn
+	originalUpdateField := promptCloudflareZoneUpdateFieldFn
+	t.Cleanup(func() {
+		promptSecretValueFn = originalSecret
+		promptCloudflareAuthProfileFn = originalProfile
+		promptCloudflareZoneSelectionFn = originalZoneSelection
+		promptCloudflareZoneTypeFn = originalZoneType
+		promptCloudflareZonePausedFn = originalZonePaused
+		promptCloudflareZoneUpdateFieldFn = originalUpdateField
+	})
+}
+
 type stubCloudflareZonesService struct {
 	listFn   func(ctx context.Context, apiToken string) ([]cloudflareZone, error)
 	createFn func(ctx context.Context, apiToken string, body cloudflareZoneCreateRequest) (cloudflareZone, error)
@@ -90,6 +115,81 @@ func TestResolveCloudflareAuthTokenForToolsMissing(t *testing.T) {
 		t.Fatalf("expected missing profile error")
 	} else if !errors.Is(err, errSecretNotFound) && !strings.Contains(err.Error(), "not found") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestResolveCloudflareAuthTokenForToolsPromptsProfile(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	setInteractivePromptMode(t, true)
+	setCloudflarePromptOverrides(t)
+	if err := writeSecretValue(cloudflareAuthSecretName("default"), "default-token"); err != nil {
+		t.Fatalf("write default secret: %v", err)
+	}
+	if err := writeSecretValue(cloudflareAuthSecretName("work"), "work-token"); err != nil {
+		t.Fatalf("write work secret: %v", err)
+	}
+	promptCloudflareAuthProfileFn = func(defaultValue string, profiles []string) (string, error) {
+		if defaultValue != "default" {
+			t.Fatalf("expected default profile, got %q", defaultValue)
+		}
+		if len(profiles) != 2 {
+			t.Fatalf("expected 2 profiles, got %d", len(profiles))
+		}
+		return "work", nil
+	}
+
+	cfg := defaultConfig(commandTools)
+	token, profile, err := resolveCloudflareAuthTokenForTools(&cfg)
+	if err != nil {
+		t.Fatalf("resolve token: %v", err)
+	}
+	if profile != "work" {
+		t.Fatalf("expected prompted profile work, got %q", profile)
+	}
+	if token != "work-token" {
+		t.Fatalf("expected prompted token work-token, got %q", token)
+	}
+}
+
+func TestRunAuthFlowCloudflareSetCancellationReturnsNil(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	setInteractivePromptMode(t, true)
+	setCloudflarePromptOverrides(t)
+	cfg := defaultConfig(commandAuth)
+	cfg.AuthProvider = authProviderCloudflare
+	cfg.AuthAction = authActionSet
+	cfg.AuthProfile = "default"
+	promptSecretValueFn = func(string) (string, error) {
+		return "", errUserCancelled
+	}
+	if err := runAuthFlow(&cfg); err != nil {
+		t.Fatalf("expected clean cancellation, got %v", err)
+	}
+	profiles, err := listCloudflareAuthProfiles()
+	if err != nil {
+		t.Fatalf("list profiles: %v", err)
+	}
+	if len(profiles) != 0 {
+		t.Fatalf("expected no saved profiles after cancellation, got %d", len(profiles))
+	}
+}
+
+func TestRunToolsFlowCloudflareCancellationReturnsNil(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	setInteractivePromptMode(t, true)
+	setCloudflarePromptOverrides(t)
+	if err := writeSecretValue(cloudflareAuthSecretName("default"), "token"); err != nil {
+		t.Fatalf("write secret: %v", err)
+	}
+	promptCloudflareAuthProfileFn = func(string, []string) (string, error) {
+		return "", errUserCancelled
+	}
+	cfg := defaultConfig(commandTools)
+	cfg.ToolsProvider = toolsProviderCloudflare
+	cfg.ToolsAction = toolsActionCloudflareZone
+	cfg.ToolsOperation = toolsOperationList
+	if err := runToolsFlow(&cfg); err != nil {
+		t.Fatalf("expected clean cancellation, got %v", err)
 	}
 }
 
@@ -232,5 +332,53 @@ func TestRunToolsFlowCloudflareZonesDelete(t *testing.T) {
 	}
 	if deletedID != "zone-1" {
 		t.Fatalf("unexpected zone ID %q", deletedID)
+	}
+}
+
+func TestEnsureCloudflareZoneUpdateInputsPromptsZoneAndPaused(t *testing.T) {
+	setInteractivePromptMode(t, true)
+	setCloudflarePromptOverrides(t)
+	promptCloudflareZoneSelectionFn = func(title string, availableZones []cloudflareZone, defaultValue string) (string, error) {
+		if title != "Cloudflare zone to update" {
+			t.Fatalf("unexpected selection title %q", title)
+		}
+		if len(availableZones) != 2 {
+			t.Fatalf("expected 2 zones, got %d", len(availableZones))
+		}
+		return "zone-2", nil
+	}
+	promptCloudflareZoneUpdateFieldFn = func() (string, error) {
+		return "paused", nil
+	}
+	promptCloudflareZonePausedFn = func(defaultValue string) (string, error) {
+		if defaultValue != "false" {
+			t.Fatalf("unexpected paused default %q", defaultValue)
+		}
+		return "true", nil
+	}
+
+	original := cloudflareZonesClient
+	cloudflareZonesClient = &stubCloudflareZonesService{
+		listFn: func(ctx context.Context, apiToken string) ([]cloudflareZone, error) {
+			return []cloudflareZone{
+				{ID: "zone-2", Name: "beta.example", Type: "full", Status: "active"},
+				{ID: "zone-1", Name: "alpha.example", Type: "partial", Status: "pending"},
+			}, nil
+		},
+	}
+	t.Cleanup(func() { cloudflareZonesClient = original })
+
+	cfg := defaultConfig(commandTools)
+	if err := ensureCloudflareZoneUpdateInputs(context.Background(), &cfg, "token"); err != nil {
+		t.Fatalf("ensure update inputs: %v", err)
+	}
+	if cfg.CloudflareZoneID != "zone-2" {
+		t.Fatalf("expected prompted zone id zone-2, got %q", cfg.CloudflareZoneID)
+	}
+	if cfg.CloudflareZonePausedInput != "true" {
+		t.Fatalf("expected prompted paused input true, got %q", cfg.CloudflareZonePausedInput)
+	}
+	if cfg.CloudflareZoneType != "" {
+		t.Fatalf("expected empty zone type, got %q", cfg.CloudflareZoneType)
 	}
 }

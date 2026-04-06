@@ -17,10 +17,10 @@ func (LegacyRunner) ExecuteRequest(req domain.Request) error {
 	case domain.CommandHelp:
 		target := strings.TrimSpace(req.HelpTarget)
 		if target == "" {
-			printUsage()
+			printUsage(req.NonInteractive)
 			return nil
 		}
-		printCommandUsage(target)
+		printCommandUsage(target, req.NonInteractive)
 		return nil
 	case domain.CommandVersion:
 		fmt.Printf("civa %s\n", version)

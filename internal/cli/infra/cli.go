@@ -15,6 +15,7 @@ import (
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/glamour/styles"
 	glowutils "github.com/charmbracelet/glow/v2/utils"
+	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
 	"golang.org/x/term"
 )
@@ -42,6 +43,8 @@ const (
 	commandVersion          = "version"
 	commandHelp             = "help"
 	userCivaHomeDirectory   = "~/.civa"
+	helpMenuShowOverview    = "__overview"
+	helpMenuExit            = "__exit"
 
 	defaultSSHUser            = "root"
 	defaultSSHPort            = 22
@@ -214,6 +217,22 @@ type runtimeState struct {
 	ProgressCurrent int
 	ProgressTotal   int
 	CompletedPhases []string
+}
+
+type helpMenuOption struct {
+	Value       string
+	Label       string
+	Description string
+}
+
+var interactiveHelpPromptFn = promptInteractiveHelpSelection
+
+var interactiveHelpIsTerminalFn = func(fd int) bool {
+	return term.IsTerminal(fd)
+}
+
+var shouldPromptIsTerminalFn = func(fd int) bool {
+	return term.IsTerminal(fd)
 }
 
 var componentOptions = []componentOption{
@@ -1334,7 +1353,7 @@ func shouldPrompt(cfg *config) bool {
 		return false
 	}
 
-	return term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd()))
+	return shouldPromptIsTerminalFn(int(os.Stdin.Fd())) && shouldPromptIsTerminalFn(int(os.Stdout.Fd()))
 }
 
 func finalizePaths(cfg *config) error {
@@ -1770,7 +1789,13 @@ func planMetadataPath(planPath string) string {
 	return strings.TrimSuffix(planPath, ext) + ".json"
 }
 
-func printUsage() {
+func printUsage(nonInteractive bool) {
+	if shouldUseInteractiveHelp(nonInteractive) {
+		if handled := runInteractiveUsage(); handled {
+			return
+		}
+	}
+
 	styled := canStyleStdout()
 	blocks := []outputBlock{
 		{Title: "Usage", Lines: []string{"civa <command> [options]"}},
@@ -1867,7 +1892,7 @@ func printUsage() {
 	fmt.Println(renderOutputBlocks(blocks, styled))
 }
 
-func printCommandUsage(command string) {
+func printCommandUsage(command string, nonInteractive bool) {
 	styled := canStyleStdout()
 	switch command {
 	case commandAuth:
@@ -1975,8 +2000,79 @@ func printCommandUsage(command string) {
 			{Title: "Examples", Lines: []string{"civa setup --server 203.0.113.10 --ssh-user root --ssh-password 'secret' --ssh-public-key ~/.ssh/id_ed25519.pub", "civa setup --server 203.0.113.10 --ssh-user root --ssh-password-secret vps-root-password --ssh-public-key ~/.ssh/id_ed25519.pub", "civa setup --server 203.0.113.10 --ssh-user root --ssh-public-key ~/.ssh/id_ed25519.pub", "civa setup --server 203.0.113.10 --ssh-user ubuntu --ssh-port 2222 --ssh-password 'secret' --ssh-public-key ~/.ssh/id_ed25519.pub"}},
 		}, styled))
 	default:
-		printUsage()
+		printUsage(nonInteractive)
 	}
+}
+
+func shouldUseInteractiveHelp(nonInteractive bool) bool {
+	if nonInteractive {
+		return false
+	}
+
+	stdinFD := int(os.Stdin.Fd())
+	stdoutFD := int(os.Stdout.Fd())
+	return interactiveHelpIsTerminalFn(stdinFD) && interactiveHelpIsTerminalFn(stdoutFD)
+}
+
+func runInteractiveUsage() bool {
+	selection, err := interactiveHelpPromptFn(interactiveHelpOptions())
+	if err != nil {
+		return false
+	}
+
+	selection = strings.TrimSpace(selection)
+	if selection == "" || selection == helpMenuExit {
+		return true
+	}
+	if selection == helpMenuShowOverview {
+		return false
+	}
+
+	printCommandUsage(selection, false)
+	return true
+}
+
+func interactiveHelpOptions() []helpMenuOption {
+	return []helpMenuOption{
+		{Value: commandStart, Label: "start", Description: "Beginner wizard for setup or planning"},
+		{Value: commandSetup, Label: "setup", Description: "Install SSH key access on a server"},
+		{Value: commandPlan, Label: "plan", Description: "Generate, review, edit, list, or remove plans"},
+		{Value: commandApply, Label: "apply", Description: "Run, review, detect drift, or roll back a plan"},
+		{Value: commandConfig, Label: "config", Description: "Manage persisted nginx or caddy profiles"},
+		{Value: commandSecret, Label: "secret", Description: "Store, list, or remove encrypted secrets"},
+		{Value: commandAuth, Label: "auth", Description: "Manage Cloudflare auth profiles"},
+		{Value: commandTools, Label: "tools", Description: "Run Cloudflare helper tools"},
+		{Value: commandDoctor, Label: "doctor", Description: "Check or install local dependencies"},
+		{Value: commandCompletion, Label: "completion", Description: "Generate shell completion scripts"},
+		{Value: commandUninstall, Label: "uninstall", Description: "Remove the installed civa binary"},
+		{Value: commandVersion, Label: "version", Description: "Show the current civa version"},
+		{Value: helpMenuShowOverview, Label: "show all help", Description: "Display the full command overview"},
+		{Value: helpMenuExit, Label: "exit", Description: "Close interactive help"},
+	}
+}
+
+func promptInteractiveHelpSelection(options []helpMenuOption) (string, error) {
+	selection := commandStart
+	promptOptions := make([]huh.Option[string], 0, len(options))
+	for _, option := range options {
+		label := option.Label
+		if strings.TrimSpace(option.Description) != "" {
+			label = fmt.Sprintf("%s — %s", option.Label, option.Description)
+		}
+		promptOptions = append(promptOptions, huh.NewOption(label, option.Value))
+	}
+
+	field := huh.NewSelect[string]().
+		Title("civa help").
+		Description("Choose one topic so help stays short in the CLI.").
+		Options(promptOptions...).
+		Value(&selection)
+
+	if err := field.Run(); err != nil {
+		return "", normalizePromptError(err)
+	}
+
+	return strings.TrimSpace(selection), nil
 }
 
 func componentLabel(value string) string {

@@ -1,27 +1,26 @@
 package infra
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	cloudflare "github.com/cloudflare/cloudflare-go/v6"
+	"github.com/cloudflare/cloudflare-go/v6/option"
+	"github.com/cloudflare/cloudflare-go/v6/zones"
 )
 
 const (
 	cloudflareAuthSecretPrefix = "cloudflare-auth-"
-	cloudflareAPIBaseURL       = "https://api.cloudflare.com/client/v4"
 )
 
 var (
-	cloudflareZonesClient    cloudflareZonesService = &cloudflareHTTPClient{client: http.DefaultClient}
+	cloudflareZonesClient    cloudflareZonesService = &cloudflareSDKClient{}
 	cloudflareRequestTimeout                        = 20 * time.Second
 )
 
@@ -58,21 +57,7 @@ type cloudflareZonesService interface {
 	DeleteZone(ctx context.Context, apiToken string, zoneID string) (cloudflareZone, error)
 }
 
-type cloudflareHTTPClient struct {
-	client *http.Client
-}
-
-type cloudflareAPIError struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
-}
-
-type cloudflareAPIEnvelopeRaw struct {
-	Success  bool                 `json:"success"`
-	Errors   []cloudflareAPIError `json:"errors"`
-	Messages []cloudflareAPIError `json:"messages"`
-	Result   json.RawMessage      `json:"result"`
-}
+type cloudflareSDKClient struct{}
 
 func runAuthFlow(cfg *config) error {
 	provider := strings.ToLower(strings.TrimSpace(cfg.AuthProvider))
@@ -80,12 +65,17 @@ func runAuthFlow(cfg *config) error {
 		return fmt.Errorf("auth provider is required")
 	}
 
+	var err error
 	switch provider {
 	case authProviderCloudflare:
-		return runCloudflareAuthFlow(cfg)
+		err = runCloudflareAuthFlow(cfg)
 	default:
 		return fmt.Errorf("unknown auth provider: %s", provider)
 	}
+	if errors.Is(err, errUserCancelled) {
+		return nil
+	}
+	return err
 }
 
 func runCloudflareAuthFlow(cfg *config) error {
@@ -143,7 +133,7 @@ func runCloudflareAuthGetFlow(cfg *config) error {
 	return nil
 }
 
-func runCloudflareAuthListFlow(cfg *config) error {
+func runCloudflareAuthListFlow(_ *config) error {
 	profiles, err := listCloudflareAuthProfiles()
 	if err != nil {
 		return err
@@ -200,7 +190,7 @@ func resolveCloudflareAuthSetToken(cfg *config) (string, error) {
 	if !shouldPrompt(cfg) {
 		return "", fmt.Errorf("cloudflare API token is required; use --token")
 	}
-	value, err := promptSecretValue("Cloudflare API token")
+	value, err := promptSecretValueFn("Cloudflare API token")
 	if err != nil {
 		return "", err
 	}
@@ -239,12 +229,17 @@ func runToolsFlow(cfg *config) error {
 	if provider == "" {
 		return nil
 	}
+	var err error
 	switch provider {
 	case toolsProviderCloudflare:
-		return runCloudflareToolsFlow(cfg)
+		err = runCloudflareToolsFlow(cfg)
 	default:
 		return fmt.Errorf("unknown tools provider: %s", provider)
 	}
+	if errors.Is(err, errUserCancelled) {
+		return nil
+	}
+	return err
 }
 
 func resolveToolsProvider(cfg *config) (string, error) {
@@ -424,15 +419,15 @@ func ensureCloudflareZoneCreateInputs(cfg *config) error {
 }
 
 func runCloudflareZonesUpdateFlow(cfg *config) error {
-	if err := ensureCloudflareZoneUpdateInputs(cfg); err != nil {
-		return err
-	}
 	token, _, err := resolveCloudflareAuthTokenForTools(cfg)
 	if err != nil {
 		return err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), cloudflareRequestTimeout)
 	defer cancel()
+	if err := ensureCloudflareZoneUpdateInputs(ctx, cfg, token); err != nil {
+		return err
+	}
 	zoneType, err := normalizeCloudflareZoneType(cfg.CloudflareZoneType)
 	if err != nil {
 		return err
@@ -461,13 +456,13 @@ func runCloudflareZonesUpdateFlow(cfg *config) error {
 	return nil
 }
 
-func ensureCloudflareZoneUpdateInputs(cfg *config) error {
+func ensureCloudflareZoneUpdateInputs(ctx context.Context, cfg *config, apiToken string) error {
 	cfg.CloudflareZoneID = strings.TrimSpace(cfg.CloudflareZoneID)
 	if cfg.CloudflareZoneID == "" {
 		if !shouldPrompt(cfg) {
 			return fmt.Errorf("zone update requires --zone-id")
 		}
-		value, err := promptNonEmptyString("Cloudflare zone ID", "")
+		value, err := promptCloudflareZoneIDForOperation(ctx, apiToken, "Cloudflare zone to update")
 		if err != nil {
 			return err
 		}
@@ -479,27 +474,42 @@ func ensureCloudflareZoneUpdateInputs(cfg *config) error {
 	if cfg.CloudflareZoneType != "" {
 		cfg.CloudflareZoneType = strings.TrimSpace(cfg.CloudflareZoneType)
 	}
+	if cfg.CloudflareZoneType == "" && cfg.CloudflareZonePausedInput == "" {
+		if !shouldPrompt(cfg) {
+			return nil
+		}
+		field, err := promptCloudflareZoneUpdateFieldFn()
+		if err != nil {
+			return err
+		}
+		switch field {
+		case "type":
+			value, err := promptCloudflareZoneTypeFn("", false)
+			if err != nil {
+				return err
+			}
+			cfg.CloudflareZoneType = value
+		case "paused":
+			value, err := promptCloudflareZonePausedFn("false")
+			if err != nil {
+				return err
+			}
+			cfg.CloudflareZonePausedInput = value
+		}
+	}
 	return nil
 }
 
 func runCloudflareZonesDeleteFlow(cfg *config) error {
-	cfg.CloudflareZoneID = strings.TrimSpace(cfg.CloudflareZoneID)
-	if cfg.CloudflareZoneID == "" {
-		if !shouldPrompt(cfg) {
-			return fmt.Errorf("zone delete requires --zone-id")
-		}
-		value, err := promptNonEmptyString("Cloudflare zone ID", "")
-		if err != nil {
-			return err
-		}
-		cfg.CloudflareZoneID = value
-	}
 	token, _, err := resolveCloudflareAuthTokenForTools(cfg)
 	if err != nil {
 		return err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), cloudflareRequestTimeout)
 	defer cancel()
+	if err := ensureCloudflareZoneDeleteInputs(ctx, cfg, token); err != nil {
+		return err
+	}
 	z, err := cloudflareZonesClient.DeleteZone(ctx, token, cfg.CloudflareZoneID)
 	if err != nil {
 		return fmt.Errorf("delete cloudflare zone: %w", err)
@@ -509,10 +519,26 @@ func runCloudflareZonesDeleteFlow(cfg *config) error {
 	return nil
 }
 
+func ensureCloudflareZoneDeleteInputs(ctx context.Context, cfg *config, apiToken string) error {
+	cfg.CloudflareZoneID = strings.TrimSpace(cfg.CloudflareZoneID)
+	if cfg.CloudflareZoneID != "" {
+		return nil
+	}
+	if !shouldPrompt(cfg) {
+		return fmt.Errorf("zone delete requires --zone-id")
+	}
+	value, err := promptCloudflareZoneIDForOperation(ctx, apiToken, "Cloudflare zone to delete")
+	if err != nil {
+		return err
+	}
+	cfg.CloudflareZoneID = value
+	return nil
+}
+
 func resolveCloudflareAuthTokenForTools(cfg *config) (string, string, error) {
-	profile := strings.TrimSpace(cfg.AuthProfile)
-	if profile == "" {
-		profile = "default"
+	profile, err := resolveCloudflareAuthProfileForTools(cfg)
+	if err != nil {
+		return "", "", err
 	}
 	secretName := cloudflareAuthSecretName(profile)
 	token, err := readSecretValue(secretName)
@@ -523,6 +549,35 @@ func resolveCloudflareAuthTokenForTools(cfg *config) (string, string, error) {
 		return "", profile, fmt.Errorf("load cloudflare auth profile %q: %w", profile, err)
 	}
 	return token, profile, nil
+}
+
+func resolveCloudflareAuthProfileForTools(cfg *config) (string, error) {
+	profile := strings.TrimSpace(cfg.AuthProfile)
+	if profile != "" {
+		return normalizeCloudflareAuthProfile(profile)
+	}
+	if !shouldPrompt(cfg) {
+		return "default", nil
+	}
+	profiles, err := listCloudflareAuthProfiles()
+	if err != nil {
+		return "", err
+	}
+	if len(profiles) == 0 {
+		return "", fmt.Errorf("no cloudflare auth profiles stored; run `civa auth cloudflare set <profile> --token <value>`")
+	}
+	defaultProfile := profiles[0]
+	for _, candidate := range profiles {
+		if candidate == "default" {
+			defaultProfile = candidate
+			break
+		}
+	}
+	selected, err := promptCloudflareAuthProfileFn(defaultProfile, profiles)
+	if err != nil {
+		return "", err
+	}
+	return normalizeCloudflareAuthProfile(selected)
 }
 
 func normalizeCloudflareZoneType(raw string) (string, error) {
@@ -538,93 +593,139 @@ func normalizeCloudflareZoneType(raw string) (string, error) {
 	}
 }
 
-func (c *cloudflareHTTPClient) ListZones(ctx context.Context, apiToken string) ([]cloudflareZone, error) {
-	var result []cloudflareZone
-	if err := c.doCloudflareRequest(ctx, http.MethodGet, "/zones", apiToken, nil, &result); err != nil {
+func promptCloudflareZoneIDForOperation(ctx context.Context, apiToken string, title string) (string, error) {
+	availableZones, err := cloudflareZonesClient.ListZones(ctx, apiToken)
+	if err != nil {
+		return "", fmt.Errorf("load cloudflare zones for selection: %w", err)
+	}
+	if len(availableZones) == 0 {
+		return "", fmt.Errorf("no cloudflare zones found for this API token")
+	}
+	sort.Slice(availableZones, func(i, j int) bool {
+		return availableZones[i].Name < availableZones[j].Name
+	})
+	return promptCloudflareZoneSelectionFn(title, availableZones, availableZones[0].ID)
+}
+
+func (c *cloudflareSDKClient) ListZones(ctx context.Context, apiToken string) ([]cloudflareZone, error) {
+	client := newCloudflareClient(apiToken)
+	iter := client.Zones.ListAutoPaging(ctx, zones.ZoneListParams{})
+	result := make([]cloudflareZone, 0)
+	for iter.Next() {
+		result = append(result, cloudflareZoneFromSDK(iter.Current()))
+	}
+	if err := iter.Err(); err != nil {
 		return nil, err
 	}
 	return result, nil
 }
 
-func (c *cloudflareHTTPClient) CreateZone(ctx context.Context, apiToken string, body cloudflareZoneCreateRequest) (cloudflareZone, error) {
-	var result cloudflareZone
-	if err := c.doCloudflareRequest(ctx, http.MethodPost, "/zones", apiToken, body, &result); err != nil {
+func (c *cloudflareSDKClient) CreateZone(ctx context.Context, apiToken string, body cloudflareZoneCreateRequest) (cloudflareZone, error) {
+	client := newCloudflareClient(apiToken)
+	params := zones.ZoneNewParams{
+		Account: cloudflare.F(zones.ZoneNewParamsAccount{
+			ID: cloudflare.F(body.Account.ID),
+		}),
+		Name: cloudflare.F(body.Name),
+	}
+	zoneType, err := sdkCreateZoneType(body.Type)
+	if err != nil {
 		return cloudflareZone{}, err
 	}
-	return result, nil
-}
-
-func (c *cloudflareHTTPClient) UpdateZone(ctx context.Context, apiToken string, zoneID string, body cloudflareZoneUpdateRequest) (cloudflareZone, error) {
-	var result cloudflareZone
-	if err := c.doCloudflareRequest(ctx, http.MethodPatch, fmt.Sprintf("/zones/%s", zoneID), apiToken, body, &result); err != nil {
+	if zoneType != "" {
+		params.Type = cloudflare.F(zoneType)
+	}
+	createdZone, err := client.Zones.New(ctx, params)
+	if err != nil {
 		return cloudflareZone{}, err
 	}
-	return result, nil
+	return cloudflareZoneFromSDK(*createdZone), nil
 }
 
-func (c *cloudflareHTTPClient) DeleteZone(ctx context.Context, apiToken string, zoneID string) (cloudflareZone, error) {
-	var result cloudflareZone
-	if err := c.doCloudflareRequest(ctx, http.MethodDelete, fmt.Sprintf("/zones/%s", zoneID), apiToken, nil, &result); err != nil {
-		return cloudflareZone{}, err
+func (c *cloudflareSDKClient) UpdateZone(ctx context.Context, apiToken string, zoneID string, body cloudflareZoneUpdateRequest) (cloudflareZone, error) {
+	client := newCloudflareClient(apiToken)
+	params := zones.ZoneEditParams{
+		ZoneID: cloudflare.F(zoneID),
 	}
-	return result, nil
-}
-
-func (c *cloudflareHTTPClient) doCloudflareRequest(ctx context.Context, method, path, apiToken string, body interface{}, result interface{}) error {
-	url := cloudflareAPIBaseURL + path
-	var payload io.Reader
-	if body != nil {
-		data, err := json.Marshal(body)
+	if body.Paused != nil {
+		params.Paused = cloudflare.F(*body.Paused)
+	}
+	if body.Type != nil {
+		zoneType, err := sdkEditZoneType(*body.Type)
 		if err != nil {
-			return fmt.Errorf("marshal request: %w", err)
+			return cloudflareZone{}, err
 		}
-		payload = bytes.NewBuffer(data)
+		params.Type = cloudflare.F(zoneType)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, url, payload)
+	updatedZone, err := client.Zones.Edit(ctx, params)
 	if err != nil {
-		return fmt.Errorf("build request: %w", err)
+		return cloudflareZone{}, err
 	}
-	req.Header.Set("Authorization", "Bearer "+apiToken)
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	content, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("read response: %w", err)
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("%s %s: %s", method, path, strings.TrimSpace(string(content)))
-	}
-	var envelope cloudflareAPIEnvelopeRaw
-	if err := json.Unmarshal(content, &envelope); err != nil {
-		return fmt.Errorf("parse response: %w", err)
-	}
-	if !envelope.Success {
-		return fmt.Errorf("%s %s: %s", method, path, formatCloudflareErrors(envelope.Errors, envelope.Messages))
-	}
-	if result != nil && len(envelope.Result) > 0 {
-		if err := json.Unmarshal(envelope.Result, result); err != nil {
-			return fmt.Errorf("parse response result: %w", err)
-		}
-	}
-	return nil
+	return cloudflareZoneFromSDK(*updatedZone), nil
+
 }
 
-func formatCloudflareErrors(errorsList, messages []cloudflareAPIError) string {
-	parts := make([]string, 0)
-	for _, err := range errorsList {
-		parts = append(parts, fmt.Sprintf("%d: %s", err.Code, err.Message))
+func (c *cloudflareSDKClient) DeleteZone(ctx context.Context, apiToken string, zoneID string) (cloudflareZone, error) {
+	client := newCloudflareClient(apiToken)
+	zoneDetails, err := client.Zones.Get(ctx, zones.ZoneGetParams{ZoneID: cloudflare.F(zoneID)})
+	if err != nil {
+		return cloudflareZone{}, err
 	}
-	for _, msg := range messages {
-		parts = append(parts, fmt.Sprintf("%d: %s", msg.Code, msg.Message))
+	deletedZone, err := client.Zones.Delete(ctx, zones.ZoneDeleteParams{ZoneID: cloudflare.F(zoneID)})
+	if err != nil {
+		return cloudflareZone{}, err
 	}
-	if len(parts) == 0 {
-		return "unknown error"
+	zone := cloudflareZoneFromSDK(*zoneDetails)
+	if deletedZone != nil && deletedZone.ID != "" {
+		zone.ID = deletedZone.ID
 	}
-	return strings.Join(parts, "; ")
+	return zone, nil
+}
+
+func newCloudflareClient(apiToken string) *cloudflare.Client {
+	return cloudflare.NewClient(option.WithAPIToken(apiToken))
+}
+
+func cloudflareZoneFromSDK(zone zones.Zone) cloudflareZone {
+	result := cloudflareZone{
+		ID:     zone.ID,
+		Name:   zone.Name,
+		Type:   string(zone.Type),
+		Paused: zone.Paused,
+		Status: string(zone.Status),
+	}
+	result.Account.ID = zone.Account.ID
+	return result
+}
+
+func sdkCreateZoneType(raw string) (zones.Type, error) {
+	switch strings.TrimSpace(strings.ToLower(raw)) {
+	case "":
+		return "", nil
+	case "full":
+		return zones.TypeFull, nil
+	case "partial":
+		return zones.TypePartial, nil
+	case "secondary":
+		return zones.TypeSecondary, nil
+	case "internal":
+		return zones.TypeInternal, nil
+	default:
+		return "", fmt.Errorf("unsupported zone type: %s", raw)
+	}
+}
+
+func sdkEditZoneType(raw string) (zones.ZoneEditParamsType, error) {
+	switch strings.TrimSpace(strings.ToLower(raw)) {
+	case "full":
+		return zones.ZoneEditParamsTypeFull, nil
+	case "partial":
+		return zones.ZoneEditParamsTypePartial, nil
+	case "secondary":
+		return zones.ZoneEditParamsTypeSecondary, nil
+	case "internal":
+		return zones.ZoneEditParamsTypeInternal, nil
+	default:
+		return "", fmt.Errorf("unsupported zone type: %s", raw)
+	}
 }

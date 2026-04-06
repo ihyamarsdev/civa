@@ -81,8 +81,8 @@ func (r *Root) newRootCommand() *cobra.Command {
 		Short:         "civa CLI for VPS automation",
 		SilenceUsage:  true,
 		SilenceErrors: true,
-		RunE: func(_ *cobra.Command, _ []string) error {
-			return r.executor.Execute(domain.Request{Command: domain.CommandHelp})
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return r.executor.Execute(r.withGlobalFlags(cmd, globals, domain.Request{Command: domain.CommandHelp}))
 		},
 	}
 
@@ -91,7 +91,7 @@ func (r *Root) newRootCommand() *cobra.Command {
 	root.CompletionOptions.DisableDefaultCmd = true
 	root.SetHelpFunc(func(cmd *cobra.Command, _ []string) {
 		helpTarget := normalizeHelpTargetCommand(cmd)
-		_ = r.executor.Execute(domain.Request{Command: domain.CommandHelp, HelpTarget: helpTarget})
+		_ = r.executor.Execute(r.withGlobalFlags(cmd, globals, domain.Request{Command: domain.CommandHelp, HelpTarget: helpTarget}))
 	})
 
 	root.AddCommand(

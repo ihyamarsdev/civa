@@ -34,6 +34,9 @@ func TestRootRunNoArgsRoutesHelpWhenNonInteractive(t *testing.T) {
 	if req.Command != domain.CommandHelp {
 		t.Fatalf("expected help request, got %#v", req)
 	}
+	if !req.NonInteractive || !req.Provided.NonInteractive {
+		t.Fatalf("expected non-interactive flag to be forwarded, got %#v", req)
+	}
 }
 
 func TestRootRunNoArgsRoutesHelp(t *testing.T) {
