@@ -18,7 +18,7 @@
 ## Current Support
 
 - Target families: Debian/Ubuntu and RHEL-compatible distributions such as RHEL, Rocky, AlmaLinux, CentOS, and Oracle Linux
-- Commands: `setup`, `auth cloudflare set|get|list|remove`, `tools cloudflare zones`, `secret set|list|remove`, `config`, `plan init|review|edit|list|remove`, `apply <nama-plan>`, `apply review <nama-plan>`, `apply drift <nama-plan>`, `apply rollback [nama-plan]`, `completion <shell>`, `doctor`, `uninstall`, `version`, `help`
+- Commands: `start`, `setup`, `auth cloudflare set|get|list|remove`, `tools cloudflare zones`, `secret set|list|remove`, `config`, `plan init|review|edit|list|remove`, `apply <nama-plan>`, `apply review <nama-plan>`, `apply drift <nama-plan>`, `apply rollback [nama-plan]`, `completion <shell>`, `doctor`, `uninstall`, `version`, `help`
 - Runtime artifacts: `~/.civa/runs/<timestamp>/inventory.yml`, `vars.yml`, `plan.md`, and staged embedded Ansible assets
 
 ## Quick Start
@@ -42,6 +42,12 @@ Run an interactive plan:
 
 ```bash
 ./bin/civa plan init
+```
+
+Run beginner wizard (`setup` or `plan init`):
+
+```bash
+./bin/civa start
 ```
 
 Configure persisted web server settings interactively per provider:
@@ -71,6 +77,7 @@ Check local prerequisites:
 
 ## Commands
 
+- `civa start` — open beginner wizard that guides to `setup` or `plan init`
 - `civa setup` — install your local public key onto a fresh server with ssh-copy-id, optionally supplying the password via `sshpass`
 - `civa tools` — run interactive external provider tools
 - `civa auth cloudflare set|get|list|remove` — manage stored Cloudflare auth profiles
@@ -102,6 +109,7 @@ Running `civa` without arguments shows help.
 ## Documentation
 
 - `docs/installation.md` — installation methods and prerequisites
+- `docs/beginner-mode.md` — dedicated beginner workflow with `civa start`
 - `docs/usage.md` — command reference, interactive flow, and examples
 - `docs/components.md` — component list and what each Ansible tag does
 - `docs/architecture.md` — runtime artifacts, repository structure, and workflow design

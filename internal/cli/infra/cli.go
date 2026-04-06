@@ -27,6 +27,7 @@ const (
 	commandCompletion       = "completion"
 	commandCompleteInternal = "__complete"
 	commandDoctor           = "doctor"
+	commandStart            = "start"
 	commandSetup            = "setup"
 	commandAuth             = "auth"
 	commandAuthCloudflare   = "auth-cloudflare"
@@ -1775,6 +1776,7 @@ func printUsage() {
 		{Title: "Usage", Lines: []string{"civa <command> [options]"}},
 		{Title: "Commands", Lines: []string{
 			"auth cloudflare           Manage Cloudflare auth profiles",
+			"start                      Run beginner wizard (setup or plan init)",
 			"tools                     Run interactive external provider tools",
 			"tools cloudflare zones    Manage Cloudflare zones (list/create/update/delete)",
 			"config <provider> init     Initialize or update persisted config profile (provider: nginx or caddy)",
@@ -1829,6 +1831,7 @@ func printUsage() {
 			"--help                     Show this help message",
 		}},
 		{Title: "Examples", Lines: []string{
+			"civa start",
 			"civa auth cloudflare set default --token $CLOUDFLARE_API_TOKEN",
 			"civa auth cloudflare list",
 			"civa tools",
@@ -1895,6 +1898,14 @@ func printCommandUsage(command string) {
 			{Title: "Actions", Lines: []string{"zones list                List zones from Cloudflare", "zones create              Create a new zone", "zones update              Update one zone property (paused or type)", "zones delete              Delete an existing zone"}},
 			{Title: "Credential Source", Lines: []string{"Tools read token from `civa auth cloudflare` profiles only", "Default profile is `default` unless --profile is provided"}},
 			{Title: "Examples", Lines: []string{"civa tools cloudflare zones list", "civa tools cloudflare zones create --profile default --name example.com --account-id <account-id>", "civa tools cloudflare zones update --profile default --zone-id <zone-id> --paused true", "civa tools cloudflare zones delete --profile default --zone-id <zone-id>"}},
+		}, styled))
+	case commandStart:
+		fmt.Println(renderSectionTitle("civa start", styled))
+		fmt.Println(renderOutputBlocks([]outputBlock{
+			{Title: "Usage", Lines: []string{"civa start"}},
+			{Title: "What it does", Lines: []string{"Opens beginner wizard with guided choices", "Routes to setup, plan init, help, or exit"}},
+			{Title: "Notes", Lines: []string{"Requires an interactive terminal", "Use `civa` or `civa help` to show help directly"}},
+			{Title: "Examples", Lines: []string{"civa start", "civa start --help"}},
 		}, styled))
 	case commandConfig:
 		fmt.Println(renderSectionTitle("civa config", styled))

@@ -99,4 +99,21 @@ civa doctor
 civa doctor fix
 ```
 
+## Beginner Mode Entry Point
+
+After installation, the fastest beginner path is:
+
+```bash
+civa start
+```
+
+`civa start` opens an interactive wizard that routes to:
+
+- `setup` (recommended first, to install your SSH key)
+- `plan init` (to generate a plan step-by-step)
+- `help`
+- `exit`
+
+For full beginner workflow guidance, see `beginner-mode.md`.
+
 When `--ssh-password` (or secret-backed `--ssh-password-secret`) is provided, `civa setup` runs `sshpass -e ssh-copy-id`. Without either flag, it runs `ssh-copy-id` directly and lets that tool prompt for the password in your terminal. In both cases it uses `StrictHostKeyChecking=accept-new` on the first connection for convenience, which is still a trust-on-first-use trade-off compared with pre-verifying the host key yourself.

@@ -56,6 +56,7 @@ These files make it easier to:
 
 ## Execution Modes
 
+- `start` — open beginner wizard and route to guided `setup` or `plan init`
 - `plan init` — generate reusable artifacts only
 - `plan review <nama-plan>` — render an existing Markdown plan
 - `plan edit <nama-plan>` — edit an existing Markdown plan in your editor
@@ -65,6 +66,15 @@ These files make it easier to:
 - `apply review <nama-plan>` — verify with `--check --diff` without changing server state
 - `apply drift <nama-plan>` — detect drift from check-mode recap plus local artifact snapshot comparison
 - `apply rollback [nama-plan]` — run rollback preflight and apply from last successful plan (or explicit target)
+
+## Beginner Mode
+
+`civa start` is an explicit beginner entrypoint (wizard mode). It keeps the execution model unchanged by mapping selections back into the same request/runner paths used by direct commands:
+
+- setup path -> `civa setup`
+- planning path -> `civa plan init`
+
+So wizard mode improves discoverability and defaults without creating a separate automation engine. For full operator-facing walkthrough, see `beginner-mode.md`.
 
 ## Safety Model
 

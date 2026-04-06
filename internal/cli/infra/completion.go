@@ -11,6 +11,7 @@ import (
 var completionCommands = []string{
 	commandApply,
 	commandPlan,
+	commandStart,
 	commandSetup,
 	commandAuth,
 	commandTools,
@@ -87,6 +88,8 @@ func completionSuggestions(words []string) []string {
 	switch words[0] {
 	case commandPlan:
 		return completePlan(words)
+	case commandStart:
+		return completeCommonFlags(words, current)
 	case commandDoctor:
 		return completeDoctor(words)
 	case commandApply:

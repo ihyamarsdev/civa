@@ -3,6 +3,7 @@
 ## Commands
 
 - `civa plan init`
+- `civa start`
 - `civa config <nginx|caddy> init [plan-name]`
 - `civa config <nginx|caddy|all> list`
 - `civa config <nginx|caddy> remove <plan-name>`
@@ -32,6 +33,14 @@
 - `civa help`
 
 ## Interactive Workflow
+
+Beginner entrypoint:
+
+- Run `civa start` to open the beginner wizard.
+- The wizard routes to: `setup`, `plan init`, `help`, or `exit`.
+- `civa start` requires an interactive terminal. Use `civa help` in non-interactive/scripted contexts.
+
+For a full beginner walkthrough, see `beginner-mode.md`.
 
 When you run `civa plan init` without all required flags, `civa` asks for:
 
@@ -75,7 +84,13 @@ For now this covers Nginx/Caddy reverse-proxy site definitions, target hostname(
 Show help:
 
 ```bash
-./bin/civa
+./bin/civa help
+```
+
+Run beginner wizard:
+
+```bash
+./bin/civa start
 ```
 
 Run an interactive plan:

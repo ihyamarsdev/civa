@@ -13,6 +13,11 @@ import (
 
 var errUserCancelled = errors.New("user cancelled prompt")
 
+const (
+	defaultWizardServerAddress = "203.0.113.10"
+	defaultWizardPrimaryHost   = "web-01"
+)
+
 func collectInteractiveInputs(cfg *config) error {
 	fmt.Fprintln(os.Stderr, "")
 	printSection("Interactive Setup")
@@ -35,7 +40,7 @@ func collectInteractiveInputs(cfg *config) error {
 		}
 		for i := 1; i <= serverCount; i++ {
 			printSection(fmt.Sprintf("Server %d", i))
-			address, err := promptNonEmptyString("Server IP or address", "")
+			address, err := promptNonEmptyString("Server IP or address", defaultWizardServerAddressForIndex(i))
 			if err != nil {
 				return err
 			}
@@ -45,11 +50,14 @@ func collectInteractiveInputs(cfg *config) error {
 				hostnamePrompt = "Primary hostname (used as base plan name)"
 				requireHostname = true
 			}
-			hostname, err := promptString(hostnamePrompt, "", requireHostname)
+			hostname, err := promptString(hostnamePrompt, defaultWizardHostnameForIndex(i), requireHostname)
 			if err != nil {
 				return err
 			}
-			sshPort, err := promptOptionalPort(fmt.Sprintf("Custom SSH port for server %d (blank to use %d)", i, cfg.SSHPort), "")
+			sshPort, err := promptOptionalPort(
+				fmt.Sprintf("Custom SSH port for server %d", i),
+				strconv.Itoa(cfg.SSHPort),
+			)
 			if err != nil {
 				return err
 			}
@@ -155,7 +163,7 @@ func collectInteractiveInputs(cfg *config) error {
 func collectSetupInputs(cfg *config) error {
 	printSection("Setup SSH Access")
 	if len(cfg.Servers) == 0 {
-		address, err := promptNonEmptyString("Server IP or address", "")
+		address, err := promptNonEmptyString("Server IP or address", defaultWizardServerAddress)
 		if err != nil {
 			return err
 		}
@@ -215,6 +223,22 @@ func promptComponents() ([]string, error) {
 		return nil, normalizePromptError(err)
 	}
 	return selectedComponents, nil
+}
+
+func defaultWizardServerAddressForIndex(index int) string {
+	if index <= 1 {
+		return defaultWizardServerAddress
+	}
+
+	return fmt.Sprintf("203.0.113.%d", 9+index)
+}
+
+func defaultWizardHostnameForIndex(index int) string {
+	if index <= 1 {
+		return defaultWizardPrimaryHost
+	}
+
+	return fmt.Sprintf("node-%02d", index)
 }
 
 func promptApplyConfirmation() (bool, error) {

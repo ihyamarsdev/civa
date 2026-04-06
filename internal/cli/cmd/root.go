@@ -81,20 +81,7 @@ func (r *Root) newRootCommand() *cobra.Command {
 		Short:         "civa CLI for VPS automation",
 		SilenceUsage:  true,
 		SilenceErrors: true,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			wizardReq, handled, err := r.beginnerWizardRequest(cmd, globals)
-			if err != nil {
-				if errors.Is(err, errWizardCancelled) {
-					return nil
-				}
-				return err
-			}
-			if handled {
-				if wizardReq.Command == "" {
-					return nil
-				}
-				return r.executor.Execute(wizardReq)
-			}
+		RunE: func(_ *cobra.Command, _ []string) error {
 			return r.executor.Execute(domain.Request{Command: domain.CommandHelp})
 		},
 	}
@@ -111,6 +98,7 @@ func (r *Root) newRootCommand() *cobra.Command {
 		r.newVersionCommand(),
 		r.newCompletionCommand(),
 		r.newDoctorCommand(globals),
+		r.newStartCommand(globals),
 		r.newSetupCommand(globals),
 		r.newAuthCommand(globals),
 		r.newToolsCommand(globals),
@@ -450,6 +438,31 @@ func (r *Root) newDoctorCommand(globals *globalFlags) *cobra.Command {
 
 	doctorCmd.AddCommand(fixCmd, checkCmd)
 	return doctorCmd
+}
+
+func (r *Root) newStartCommand(globals *globalFlags) *cobra.Command {
+	return &cobra.Command{
+		Use:   "start",
+		Short: "Run beginner wizard for setup or plan init",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			wizardReq, handled, err := r.beginnerWizardRequest(cmd, globals)
+			if err != nil {
+				if errors.Is(err, errWizardCancelled) {
+					return nil
+				}
+				return err
+			}
+			if !handled {
+				req := r.withGlobalFlags(cmd, globals, domain.Request{Command: domain.CommandHelp, HelpTarget: "start"})
+				return r.executor.Execute(req)
+			}
+			if wizardReq.Command == "" {
+				return nil
+			}
+			return r.executor.Execute(wizardReq)
+		},
+	}
 }
 
 func (r *Root) newSetupCommand(globals *globalFlags) *cobra.Command {
@@ -1040,15 +1053,15 @@ func shouldLaunchBeginnerWizard(globals *globalFlags) bool {
 }
 
 func promptWizardAction() (string, error) {
-	action := wizardActionPlanInit
+	action := wizardActionSetup
 	field := huh.NewSelect[string]().
-		Title("Welcome to civa").
-		Description("Choose a guided flow for beginners.").
+		Title("Welcome to civa — let's get started").
+		Description("Choose what you want to do. civa will guide you step by step. Press Enter to use the default option.").
 		Options(
-			huh.NewOption("Guided setup SSH access", wizardActionSetup),
-			huh.NewOption("Guided plan initialization", wizardActionPlanInit),
-			huh.NewOption("Show help", wizardActionHelp),
-			huh.NewOption("Exit", wizardActionExit),
+			huh.NewOption("Set up SSH access first (recommended, default)", wizardActionSetup),
+			huh.NewOption("Create a deployment plan (safe preview)", wizardActionPlanInit),
+			huh.NewOption("Show command help", wizardActionHelp),
+			huh.NewOption("Exit civa", wizardActionExit),
 		).
 		Value(&action)
 

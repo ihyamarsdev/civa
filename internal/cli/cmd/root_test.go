@@ -36,7 +36,25 @@ func TestRootRunNoArgsRoutesHelpWhenNonInteractive(t *testing.T) {
 	}
 }
 
-func TestRootRunNoArgsWizardRoutesSetup(t *testing.T) {
+func TestRootRunNoArgsRoutesHelp(t *testing.T) {
+	executor := &stubExecutor{}
+	root := NewRoot(executor)
+
+	err := root.Run([]string{})
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+
+	if len(executor.requests) != 1 {
+		t.Fatalf("expected one request, got %d", len(executor.requests))
+	}
+	req := executor.requests[0]
+	if req.Command != domain.CommandHelp {
+		t.Fatalf("expected help request, got %#v", req)
+	}
+}
+
+func TestRootRunStartWizardRoutesSetup(t *testing.T) {
 	origTerminalFn := isTerminalFn
 	origPromptFn := promptWizardActionFn
 	t.Cleanup(func() {
@@ -50,7 +68,7 @@ func TestRootRunNoArgsWizardRoutesSetup(t *testing.T) {
 	executor := &stubExecutor{}
 	root := NewRoot(executor)
 
-	err := root.Run([]string{})
+	err := root.Run([]string{"start"})
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
@@ -64,7 +82,7 @@ func TestRootRunNoArgsWizardRoutesSetup(t *testing.T) {
 	}
 }
 
-func TestRootRunNoArgsWizardRoutesPlanInit(t *testing.T) {
+func TestRootRunStartWizardRoutesPlanInit(t *testing.T) {
 	origTerminalFn := isTerminalFn
 	origPromptFn := promptWizardActionFn
 	t.Cleanup(func() {
@@ -78,7 +96,7 @@ func TestRootRunNoArgsWizardRoutesPlanInit(t *testing.T) {
 	executor := &stubExecutor{}
 	root := NewRoot(executor)
 
-	err := root.Run([]string{})
+	err := root.Run([]string{"start"})
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
@@ -92,7 +110,7 @@ func TestRootRunNoArgsWizardRoutesPlanInit(t *testing.T) {
 	}
 }
 
-func TestRootRunNoArgsWizardExitSkipsExecution(t *testing.T) {
+func TestRootRunStartWizardExitSkipsExecution(t *testing.T) {
 	origTerminalFn := isTerminalFn
 	origPromptFn := promptWizardActionFn
 	t.Cleanup(func() {
@@ -106,13 +124,34 @@ func TestRootRunNoArgsWizardExitSkipsExecution(t *testing.T) {
 	executor := &stubExecutor{}
 	root := NewRoot(executor)
 
-	err := root.Run([]string{})
+	err := root.Run([]string{"start"})
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
 
 	if len(executor.requests) != 0 {
 		t.Fatalf("expected no request when exiting wizard, got %d", len(executor.requests))
+	}
+}
+
+func TestRootRunStartNonInteractiveRoutesStartHelp(t *testing.T) {
+	executor := &stubExecutor{}
+	root := NewRoot(executor)
+
+	err := root.Run([]string{"start", "--non-interactive"})
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+
+	if len(executor.requests) != 1 {
+		t.Fatalf("expected one request, got %d", len(executor.requests))
+	}
+	req := executor.requests[0]
+	if req.Command != domain.CommandHelp || req.HelpTarget != "start" {
+		t.Fatalf("expected start help request, got %#v", req)
+	}
+	if !req.NonInteractive || !req.Provided.NonInteractive {
+		t.Fatalf("expected non-interactive global flags to be mapped, got %#v", req)
 	}
 }
 

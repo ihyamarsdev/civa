@@ -521,7 +521,7 @@ func TestRenderOutputBlocksPlainFallback(t *testing.T) {
 
 func TestCompletionSuggestionsTopLevelAndValues(t *testing.T) {
 	root := completionSuggestions(nil)
-	if !contains(root, commandPlan) || !contains(root, commandCompletion) || !contains(root, commandSecret) || !contains(root, commandTools) {
+	if !contains(root, commandPlan) || !contains(root, commandStart) || !contains(root, commandCompletion) || !contains(root, commandSecret) || !contains(root, commandTools) {
 		t.Fatalf("unexpected root completion set: %v", root)
 	}
 
