@@ -61,6 +61,86 @@ func TestFinalizePathsKeepsProvidedPublicKey(t *testing.T) {
 	}
 }
 
+func TestDefaultWizardSSHKeyPathsScanHomeSSHDirectory(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+
+	sshDir := filepath.Join(tempHome, ".ssh")
+	if err := os.MkdirAll(sshDir, 0o755); err != nil {
+		t.Fatalf("failed to create ssh dir: %v", err)
+	}
+
+	idRSA := filepath.Join(sshDir, "id_rsa")
+	idRSAPub := idRSA + ".pub"
+	for _, path := range []string{idRSA, idRSAPub} {
+		if err := os.WriteFile(path, []byte("test"), 0o600); err != nil {
+			t.Fatalf("failed to write %s: %v", path, err)
+		}
+	}
+
+	if got := defaultWizardSSHPrivateKeyPath(defaultSSHPrivateKey); got != idRSA {
+		t.Fatalf("expected scanned private key path %q, got %q", idRSA, got)
+	}
+	if got := defaultWizardSSHPublicKeyPath(defaultSSHPublicKey); got != idRSAPub {
+		t.Fatalf("expected scanned public key path %q, got %q", idRSAPub, got)
+	}
+}
+
+func TestDefaultWizardSSHKeyPathsPreferPriorityOrder(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+
+	sshDir := filepath.Join(tempHome, ".ssh")
+	if err := os.MkdirAll(sshDir, 0o755); err != nil {
+		t.Fatalf("failed to create ssh dir: %v", err)
+	}
+
+	rsa := filepath.Join(sshDir, "id_rsa")
+	rsaPub := rsa + ".pub"
+	ed25519 := filepath.Join(sshDir, "id_ed25519")
+	ed25519Pub := ed25519 + ".pub"
+	for _, path := range []string{rsa, rsaPub, ed25519, ed25519Pub} {
+		if err := os.WriteFile(path, []byte("test"), 0o600); err != nil {
+			t.Fatalf("failed to write %s: %v", path, err)
+		}
+	}
+
+	if got := defaultWizardSSHPrivateKeyPath(defaultSSHPrivateKey); got != ed25519 {
+		t.Fatalf("expected ed25519 private key priority, got %q", got)
+	}
+	if got := defaultWizardSSHPublicKeyPath(defaultSSHPublicKey); got != ed25519Pub {
+		t.Fatalf("expected ed25519 public key priority, got %q", got)
+	}
+}
+
+func TestDefaultWizardSSHKeyPathsKeepExplicitValues(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+
+	sshDir := filepath.Join(tempHome, ".ssh")
+	if err := os.MkdirAll(sshDir, 0o755); err != nil {
+		t.Fatalf("failed to create ssh dir: %v", err)
+	}
+
+	idRSA := filepath.Join(sshDir, "id_rsa")
+	idRSAPub := idRSA + ".pub"
+	for _, path := range []string{idRSA, idRSAPub} {
+		if err := os.WriteFile(path, []byte("test"), 0o600); err != nil {
+			t.Fatalf("failed to write %s: %v", path, err)
+		}
+	}
+
+	privateExplicit := "~/custom_private"
+	publicExplicit := "~/custom_public.pub"
+
+	if got := defaultWizardSSHPrivateKeyPath(privateExplicit); got != privateExplicit {
+		t.Fatalf("expected explicit private key path to be preserved, got %q", got)
+	}
+	if got := defaultWizardSSHPublicKeyPath(publicExplicit); got != publicExplicit {
+		t.Fatalf("expected explicit public key path to be preserved, got %q", got)
+	}
+}
+
 func TestValidateExecutionConfigRejectsPasswordModeForPlan(t *testing.T) {
 	tempDir := t.TempDir()
 	privateKey := filepath.Join(tempDir, "id_test")

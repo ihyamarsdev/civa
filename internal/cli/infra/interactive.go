@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -17,6 +19,16 @@ const (
 	defaultWizardServerAddress = "203.0.113.10"
 	defaultWizardPrimaryHost   = "web-01"
 )
+
+var defaultSSHKeyPriorityOrder = []string{
+	"id_ed25519",
+	"id_ecdsa",
+	"id_rsa",
+	"id_ed25519_sk",
+	"id_ecdsa_sk",
+	"id_xmss",
+	"id_dsa",
+}
 
 func collectInteractiveInputs(cfg *config) error {
 	fmt.Fprintln(os.Stderr, "")
@@ -75,14 +87,17 @@ func collectInteractiveInputs(cfg *config) error {
 			cfg.SSHUser = value
 		}
 		if !cfg.Provided.SSHPort {
-			value, err := promptPort("SSH port for the initial connection", cfg.SSHPort)
+			value, err := promptPort("SSH port for the initial connection", defaultWizardSSHPort(cfg.SSHPort))
 			if err != nil {
 				return err
 			}
 			cfg.SSHPort = value
 		}
 		if !cfg.Provided.SSHPrivateKey {
-			value, err := promptNonEmptyString("Local SSH private key path used by Ansible", cfg.SSHPrivateKey)
+			value, err := promptNonEmptyString(
+				"Local SSH private key path used by Ansible",
+				defaultWizardSSHPrivateKeyPath(cfg.SSHPrivateKey),
+			)
 			if err != nil {
 				return err
 			}
@@ -179,7 +194,7 @@ func collectSetupInputs(cfg *config) error {
 		cfg.Provided.SSHUser = true
 	}
 	if !cfg.Provided.SSHPort {
-		value, err := promptPort("SSH port for the initial connection", cfg.SSHPort)
+		value, err := promptPort("SSH port for the initial connection", defaultWizardSSHPort(cfg.SSHPort))
 		if err != nil {
 			return err
 		}
@@ -187,7 +202,10 @@ func collectSetupInputs(cfg *config) error {
 		cfg.Provided.SSHPort = true
 	}
 	if !cfg.Provided.SSHPublicKey {
-		value, err := promptNonEmptyString("Local SSH public key path to install on the server", cfg.SSHPublicKey)
+		value, err := promptNonEmptyString(
+			"Local SSH public key path to install on the server",
+			defaultWizardSSHPublicKeyPath(cfg.SSHPublicKey),
+		)
 		if err != nil {
 			return err
 		}
@@ -239,6 +257,209 @@ func defaultWizardHostnameForIndex(index int) string {
 	}
 
 	return fmt.Sprintf("node-%02d", index)
+}
+
+func defaultWizardSSHPort(current int) int {
+	if current >= 1 && current <= 65535 {
+		return current
+	}
+
+	return defaultSSHPort
+}
+
+func defaultWizardSSHPrivateKeyPath(current string) string {
+	if shouldDiscoverDefaultSSHPath(current, defaultSSHPrivateKey) {
+		privatePath, _ := discoverDefaultSSHKeyPairFromHome()
+		if privatePath != "" {
+			return privatePath
+		}
+
+		privatePath = discoverDefaultSSHPrivateKeyFromHome()
+		if privatePath != "" {
+			return privatePath
+		}
+	}
+
+	trimmed := strings.TrimSpace(current)
+	if trimmed != "" {
+		return trimmed
+	}
+
+	return defaultSSHPrivateKey
+}
+
+func defaultWizardSSHPublicKeyPath(current string) string {
+	if shouldDiscoverDefaultSSHPath(current, defaultSSHPublicKey) {
+		_, publicPath := discoverDefaultSSHKeyPairFromHome()
+		if publicPath != "" {
+			return publicPath
+		}
+
+		publicPath = discoverDefaultSSHPublicKeyFromHome()
+		if publicPath != "" {
+			return publicPath
+		}
+	}
+
+	trimmed := strings.TrimSpace(current)
+	if trimmed != "" {
+		return trimmed
+	}
+
+	return defaultSSHPublicKey
+}
+
+func shouldDiscoverDefaultSSHPath(current, fallback string) bool {
+	trimmed := strings.TrimSpace(current)
+	return trimmed == "" || trimmed == fallback
+}
+
+func discoverDefaultSSHKeyPairFromHome() (string, string) {
+	sshDir, ok := resolveSSHDirectory()
+	if !ok {
+		return "", ""
+	}
+
+	for _, name := range defaultSSHKeyPriorityOrder {
+		privatePath := filepath.Join(sshDir, name)
+		publicPath := privatePath + ".pub"
+		if fileExists(privatePath) && fileExists(publicPath) {
+			return privatePath, publicPath
+		}
+	}
+
+	entries, err := os.ReadDir(sshDir)
+	if err != nil {
+		return "", ""
+	}
+
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		names = append(names, entry.Name())
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		if strings.HasSuffix(name, ".pub") {
+			continue
+		}
+
+		privatePath := filepath.Join(sshDir, name)
+		publicPath := privatePath + ".pub"
+		if fileExists(privatePath) && fileExists(publicPath) {
+			return privatePath, publicPath
+		}
+	}
+
+	return "", ""
+}
+
+func discoverDefaultSSHPrivateKeyFromHome() string {
+	sshDir, ok := resolveSSHDirectory()
+	if !ok {
+		return ""
+	}
+
+	for _, name := range defaultSSHKeyPriorityOrder {
+		privatePath := filepath.Join(sshDir, name)
+		if fileExists(privatePath) {
+			return privatePath
+		}
+	}
+
+	entries, err := os.ReadDir(sshDir)
+	if err != nil {
+		return ""
+	}
+
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		names = append(names, entry.Name())
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		if strings.HasSuffix(name, ".pub") {
+			continue
+		}
+
+		privatePath := filepath.Join(sshDir, name)
+		if fileExists(privatePath) {
+			return privatePath
+		}
+	}
+
+	return ""
+}
+
+func discoverDefaultSSHPublicKeyFromHome() string {
+	sshDir, ok := resolveSSHDirectory()
+	if !ok {
+		return ""
+	}
+
+	for _, name := range defaultSSHKeyPriorityOrder {
+		publicPath := filepath.Join(sshDir, name+".pub")
+		if fileExists(publicPath) {
+			return publicPath
+		}
+	}
+
+	entries, err := os.ReadDir(sshDir)
+	if err != nil {
+		return ""
+	}
+
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		names = append(names, entry.Name())
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		if !strings.HasSuffix(name, ".pub") {
+			continue
+		}
+
+		publicPath := filepath.Join(sshDir, name)
+		if fileExists(publicPath) {
+			return publicPath
+		}
+	}
+
+	return ""
+}
+
+func resolveSSHDirectory() (string, bool) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", false
+	}
+
+	home = strings.TrimSpace(home)
+	if home == "" {
+		return "", false
+	}
+
+	return filepath.Join(home, ".ssh"), true
+}
+
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+
+	return info.Mode().IsRegular()
 }
 
 func promptApplyConfirmation() (bool, error) {
