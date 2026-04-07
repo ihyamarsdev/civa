@@ -901,6 +901,14 @@ func TestAnsibleProgressDescription(t *testing.T) {
 	if got := ansibleProgressDescription(config{Command: commandApply, ApplyAction: applyActionReview}); got != "Reviewing server state" {
 		t.Fatalf("unexpected apply review progress description: %q", got)
 	}
+
+	if got := ansibleProgressDescription(config{Command: commandConfig, ConfigAction: configActionInit, WebServer: webServerNginx}); got != "Applying saved Nginx config" {
+		t.Fatalf("unexpected nginx config progress description: %q", got)
+	}
+
+	if got := ansibleProgressDescription(config{Command: commandConfig, ConfigAction: configActionInit, WebServer: webServerNone}); got != "Applying saved web server config" {
+		t.Fatalf("unexpected generic config progress description: %q", got)
+	}
 }
 
 func TestShouldUseAnsibleProgressBar(t *testing.T) {
@@ -910,6 +918,14 @@ func TestShouldUseAnsibleProgressBar(t *testing.T) {
 
 	if !shouldUseAnsibleProgressBar(config{Command: commandApply, ApplyAction: applyActionReview}, true, true) {
 		t.Fatal("expected interactive apply review to use progress bar")
+	}
+
+	if !shouldUseAnsibleProgressBar(config{Command: commandConfig, ConfigAction: configActionInit}, true, true) {
+		t.Fatal("expected interactive config init to use progress bar")
+	}
+
+	if shouldUseAnsibleProgressBar(config{Command: commandConfig, ConfigAction: configActionList}, true, true) {
+		t.Fatal("expected config list to skip progress bar")
 	}
 
 	if shouldUseAnsibleProgressBar(config{Command: commandPlan, PlanAction: planActionReview}, true, true) {
@@ -922,6 +938,10 @@ func TestShouldUseAnsibleProgressBar(t *testing.T) {
 
 	if shouldUseAnsibleProgressBar(config{Command: commandApply}, true, false) {
 		t.Fatal("expected non-tty stderr to skip progress bar")
+	}
+
+	if shouldUseAnsibleProgressBar(config{Command: commandConfig, ConfigAction: configActionInit}, false, true) {
+		t.Fatal("expected config init without tty stdout to skip progress bar")
 	}
 }
 
@@ -1063,6 +1083,30 @@ func TestExecutionSummaryLinesForApplyReview(t *testing.T) {
 	for _, check := range checks {
 		if !strings.Contains(joined, check) {
 			t.Fatalf("expected summary to contain %q, got:\n%s", check, joined)
+		}
+	}
+}
+
+func TestExecutionSummaryLinesForConfig(t *testing.T) {
+	cfg := &config{Command: commandConfig, ConfigAction: configActionInit, WebServer: webServerNginx}
+	state := &runtimeState{
+		InventoryFile:   "/tmp/inventory.yml",
+		VarsFile:        "/tmp/vars.yml",
+		PlanFile:        "/tmp/plan.md",
+		ProgressCurrent: 1,
+		ProgressTotal:   1,
+		CompletedPhases: []string{"Saved web server config applied"},
+	}
+
+	joined := strings.Join(executionSummaryLines(cfg, state), "\n")
+	checks := []string{
+		"Completed phases: 1/1",
+		"Result: config apply completed",
+		"Saved web server config applied",
+	}
+	for _, check := range checks {
+		if !strings.Contains(joined, check) {
+			t.Fatalf("expected config summary to contain %q, got:\n%s", check, joined)
 		}
 	}
 }

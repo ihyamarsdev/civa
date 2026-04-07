@@ -2110,11 +2110,34 @@ func ansibleProgressDescription(cfg config) string {
 	if cfg.ApplyAction == applyActionReview {
 		return "Reviewing server state"
 	}
+	if cfg.Command == commandConfig {
+		return ansibleConfigProgressDescription(cfg.WebServer)
+	}
 	return "Running ansible-playbook"
 }
 
 func shouldUseAnsibleProgressBar(cfg config, stdoutTTY, stderrTTY bool) bool {
-	return cfg.Command == commandApply && stdoutTTY && stderrTTY
+	if !stdoutTTY || !stderrTTY {
+		return false
+	}
+
+	switch cfg.Command {
+	case commandApply:
+		return true
+	case commandConfig:
+		return cfg.ConfigAction == "" || cfg.ConfigAction == configActionInit || cfg.ConfigAction == configActionEdit
+	default:
+		return false
+	}
+}
+
+func ansibleConfigProgressDescription(webServer string) string {
+	switch webServer {
+	case webServerNginx, webServerCaddy:
+		return fmt.Sprintf("Applying saved %s config", webServerLabel(webServer))
+	default:
+		return "Applying saved web server config"
+	}
 }
 
 func reportCapturedCommandOutput(stdoutBuffer, stderrBuffer *bytes.Buffer) {
@@ -2542,6 +2565,8 @@ func executionSummaryLines(cfg *config, state *runtimeState) []string {
 		default:
 			lines = append(lines, "Result: apply completed")
 		}
+	case commandConfig:
+		lines = append(lines, "Result: config apply completed")
 	case commandPlan:
 		lines = append(lines, "Result: plan generated without executing ansible-playbook")
 	}
@@ -2564,6 +2589,8 @@ func executionResultLabel(cfg *config) string {
 		return "apply completed"
 	case commandPlan:
 		return "plan generated without executing ansible-playbook"
+	case commandConfig:
+		return "config apply completed"
 	default:
 		return "completed"
 	}

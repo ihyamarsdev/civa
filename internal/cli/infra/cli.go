@@ -599,6 +599,8 @@ func runConfigInitFlow(cfg *config) error {
 	if err := runAnsible(&executionCfg, state); err != nil {
 		return err
 	}
+	state.ProgressCurrent = state.ProgressTotal
+	state.appendCompletedPhase("Saved web server config applied")
 
 	showExecutionSummary(&executionCfg, state)
 
