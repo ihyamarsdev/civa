@@ -1235,22 +1235,36 @@ func runUninstall(cfg config) error {
 }
 
 func runSSHCopyID(cfg config) error {
-	server := cfg.Servers[0]
-	sshPort := initiationSSHPort(cfg)
-	target := fmt.Sprintf("%s@%s", cfg.SSHUser, server.Address)
-	if err := rewriteKnownHostEntry(server.Address, sshPort); err != nil {
-		return err
+	failureCount := 0
+	var lastErr error
+	for _, server := range cfg.Servers {
+		sshPort := effectiveSSHPort(cfg, server)
+		target := fmt.Sprintf("%s@%s", effectiveSSHUser(cfg, server), server.Address)
+		hostIdentity := knownHostIdentity(server.Address, sshPort)
+		if err := rewriteKnownHostEntry(server.Address, sshPort); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to update known_hosts for %s: %v\n", hostIdentity, err)
+			failureCount++
+			lastErr = fmt.Errorf("rewrite known_hosts entry for %s: %w", hostIdentity, err)
+			continue
+		}
+
+		cmd := buildSSHCopyIDCommand(cfg, server)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		cmd.Stdin = os.Stdin
+		if err := cmd.Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "ssh-copy-id failed for %s: %v\n", target, err)
+			failureCount++
+			lastErr = fmt.Errorf("ssh-copy-id failed for %s: %w", target, err)
+			continue
+		}
+
+		fmt.Printf("Installed %s on %s\n", cfg.SSHPublicKey, target)
 	}
 
-	cmd := buildSSHCopyIDCommand(cfg)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.Stdin = os.Stdin
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("ssh-copy-id failed for %s: %w", target, err)
+	if failureCount > 0 {
+		return fmt.Errorf("ssh-copy-id failed for %d target(s): %w", failureCount, lastErr)
 	}
-
-	fmt.Printf("Installed %s on %s\n", cfg.SSHPublicKey, target)
 	return nil
 }
 
@@ -1258,9 +1272,16 @@ func rewriteKnownHostEntry(host string, port int) error {
 	return infssh.RewriteKnownHostEntry(host, port)
 }
 
-func buildSSHCopyIDCommand(cfg config) *exec.Cmd {
-	target := fmt.Sprintf("%s@%s", cfg.SSHUser, cfg.Servers[0].Address)
-	sshPort := initiationSSHPort(cfg)
+func knownHostIdentity(host string, port int) string {
+	if port <= 0 || port == defaultSSHPort {
+		return host
+	}
+	return fmt.Sprintf("[%s]:%d", host, port)
+}
+
+func buildSSHCopyIDCommand(cfg config, server serverSpec) *exec.Cmd {
+	target := fmt.Sprintf("%s@%s", effectiveSSHUser(cfg, server), server.Address)
+	sshPort := effectiveSSHPort(cfg, server)
 	args := []string{
 		"-i", cfg.SSHPublicKey,
 		"-p", strconv.Itoa(sshPort),
@@ -1277,6 +1298,13 @@ func buildSSHCopyIDCommand(cfg config) *exec.Cmd {
 	return cmd
 }
 
+func effectiveSSHUser(cfg config, server serverSpec) string {
+	if candidate := strings.TrimSpace(server.SSHUser); candidate != "" {
+		return candidate
+	}
+	return strings.TrimSpace(cfg.SSHUser)
+}
+
 func effectiveSSHPort(cfg config, server serverSpec) int {
 	if server.SSHPort >= 1 && server.SSHPort <= 65535 {
 		return server.SSHPort
@@ -1285,7 +1313,7 @@ func effectiveSSHPort(cfg config, server serverSpec) int {
 		return cfg.SSHPort
 	}
 
-	return defaultSSHPort
+	return 0
 }
 
 func initiationSSHPort(cfg config) int {

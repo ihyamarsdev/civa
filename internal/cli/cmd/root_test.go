@@ -545,6 +545,68 @@ func TestRootRunRoutesSetupPasswordSecretFlag(t *testing.T) {
 	}
 }
 
+func TestRootRunRoutesSetupMultipleServers(t *testing.T) {
+	executor := &stubExecutor{}
+	root := NewRoot(executor)
+
+	err := root.Run([]string{"setup", "--server", "203.0.113.10", "--server", "203.0.113.11", "--ssh-public-key", "~/.ssh/id_ed25519.pub"})
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if len(executor.requests) != 1 {
+		t.Fatalf("expected one request, got %d", len(executor.requests))
+	}
+	req := executor.requests[0]
+	if req.Command != domain.CommandSetup || len(req.Servers) != 2 {
+		t.Fatalf("unexpected setup request: %#v", req)
+	}
+	if req.Servers[0] != "203.0.113.10" || req.Servers[1] != "203.0.113.11" {
+		t.Fatalf("unexpected server targets: %#v", req.Servers)
+	}
+}
+
+func TestRootRunRoutesSetupPerHostUserOverride(t *testing.T) {
+	executor := &stubExecutor{}
+	root := NewRoot(executor)
+
+	if err := root.Run([]string{"setup", "--server", "alice@203.0.113.10", "--ssh-public-key", "~/.ssh/id_ed25519.pub"}); err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if len(executor.requests) != 1 {
+		t.Fatalf("expected one request, got %d", len(executor.requests))
+	}
+	req := executor.requests[0]
+	if req.Command != domain.CommandSetup || len(req.Servers) != 1 {
+		t.Fatalf("unexpected setup request: %#v", req)
+	}
+	if req.Servers[0] != "alice@203.0.113.10" {
+		t.Fatalf("unexpected server target with user override: %#v", req.Servers)
+	}
+}
+
+func TestRootRunSetupDoesNotInjectBuiltInSSHUserOrPort(t *testing.T) {
+	executor := &stubExecutor{}
+	root := NewRoot(executor)
+
+	if err := root.Run([]string{"setup", "--server", "alice@203.0.113.10,,2201", "--ssh-public-key", "~/.ssh/id_ed25519.pub"}); err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if len(executor.requests) != 1 {
+		t.Fatalf("expected one request, got %d", len(executor.requests))
+	}
+
+	req := executor.requests[0]
+	if req.Command != domain.CommandSetup {
+		t.Fatalf("unexpected setup request: %#v", req)
+	}
+	if req.SSHUser != "" {
+		t.Fatalf("expected empty global SSH user when flag omitted, got %q", req.SSHUser)
+	}
+	if req.SSHPort != 0 {
+		t.Fatalf("expected zero global SSH port when flag omitted, got %d", req.SSHPort)
+	}
+}
+
 func TestRootRunHelpRoutesSecretSubcommandsToSecretHelp(t *testing.T) {
 	executor := &stubExecutor{}
 	root := NewRoot(executor)

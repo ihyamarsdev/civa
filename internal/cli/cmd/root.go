@@ -474,8 +474,6 @@ func (r *Root) newSetupCommand(globals *globalFlags) *cobra.Command {
 		sshPublicKey      string
 		servers           []string
 	}{
-		sshUser:      "root",
-		sshPort:      22,
 		sshPublicKey: "~/.ssh/id_ed25519.pub",
 	}
 
@@ -506,12 +504,12 @@ func (r *Root) newSetupCommand(globals *globalFlags) *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&flags.sshUser, "ssh-user", "root", "SSH user used to connect to every target server")
-	cmd.Flags().IntVar(&flags.sshPort, "ssh-port", 22, "SSH port used to connect to every target server")
+	cmd.Flags().StringVar(&flags.sshUser, "ssh-user", "", "SSH user used to connect to every target server when hosts omit an explicit user")
+	cmd.Flags().IntVar(&flags.sshPort, "ssh-port", 0, "SSH port used to connect to every target server when hosts omit an explicit port")
 	cmd.Flags().StringVar(&flags.sshPassword, "ssh-password", "", "SSH password used by civa setup")
 	cmd.Flags().StringVar(&flags.sshPasswordSecret, "ssh-password-secret", "", "Secret name in civa secret store for SSH password")
 	cmd.Flags().StringVar(&flags.sshPublicKey, "ssh-public-key", "~/.ssh/id_ed25519.pub", "Local public key path that will be installed for the deploy user")
-	cmd.Flags().StringArrayVar(&flags.servers, "server", nil, "Add a target server as addr[,hostname][,port]; hostname and SSH port are optional")
+	cmd.Flags().StringArrayVar(&flags.servers, "server", nil, "Add a target server as [user@]addr[,hostname][,port]; user overrides --ssh-user, hostname and SSH port are optional")
 
 	return cmd
 }

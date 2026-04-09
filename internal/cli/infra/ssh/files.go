@@ -7,6 +7,8 @@ import (
 	"strings"
 )
 
+const defaultSSHPort = 22
+
 func RewriteKnownHostEntry(host string, port int) error {
 	homeDir, err := os.UserHomeDir()
 	if err != nil || homeDir == "" {
@@ -32,7 +34,17 @@ func RewriteKnownHostEntryInHome(homeDir, host string, port int) error {
 	}
 	newlineAtEnd := strings.HasSuffix(string(content), "\n")
 
-	portHost := fmt.Sprintf("[%s]:%d", host, port)
+	normalizedPort := port
+	if normalizedPort <= 0 {
+		normalizedPort = defaultSSHPort
+	}
+	portHost := fmt.Sprintf("[%s]:%d", host, normalizedPort)
+	removeHosts := map[string]struct{}{
+		portHost: {},
+	}
+	if normalizedPort == defaultSSHPort {
+		removeHosts[host] = struct{}{}
+	}
 	lines := strings.Split(string(content), "\n")
 	updated := make([]string, 0, len(lines))
 	changed := false
@@ -53,7 +65,7 @@ func RewriteKnownHostEntryInHome(homeDir, host string, port int) error {
 		hosts := strings.Split(fields[0], ",")
 		kept := make([]string, 0, len(hosts))
 		for _, item := range hosts {
-			if item == host || (port > 0 && item == portHost) {
+			if _, remove := removeHosts[item]; remove {
 				changed = true
 				continue
 			}

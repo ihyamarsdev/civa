@@ -76,8 +76,8 @@ func collectInteractiveInputs(cfg *config) error {
 				return err
 			}
 			sshPort, err := promptOptionalPort(
-				fmt.Sprintf("Custom SSH port for server %d", i),
-				strconv.Itoa(cfg.SSHPort),
+				fmt.Sprintf("SSH port for server %d", i),
+				strconv.Itoa(defaultWizardSSHPort(cfg.SSHPort)),
 			)
 			if err != nil {
 				return err
@@ -187,23 +187,49 @@ func collectInteractiveInputs(cfg *config) error {
 func collectSetupInputs(cfg *config) error {
 	printSection("Setup SSH Access")
 	if len(cfg.Servers) == 0 {
-		address, err := promptNonEmptyString("Server IP or address", defaultWizardServerAddress)
+		serverCount, err := promptPositiveInt("How many servers will be targeted?", 1)
 		if err != nil {
 			return err
 		}
-		cfg.Servers = append(cfg.Servers, serverSpec{Address: address})
+		defaultServerPort := strconv.Itoa(defaultWizardSSHPort(cfg.SSHPort))
+		for i := 1; i <= serverCount; i++ {
+			printSection(fmt.Sprintf("Server %d", i))
+			address, err := promptNonEmptyString("Server IP or address", defaultWizardServerAddressForIndex(i))
+			if err != nil {
+				return err
+			}
+			sshPort, err := promptOptionalPort(
+				fmt.Sprintf("SSH port for server %d", i),
+				defaultServerPort,
+			)
+			if err != nil {
+				return err
+			}
+			sshUserOverride, err := promptString(
+				fmt.Sprintf("SSH user override for server %d (blank uses global SSH user)", i),
+				"",
+				false,
+			)
+			if err != nil {
+				return err
+			}
+			cfg.Servers = append(cfg.Servers, serverSpec{Address: address, SSHPort: sshPort, SSHUser: sshUserOverride})
+		}
 		cfg.Provided.Servers = true
 	}
-	if !cfg.Provided.SSHUser {
-		value, err := promptNonEmptyString("Built-in SSH user", cfg.SSHUser)
+	if !cfg.Provided.SSHUser && setupNeedsGlobalSSHUser(cfg.Servers) {
+		value, err := promptNonEmptyString("Default SSH user (used when servers do not override)", cfg.SSHUser)
 		if err != nil {
 			return err
 		}
 		cfg.SSHUser = value
 		cfg.Provided.SSHUser = true
 	}
-	if !cfg.Provided.SSHPort {
-		value, err := promptPort("SSH port for the initial connection", defaultWizardSSHPort(cfg.SSHPort))
+	if !cfg.Provided.SSHPort && setupNeedsGlobalSSHPort(cfg.Servers) {
+		value, err := promptRequiredPort(
+			"Default SSH port (used when servers do not override)",
+			defaultWizardOptionalSSHPort(cfg.SSHPort),
+		)
 		if err != nil {
 			return err
 		}
@@ -222,6 +248,26 @@ func collectSetupInputs(cfg *config) error {
 		cfg.Provided.SSHPublicKey = true
 	}
 	return nil
+}
+
+func setupNeedsGlobalSSHUser(servers []serverSpec) bool {
+	for _, server := range servers {
+		if strings.TrimSpace(server.SSHUser) == "" {
+			return true
+		}
+	}
+
+	return false
+}
+
+func setupNeedsGlobalSSHPort(servers []serverSpec) bool {
+	for _, server := range servers {
+		if server.SSHPort < 1 || server.SSHPort > 65535 {
+			return true
+		}
+	}
+
+	return false
 }
 
 func promptComponents() ([]string, error) {
@@ -274,6 +320,14 @@ func defaultWizardSSHPort(current int) int {
 	}
 
 	return defaultSSHPort
+}
+
+func defaultWizardOptionalSSHPort(current int) string {
+	if current >= 1 && current <= 65535 {
+		return strconv.Itoa(current)
+	}
+
+	return ""
 }
 
 func defaultWizardSSHPrivateKeyPath(current string) string {
@@ -611,6 +665,30 @@ func promptPort(title string, defaultValue int) (int, error) {
 	if err := field.Run(); err != nil {
 		return 0, normalizePromptError(err)
 	}
+	parsed, _ := strconv.Atoi(strings.TrimSpace(value))
+	return parsed, nil
+}
+
+func promptRequiredPort(title, defaultValue string) (int, error) {
+	value := strings.TrimSpace(defaultValue)
+	field := huh.NewInput().
+		Title(title).
+		Value(&value).
+		Validate(func(input string) error {
+			trimmed := strings.TrimSpace(input)
+			if trimmed == "" {
+				return fmt.Errorf("port must be an integer between 1 and 65535")
+			}
+			parsed, err := strconv.Atoi(trimmed)
+			if err != nil || parsed < 1 || parsed > 65535 {
+				return fmt.Errorf("port must be an integer between 1 and 65535")
+			}
+			return nil
+		})
+	if err := field.Run(); err != nil {
+		return 0, normalizePromptError(err)
+	}
+
 	parsed, _ := strconv.Atoi(strings.TrimSpace(value))
 	return parsed, nil
 }

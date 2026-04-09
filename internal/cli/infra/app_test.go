@@ -360,7 +360,7 @@ func TestBuildSSHCopyIDCommand(t *testing.T) {
 		Servers:      []serverSpec{{Address: "203.0.113.10"}},
 	}
 
-	cmd := buildSSHCopyIDCommand(cfg)
+	cmd := buildSSHCopyIDCommand(cfg, cfg.Servers[0])
 	gotArgs := strings.Join(cmd.Args, " ")
 	if !strings.Contains(gotArgs, "ssh-copy-id -i /tmp/id_test.pub -p 2222 -o StrictHostKeyChecking=accept-new root@203.0.113.10") {
 		t.Fatalf("unexpected ssh-copy-id args: %s", gotArgs)
@@ -377,7 +377,7 @@ func TestBuildSSHCopyIDCommand(t *testing.T) {
 	}
 }
 
-func TestBuildSSHCopyIDCommandUsesInitiationPortWhenServerCustomPortProvided(t *testing.T) {
+func TestBuildSSHCopyIDCommandUsesServerCustomPort(t *testing.T) {
 	cfg := config{
 		SSHUser:      "root",
 		SSHPort:      2222,
@@ -385,10 +385,25 @@ func TestBuildSSHCopyIDCommandUsesInitiationPortWhenServerCustomPortProvided(t *
 		Servers:      []serverSpec{{Address: "203.0.113.10", SSHPort: 2201}},
 	}
 
-	cmd := buildSSHCopyIDCommand(cfg)
+	cmd := buildSSHCopyIDCommand(cfg, cfg.Servers[0])
 	gotArgs := strings.Join(cmd.Args, " ")
-	if !strings.Contains(gotArgs, "ssh-copy-id -i /tmp/id_test.pub -p 2222 -o StrictHostKeyChecking=accept-new root@203.0.113.10") {
-		t.Fatalf("expected initiation ssh port in command args, got %s", gotArgs)
+	if !strings.Contains(gotArgs, "ssh-copy-id -i /tmp/id_test.pub -p 2201 -o StrictHostKeyChecking=accept-new root@203.0.113.10") {
+		t.Fatalf("expected server SSH port in command args, got %s", gotArgs)
+	}
+}
+
+func TestBuildSSHCopyIDCommandUsesServerUserOverride(t *testing.T) {
+	cfg := config{
+		SSHUser:      "root",
+		SSHPort:      2222,
+		SSHPublicKey: "/tmp/id_test.pub",
+		Servers:      []serverSpec{{Address: "203.0.113.10", SSHUser: "alice"}},
+	}
+
+	cmd := buildSSHCopyIDCommand(cfg, cfg.Servers[0])
+	gotArgs := strings.Join(cmd.Args, " ")
+	if !strings.Contains(gotArgs, "alice@203.0.113.10") {
+		t.Fatalf("expected server user override in command args, got %s", gotArgs)
 	}
 }
 
@@ -400,7 +415,7 @@ func TestBuildSSHCopyIDCommandWithoutPasswordUsesSSHCopyIDDirectly(t *testing.T)
 		Servers:      []serverSpec{{Address: "203.0.113.10"}},
 	}
 
-	cmd := buildSSHCopyIDCommand(cfg)
+	cmd := buildSSHCopyIDCommand(cfg, cfg.Servers[0])
 	if filepath.Base(cmd.Path) != "ssh-copy-id" {
 		t.Fatalf("expected direct ssh-copy-id invocation, got %s", cmd.Path)
 	}
@@ -409,7 +424,7 @@ func TestBuildSSHCopyIDCommandWithoutPasswordUsesSSHCopyIDDirectly(t *testing.T)
 	}
 }
 
-func TestRewriteKnownHostEntryInHomeRewritesMatchingHostOnly(t *testing.T) {
+func TestRewriteKnownHostEntryInHomeRemovesDefaultPortHost(t *testing.T) {
 	homeDir := t.TempDir()
 	sshDir := filepath.Join(homeDir, ".ssh")
 	if err := os.MkdirAll(sshDir, 0o755); err != nil {
@@ -418,7 +433,7 @@ func TestRewriteKnownHostEntryInHomeRewritesMatchingHostOnly(t *testing.T) {
 	knownHostsPath := filepath.Join(sshDir, "known_hosts")
 	content := strings.Join([]string{
 		"203.0.113.10,host-a ssh-ed25519 AAAA",
-		"[203.0.113.11]:2222 ssh-ed25519 BBBB",
+		"[203.0.113.10]:22 ssh-ed25519 BBBB",
 		"203.0.113.12 ssh-ed25519 CCCC",
 		"",
 	}, "\n")
@@ -429,7 +444,41 @@ func TestRewriteKnownHostEntryInHomeRewritesMatchingHostOnly(t *testing.T) {
 	if err := infssh.RewriteKnownHostEntryInHome(homeDir, "203.0.113.10", 22); err != nil {
 		t.Fatalf("RewriteKnownHostEntryInHome returned error: %v", err)
 	}
-	if err := infssh.RewriteKnownHostEntryInHome(homeDir, "203.0.113.11", 2222); err != nil {
+
+	rewritten, err := os.ReadFile(knownHostsPath)
+	if err != nil {
+		t.Fatalf("failed to read rewritten known_hosts: %v", err)
+	}
+	text := string(rewritten)
+	if strings.Contains(text, "203.0.113.10") || strings.Contains(text, "[203.0.113.10]:22") {
+		t.Fatalf("expected default host entries removed, got: %q", text)
+	}
+	if !strings.Contains(text, "203.0.113.12 ssh-ed25519 CCCC") {
+		t.Fatalf("expected other host entries retained, got: %q", text)
+	}
+	if _, err := os.Stat(filepath.Join(sshDir, "known_hosts.old")); !os.IsNotExist(err) {
+		t.Fatalf("expected no known_hosts.old backup file, got err=%v", err)
+	}
+}
+
+func TestRewriteKnownHostEntryInHomeMaintainsHostWhenRemovingPortSpecificEntry(t *testing.T) {
+	homeDir := t.TempDir()
+	sshDir := filepath.Join(homeDir, ".ssh")
+	if err := os.MkdirAll(sshDir, 0o755); err != nil {
+		t.Fatalf("failed to create ssh dir: %v", err)
+	}
+	knownHostsPath := filepath.Join(sshDir, "known_hosts")
+	content := strings.Join([]string{
+		"203.0.113.10 ssh-ed25519 AAAA",
+		"[203.0.113.10]:2222 ssh-ed25519 BBBB",
+		"203.0.113.11 ssh-ed25519 CCCC",
+		"",
+	}, "\n")
+	if err := os.WriteFile(knownHostsPath, []byte(content), 0o600); err != nil {
+		t.Fatalf("failed to write known_hosts: %v", err)
+	}
+
+	if err := infssh.RewriteKnownHostEntryInHome(homeDir, "203.0.113.10", 2222); err != nil {
 		t.Fatalf("RewriteKnownHostEntryInHome returned error: %v", err)
 	}
 
@@ -438,14 +487,14 @@ func TestRewriteKnownHostEntryInHomeRewritesMatchingHostOnly(t *testing.T) {
 		t.Fatalf("failed to read rewritten known_hosts: %v", err)
 	}
 	text := string(rewritten)
-	if strings.Contains(text, "203.0.113.10") || strings.Contains(text, "[203.0.113.11]:2222") {
-		t.Fatalf("expected matching host entries removed, got: %q", text)
+	if strings.Contains(text, "[203.0.113.10]:2222") {
+		t.Fatalf("expected port-specific entry removed, got: %q", text)
 	}
-	if !strings.Contains(text, "host-a ssh-ed25519 AAAA") || !strings.Contains(text, "203.0.113.12 ssh-ed25519 CCCC") {
-		t.Fatalf("expected non-target host entries retained, got: %q", text)
+	if !strings.Contains(text, "203.0.113.10 ssh-ed25519 AAAA") {
+		t.Fatalf("expected base host entry retained, got: %q", text)
 	}
-	if _, err := os.Stat(filepath.Join(sshDir, "known_hosts.old")); !os.IsNotExist(err) {
-		t.Fatalf("expected no known_hosts.old backup file, got err=%v", err)
+	if !strings.Contains(text, "203.0.113.11 ssh-ed25519 CCCC") {
+		t.Fatalf("expected unrelated entries preserved, got: %q", text)
 	}
 }
 
@@ -509,6 +558,24 @@ func TestParseServerSpecSupportsCustomSSHPort(t *testing.T) {
 	}
 	if server.Address != "203.0.113.10" || server.Hostname != "web-01" || server.SSHPort != 2203 {
 		t.Fatalf("unexpected server spec for address+hostname+port: %#v", server)
+	}
+}
+
+func TestParseServerSpecSupportsUserOverride(t *testing.T) {
+	server, err := parseServerSpec("alice@203.0.113.10")
+	if err != nil {
+		t.Fatalf("parseServerSpec returned error: %v", err)
+	}
+	if server.Address != "203.0.113.10" || server.SSHUser != "alice" {
+		t.Fatalf("unexpected server spec for user@address: %#v", server)
+	}
+
+	server, err = parseServerSpec("bob@203.0.113.11,web-01,2222")
+	if err != nil {
+		t.Fatalf("parseServerSpec returned error: %v", err)
+	}
+	if server.Address != "203.0.113.11" || server.Hostname != "web-01" || server.SSHPort != 2222 || server.SSHUser != "bob" {
+		t.Fatalf("unexpected server spec for full override: %#v", server)
 	}
 }
 

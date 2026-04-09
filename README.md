@@ -32,11 +32,18 @@ go build -o bin/civa .
 ./bin/civa help
 ```
 
-Install your public key on a fresh server:
+Install your public key on multiple fresh servers sequentially (each target is processed one after the other):
 
 ```bash
-./bin/civa setup --server 203.0.113.10 --ssh-user root --ssh-password 'secret' --ssh-public-key ~/.ssh/id_ed25519.pub
+./bin/civa setup \
+  --server 203.0.113.10 \
+  --server 203.0.113.11 \
+  --ssh-user root \
+  --ssh-password 'secret' \
+  --ssh-public-key ~/.ssh/id_ed25519.pub
 ```
+
+Each target must include its SSH user and port either via `--server user@addr[,port]` or by supplying `--ssh-user` and `--ssh-port`. civa no longer relies on hardcoded defaults for these values.
 
 Run an interactive plan:
 

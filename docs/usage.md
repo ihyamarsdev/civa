@@ -65,7 +65,7 @@ Component selection in interactive mode uses a Charmbracelet Huh multi-select pr
 
 `civa plan init` assumes SSH key access and only needs the local SSH private key path. The matching public key path is derived automatically unless you override it explicitly.
 
-Use `civa setup` to install your local public key onto a fresh VPS with its built-in user account. Before running SSH key installation, `civa setup` checks required local dependencies and auto-installs missing packages using your OS package manager (`apt-get`, `dnf`, or `yum`) with `sudo`. If you pass `--ssh-password`, setup uses `sshpass -e ssh-copy-id`; otherwise it runs `ssh-copy-id` directly and lets that tool prompt for the password in your terminal. You can also pass `--ssh-password-secret <name>` to resolve the password from civa's encrypted secret store. Before it connects, `civa setup` rewrites only the matching host entry in `~/.ssh/known_hosts` so stale host keys for the target host do not block the first login while other hosts stay untouched. For first contact it uses `StrictHostKeyChecking=accept-new`, which is convenient but still a trust-on-first-use trade-off.
+Use `civa setup` to install your local public key onto a fresh VPS bootstrap account. Before running SSH key installation, `civa setup` checks required local dependencies and auto-installs missing packages using your OS package manager (`apt-get`, `dnf`, or `yum`) with `sudo`. If you pass `--ssh-password`, setup uses `sshpass -e ssh-copy-id`; otherwise it runs `ssh-copy-id` directly and lets that tool prompt for the password in your terminal. You can also pass `--ssh-password-secret <name>` to resolve the password from civa's encrypted secret store. Before it connects, `civa setup` rewrites only the matching host entry in `~/.ssh/known_hosts` so stale host keys for the target host do not block the first login while other hosts stay untouched. For first contact it uses `StrictHostKeyChecking=accept-new`, which is convenient but still a trust-on-first-use trade-off. Every target must explicitly declare the SSH user and port via `--server user@addr[,port]` or the global `--ssh-user`/`--ssh-port` flags, as civa no longer assumes hardcoded defaults such as root/22.
 
 Use `civa auth cloudflare` to manage Cloudflare API token profiles first. Then use `civa tools` to run provider utilities via interactive form prompts. `civa tools cloudflare zones` reads token from auth profile (`--profile`, default: `default`).
 
@@ -140,25 +140,27 @@ Generate a plan for two servers:
   --components all
 ```
 
-`--server` now supports `addr[,hostname][,port]`. If `port` is omitted, `civa plan init` falls back to `--ssh-port` and defaults to `22`.
+`--server` now supports `[user@]addr[,hostname][,port]`. When you prefix a host with `user@`, that SSH user is used for that machine; hosts without an override continue to use the global `--ssh-user`. If `port` is omitted, `civa plan init` falls back to `--ssh-port` and defaults to `22`.
 
-Install your public key on a fresh server before planning:
+Install your public key on multiple fresh servers before planning (each target is processed sequentially, with `ssh-copy-id` printing per-host status):
 
 ```bash
 ./bin/civa setup \
   --server 203.0.113.12 \
+  --server 203.0.113.13 \
   --ssh-user root \
   --ssh-port 22 \
   --ssh-password 'super-secret-password' \
   --ssh-public-key ~/.ssh/id_rsa.pub
 ```
 
-Install your public key using secret-backed password input:
+Install your public key using secret-backed password input (repeat `--server` to cover every fresh host):
 
 ```bash
 ./bin/civa secret set vps-root-password --value-file ~/.secrets/vps-root-password.txt
 ./bin/civa setup \
   --server 203.0.113.12 \
+  --server 203.0.113.13 \
   --ssh-user root \
   --ssh-password-secret vps-root-password \
   --ssh-public-key ~/.ssh/id_rsa.pub

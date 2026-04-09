@@ -93,6 +93,7 @@ type serverSpec struct {
 	Address  string
 	Hostname string
 	SSHPort  int
+	SSHUser  string
 }
 
 type webServerSiteSpec struct {
@@ -301,10 +302,27 @@ func runSetupFlow(cfg *config) error {
 	}
 
 	printSection("Setup Summary")
-	fmt.Fprintf(os.Stderr, "Server: %s\n", cfg.Servers[0].Address)
-	fmt.Fprintf(os.Stderr, "SSH user: %s\n", cfg.SSHUser)
-	fmt.Fprintf(os.Stderr, "SSH port: %d\n", cfg.SSHPort)
+	if len(cfg.Servers) == 1 {
+		fmt.Fprintf(os.Stderr, "Target: %s\n", formatServerTarget(*cfg, cfg.Servers[0]))
+	} else {
+		fmt.Fprintf(os.Stderr, "Targets (%d):\n", len(cfg.Servers))
+		for _, server := range cfg.Servers {
+			fmt.Fprintf(os.Stderr, "  - %s\n", formatServerTarget(*cfg, server))
+		}
+	}
+	if strings.TrimSpace(cfg.SSHUser) != "" {
+		fmt.Fprintf(os.Stderr, "Default SSH user: %s (used when targets omit a user override)\n", cfg.SSHUser)
+	} else {
+		fmt.Fprintln(os.Stderr, "Default SSH user: <none> (every target must include user@ in --server)")
+	}
+	if cfg.SSHPort >= 1 && cfg.SSHPort <= 65535 {
+		fmt.Fprintf(os.Stderr, "Default SSH port: %d (used when targets omit a custom port)\n", cfg.SSHPort)
+	} else {
+		fmt.Fprintln(os.Stderr, "Default SSH port: <none> (every target must specify a port)")
+	}
 	fmt.Fprintf(os.Stderr, "SSH public key: %s\n", cfg.SSHPublicKey)
+	fmt.Fprintln(os.Stderr, "Execution: sequential per host")
+
 	if strings.TrimSpace(cfg.SSHPassword) == "" {
 		fmt.Fprintln(os.Stderr, "Password source: ssh-copy-id will prompt for the server password")
 	} else {
@@ -312,6 +330,10 @@ func runSetupFlow(cfg *config) error {
 	}
 
 	return runSSHCopyID(*cfg)
+}
+
+func formatServerTarget(cfg config, server serverSpec) string {
+	return fmt.Sprintf("%s@%s:%d", effectiveSSHUser(cfg, server), server.Address, effectiveSSHPort(cfg, server))
 }
 
 func resolveSetupSecretPassword(cfg *config) error {
@@ -1579,17 +1601,33 @@ func validateWebServerRuntimeConfig(cfg *config) error {
 }
 
 func validateSetupConfig(cfg *config) error {
-	if len(cfg.Servers) != 1 {
-		return fmt.Errorf("civa setup requires exactly one --server target")
+	if len(cfg.Servers) == 0 {
+		return fmt.Errorf("civa setup requires at least one --server target")
 	}
-	if strings.TrimSpace(cfg.SSHUser) == "" {
-		return fmt.Errorf("--ssh-user must not be empty")
-	}
-	if cfg.SSHPort < 1 || cfg.SSHPort > 65535 {
-		return fmt.Errorf("--ssh-port must be between 1 and 65535")
+	if strings.TrimSpace(cfg.SSHPublicKey) == "" {
+		return fmt.Errorf("--ssh-public-key must not be empty")
 	}
 	if _, err := os.Stat(cfg.SSHPublicKey); err != nil {
 		return fmt.Errorf("SSH public key not found: %s", cfg.SSHPublicKey)
+	}
+	for idx, server := range cfg.Servers {
+		user := strings.TrimSpace(server.SSHUser)
+		if user == "" {
+			user = strings.TrimSpace(cfg.SSHUser)
+		}
+		if user == "" {
+			return fmt.Errorf("server %d (%s) requires an SSH user via --server user@ or --ssh-user", idx+1, server.Address)
+		}
+		port := server.SSHPort
+		if port == 0 {
+			port = cfg.SSHPort
+		}
+		if port < 1 || port > 65535 {
+			return fmt.Errorf("server %d (%s) requires an SSH port via --server port or --ssh-port", idx+1, server.Address)
+		}
+	}
+	if cfg.SSHPort != 0 && (cfg.SSHPort < 1 || cfg.SSHPort > 65535) {
+		return fmt.Errorf("--ssh-port must be between 1 and 65535")
 	}
 	if _, err := exec.LookPath("ssh-copy-id"); err != nil {
 		return fmt.Errorf("ssh-copy-id is required for civa setup")
@@ -1602,13 +1640,36 @@ func validateSetupConfig(cfg *config) error {
 	return nil
 }
 
+func splitUserAddress(token string) (string, string, error) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return "", "", fmt.Errorf("--server requires an address or IP")
+	}
+	if idx := strings.Index(token, "@"); idx >= 0 {
+		user := strings.TrimSpace(token[:idx])
+		address := strings.TrimSpace(token[idx+1:])
+		if user == "" {
+			return "", "", fmt.Errorf("--server user override must include a username")
+		}
+		if address == "" {
+			return "", "", fmt.Errorf("--server requires an address or IP")
+		}
+		return user, address, nil
+	}
+	return "", token, nil
+}
+
 func parseServerSpec(raw string) (serverSpec, error) {
 	parts := strings.Split(raw, ",")
-	address := strings.TrimSpace(parts[0])
-	if address == "" {
+	addressToken := strings.TrimSpace(parts[0])
+	if addressToken == "" {
 		return serverSpec{}, fmt.Errorf("--server requires an address or IP")
 	}
-	server := serverSpec{Address: address}
+	user, address, err := splitUserAddress(addressToken)
+	if err != nil {
+		return serverSpec{}, err
+	}
+	server := serverSpec{Address: address, SSHUser: user}
 
 	if len(parts) >= 2 {
 		second := strings.TrimSpace(parts[1])

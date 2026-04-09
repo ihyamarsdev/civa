@@ -15,7 +15,7 @@ Local machine requirements:
 
 If you plan to use `civa setup` against a fresh server that still needs password login, install `ssh-copy-id` on the local machine. Install `sshpass` as well if you want to pass the password non-interactively with `--ssh-password` or `--ssh-password-secret`.
 
-`civa setup` is the bootstrap step for installing your SSH public key onto the server. `civa plan init` is key-only and expects that your public key has already been installed on the server.
+`civa setup` is the bootstrap step for installing your SSH public key onto the server. You can repeat `--server` to contact several machines in one run; `civa setup` processes each target sequentially and prints per-host status lines. Each target must specify its SSH user and port via `--server user@addr[,port]` or the global `--ssh-user`/`--ssh-port` flags because civa no longer relies on hardcoded defaults. `civa plan init` is key-only and expects that your public key has already been installed on the server.
 
 ## Option 1: Build From Source
 

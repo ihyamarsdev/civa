@@ -61,3 +61,7 @@ Beginner mode is optional. You can always run commands directly:
 civa setup --server <ip> --ssh-user <user> --ssh-public-key <path>
 civa plan init
 ```
+
+Remember to provide the SSH user (and SSH port via `--ssh-port` or `--server addr[,port]` when necessary) because setup no longer assumes default credentials.
+
+Repeat `--server` within the setup command to target every fresh host sequentially.
