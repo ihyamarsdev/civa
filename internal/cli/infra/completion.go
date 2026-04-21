@@ -9,8 +9,12 @@ import (
 )
 
 var completionCommands = []string{
+	commandBootstrap,
+	commandDeploy,
+	commandOps,
 	commandApply,
 	commandPlan,
+	commandPlaybook,
 	commandStart,
 	commandSetup,
 	commandAuth,
@@ -25,6 +29,10 @@ var completionCommands = []string{
 }
 
 var planSubcommands = []string{planActionInit, planActionReview, planActionEdit, planActionList, planActionRemove, commandHelp}
+var bootstrapSubcommands = []string{commandSetup, commandDoctor, commandConfig, commandHelp}
+var deploySubcommands = []string{commandPlan, commandApply, playbookActionRun, commandHelp}
+var opsSubcommands = []string{commandPlaybook, commandSecret, commandAuth, commandTools, commandHelp}
+var playbookSubcommands = []string{playbookActionRun, playbookActionAdd, playbookActionList, playbookActionRemove, commandHelp}
 var configSubcommands = []string{configActionInit, configActionList, configActionRemove, commandHelp}
 var configProviders = []string{webServerNginx, webServerCaddy, configProfileAll}
 var secretSubcommands = []string{secretActionSet, secretActionList, secretActionRemove, commandHelp}
@@ -86,8 +94,16 @@ func completionSuggestions(words []string) []string {
 	}
 
 	switch words[0] {
+	case commandBootstrap:
+		return completeBootstrap(words)
+	case commandDeploy:
+		return completeDeploy(words)
+	case commandOps:
+		return completeOps(words)
 	case commandPlan:
 		return completePlan(words)
+	case commandPlaybook:
+		return completePlaybook(words)
 	case commandStart:
 		return completeCommonFlags(words, current)
 	case commandDoctor:
@@ -108,6 +124,146 @@ func completionSuggestions(words []string) []string {
 		return completeCompletionCommand(words)
 	default:
 		return completeCommonFlags(words, current)
+	}
+}
+
+func completeBootstrap(words []string) []string {
+	current := words[len(words)-1]
+	if len(words) == 1 {
+		return bootstrapSubcommands
+	}
+
+	if len(words) == 2 && !contains(bootstrapSubcommands, words[1]) {
+		return filterByPrefix(bootstrapSubcommands, current)
+	}
+
+	subcommand := words[1]
+	mappedWords := append([]string{subcommand}, words[2:]...)
+	switch subcommand {
+	case commandSetup:
+		return completeSetup(mappedWords)
+	case commandDoctor:
+		return completeDoctor(mappedWords)
+	case commandConfig:
+		return completeConfig(mappedWords)
+	case commandHelp:
+		return filterByPrefix([]string{"--help"}, current)
+	default:
+		return filterByPrefix(bootstrapSubcommands, current)
+	}
+}
+
+func completeDeploy(words []string) []string {
+	current := words[len(words)-1]
+	if len(words) == 1 {
+		return deploySubcommands
+	}
+
+	if len(words) == 2 && !contains(deploySubcommands, words[1]) {
+		return filterByPrefix(deploySubcommands, current)
+	}
+
+	subcommand := words[1]
+	switch subcommand {
+	case commandPlan:
+		return completePlan(append([]string{commandPlan}, words[2:]...))
+	case commandApply:
+		return completeApply(append([]string{commandApply}, words[2:]...))
+	case playbookActionRun:
+		return completePlaybook(append([]string{commandPlaybook, playbookActionRun}, words[2:]...))
+	case commandHelp:
+		return filterByPrefix([]string{"--help"}, current)
+	default:
+		return filterByPrefix(deploySubcommands, current)
+	}
+}
+
+func completeOps(words []string) []string {
+	current := words[len(words)-1]
+	if len(words) == 1 {
+		return opsSubcommands
+	}
+
+	if len(words) == 2 && !contains(opsSubcommands, words[1]) {
+		return filterByPrefix(opsSubcommands, current)
+	}
+
+	subcommand := words[1]
+	mappedWords := append([]string{subcommand}, words[2:]...)
+	switch subcommand {
+	case commandPlaybook:
+		return completePlaybook(mappedWords)
+	case commandSecret:
+		return completeSecret(mappedWords)
+	case commandAuth:
+		return completeAuth(mappedWords)
+	case commandTools:
+		return completeTools(mappedWords)
+	case commandHelp:
+		return filterByPrefix([]string{"--help"}, current)
+	default:
+		return filterByPrefix(opsSubcommands, current)
+	}
+}
+
+func completePlaybook(words []string) []string {
+	current := words[len(words)-1]
+	playbookRunFlags := []string{"--plan-file", "--name", "--file", "--yes", "--non-interactive", "--help"}
+	playbookAddFlags := []string{"--file", "--non-interactive", "--help"}
+	playbookListFlags := []string{"--non-interactive", "--help"}
+	playbookRemoveFlags := []string{"--yes", "--non-interactive", "--help"}
+
+	if len(words) == 1 {
+		return playbookSubcommands
+	}
+
+	if len(words) == 2 && !contains(playbookSubcommands, words[1]) {
+		return filterByPrefix(playbookSubcommands, current)
+	}
+
+	action := words[1]
+	switch action {
+	case playbookActionRun:
+		if len(words) == 2 {
+			suggestions := append(generatedPlanNames(""), playbookRunFlags...)
+			return filterByPrefix(suggestions, current)
+		}
+		if previousWordExpectsValue(words) {
+			prev := words[len(words)-2]
+			if prev == "--name" {
+				return generatedManagedPlaybookNames(current)
+			}
+			if prev == "--plan-file" {
+				return generatedPlanNames(current)
+			}
+			return filterByPrefix(playbookRunFlags, current)
+		}
+		if strings.HasPrefix(current, "-") {
+			return filterByPrefix(playbookRunFlags, current)
+		}
+		return generatedPlanNames(current)
+	case playbookActionAdd:
+		if len(words) <= 2 {
+			suggestions := append(generatedManagedPlaybookNames(""), playbookAddFlags...)
+			return filterByPrefix(suggestions, current)
+		}
+		if previousWordExpectsValue(words) || strings.HasPrefix(current, "-") {
+			return filterByPrefix(playbookAddFlags, current)
+		}
+		return generatedManagedPlaybookNames(current)
+	case playbookActionList:
+		return filterByPrefix(playbookListFlags, current)
+	case playbookActionRemove:
+		if len(words) == 2 {
+			suggestions := append(generatedManagedPlaybookNames(""), playbookRemoveFlags...)
+			return filterByPrefix(suggestions, current)
+		}
+		if previousWordExpectsValue(words) || strings.HasPrefix(current, "-") {
+			return filterByPrefix(playbookRemoveFlags, current)
+		}
+		return generatedManagedPlaybookNames(current)
+	default:
+		return filterByPrefix(playbookSubcommands, current)
 	}
 }
 
@@ -549,6 +705,29 @@ func generatedPlanNames(prefix string) []string {
 	return filterByPrefix(plans, prefix)
 }
 
+func generatedManagedPlaybookNames(prefix string) []string {
+	entries, err := os.ReadDir(customPlaybookDirectoryPath())
+	if err != nil {
+		return nil
+	}
+
+	playbooks := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		ext := strings.ToLower(filepath.Ext(name))
+		if ext != ".yml" && ext != ".yaml" {
+			continue
+		}
+		playbooks = append(playbooks, strings.TrimSuffix(name, ext))
+	}
+
+	sort.Strings(playbooks)
+	return filterByPrefix(playbooks, prefix)
+}
+
 func previousWordExpectsValue(words []string) bool {
 	if len(words) < 2 {
 		return false
@@ -559,7 +738,7 @@ func previousWordExpectsValue(words []string) bool {
 	}
 
 	switch words[len(words)-2] {
-	case "--plan-file", "--ssh-private-key", "--ssh-public-key", "--output", "--ssh-user", "--ssh-port", "--ssh-password", "--ssh-password-secret", "--deployer-user", "--timezone", "--server", "--traefik-email", "--traefik-dns-provider", "--value", "--value-file", "--token", "--profile", "--name", "--account-id", "--zone-id", "--type", "--paused":
+	case "--plan-file", "--file", "--ssh-private-key", "--ssh-public-key", "--output", "--ssh-user", "--ssh-port", "--ssh-password", "--ssh-password-secret", "--deployer-user", "--timezone", "--server", "--traefik-email", "--traefik-dns-provider", "--value", "--value-file", "--token", "--profile", "--name", "--account-id", "--zone-id", "--type", "--paused":
 		return true
 	default:
 		return false
@@ -597,7 +776,7 @@ _civa_completion() {
   prev="${COMP_WORDS[COMP_CWORD-1]}"
 
 	case "$prev" in
-	    --plan-file|--ssh-private-key|--ssh-public-key|--output|--value-file)
+	    --plan-file|--file|--ssh-private-key|--ssh-public-key|--output|--value-file)
       compopt -o default
       return 0
       ;;
@@ -619,7 +798,7 @@ _civa_completion() {
   prev=${words[CURRENT-1]}
 
 	case "$prev" in
-	    --plan-file|--ssh-private-key|--ssh-public-key|--output|--value-file)
+	    --plan-file|--file|--ssh-private-key|--ssh-public-key|--output|--value-file)
       _files
       return
       ;;
@@ -641,7 +820,7 @@ end
 
 function __civa_complete_path_flag
     set prev (commandline -opc)[-1]
-	contains -- $prev --plan-file --ssh-private-key --ssh-public-key --output --value-file
+	contains -- $prev --plan-file --file --ssh-private-key --ssh-public-key --output --value-file
 end
 
 complete -c civa -f -n '__civa_complete_path_flag' -a '(__fish_complete_path)'

@@ -149,6 +149,21 @@ func (LegacyRunner) ExecuteRequest(req domain.Request) error {
 		}
 		cfg.ApplyAction = applyActionExecute
 		return runApplyFlow(&cfg)
+	case domain.CommandPlaybook:
+		cfg := defaultConfig(commandPlaybook)
+		applyGlobalRequest(req, &cfg)
+		cfg.PlaybookAction = strings.ToLower(strings.TrimSpace(req.PlaybookAction))
+		cfg.PlaybookName = req.PlaybookName
+		cfg.PlaybookFile = req.PlaybookFile
+		cfg.PlanName = req.PlanName
+		cfg.PlanInputFile = req.PlanInputFile
+		cfg.Provided.PlanInputFile = req.Provided.PlanInputFile
+		cfg.Provided.PlaybookName = req.Provided.PlaybookName
+		cfg.Provided.PlaybookFile = req.Provided.PlaybookFile
+		if cfg.PlaybookAction == "" {
+			cfg.PlaybookAction = playbookActionList
+		}
+		return runPlaybookFlow(&cfg)
 	default:
 		return fmt.Errorf("unknown command: %s", req.Command)
 	}
@@ -174,6 +189,8 @@ func applySharedRequest(req domain.Request, cfg *config) {
 	cfg.ComponentsInput = req.ComponentsInput
 	cfg.PlanInputFile = req.PlanInputFile
 	cfg.PlanFile = req.PlanFile
+	cfg.PlaybookName = req.PlaybookName
+	cfg.PlaybookFile = req.PlaybookFile
 	cfg.TraefikEmail = req.TraefikEmail
 	cfg.TraefikChallenge = strings.ToLower(req.TraefikChallenge)
 	cfg.TraefikDNSProvider = req.TraefikDNSProvider
@@ -190,6 +207,8 @@ func applySharedRequest(req domain.Request, cfg *config) {
 	cfg.Provided.Components = req.Provided.Components
 	cfg.Provided.PlanInputFile = req.Provided.PlanInputFile
 	cfg.Provided.PlanFile = req.Provided.PlanFile
+	cfg.Provided.PlaybookName = req.Provided.PlaybookName
+	cfg.Provided.PlaybookFile = req.Provided.PlaybookFile
 	cfg.Provided.TraefikEmail = req.Provided.TraefikEmail
 	cfg.Provided.TraefikChallenge = req.Provided.TraefikChallenge
 	cfg.Provided.TraefikDNSProvider = req.Provided.TraefikDNSProvider

@@ -64,6 +64,18 @@ func TestPrintUsageFallsBackToOverviewWhenNonInteractive(t *testing.T) {
 	if !strings.Contains(output, "auth cloudflare           Manage Cloudflare auth profiles") {
 		t.Fatalf("expected commands overview in output, got %q", output)
 	}
+	if !strings.Contains(output, "bootstrap                 Simplified onboarding: setup, doctor, and config") {
+		t.Fatalf("expected bootstrap overview in output, got %q", output)
+	}
+	if !strings.Contains(output, "deploy                    Simplified delivery flow: plan, apply, and custom run") {
+		t.Fatalf("expected deploy overview in output, got %q", output)
+	}
+	if !strings.Contains(output, "ops                       Operational tools: playbook, secret, auth, and provider tools") {
+		t.Fatalf("expected ops overview in output, got %q", output)
+	}
+	if !strings.Contains(output, "playbook run [plan-name]   Run managed/local custom playbook on existing plan artifacts") {
+		t.Fatalf("expected playbook command overview in output, got %q", output)
+	}
 }
 
 func captureStdout(t *testing.T, fn func()) string {

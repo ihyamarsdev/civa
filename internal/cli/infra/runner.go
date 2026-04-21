@@ -106,6 +106,14 @@ func rollbackStateFilePath() string {
 	return storage.RollbackStateFilePath()
 }
 
+func customPlaybookDirectoryPath() string {
+	return storage.CustomPlaybookDirectoryPath()
+}
+
+func customPlaybookPathForName(name string) string {
+	return storage.CustomPlaybookPathForName(name)
+}
+
 func defaultPersistedWebServerConfig() persistedWebServerConfig {
 	return persistedWebServerConfig{
 		Version: 1,
@@ -624,6 +632,9 @@ func buildAnsibleArgs(cfg *config, state *runtimeState, forceCheckMode bool) []s
 		args = append(args, "-e", "@"+state.AuthFile)
 	}
 	tags := selectedAnsibleTags(*cfg)
+	if cfg.Command == commandPlaybook && cfg.PlaybookAction == playbookActionRun {
+		tags = nil
+	}
 	if len(tags) > 0 {
 		args = append(args, "--tags", strings.Join(tags, ","))
 	}
@@ -702,7 +713,7 @@ func resolvePlanInputFile(cfg *config) (string, error) {
 		return cfg.PlanInputFile, nil
 	}
 
-	return "", fmt.Errorf("plan review/edit and apply require a generated plan name or --plan-file")
+	return "", fmt.Errorf("plan review/edit, apply, and playbook run require a generated plan name or --plan-file")
 }
 
 func resolveConfigPlanInputFile(planName string) (string, error) {

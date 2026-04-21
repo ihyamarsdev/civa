@@ -18,6 +18,7 @@ const (
 	helpTargetConfigAll   = "config-all"
 	helpTargetAuthCF      = "auth-cloudflare"
 	helpTargetToolsCF     = "tools-cloudflare"
+	helpTargetDeployRun   = "deploy-run"
 	wizardActionSetup     = "setup"
 	wizardActionPlanInit  = "plan-init"
 	wizardActionHelp      = "help"
@@ -97,6 +98,9 @@ func (r *Root) newRootCommand() *cobra.Command {
 	root.AddCommand(
 		r.newVersionCommand(),
 		r.newCompletionCommand(),
+		r.newBootstrapCommand(globals),
+		r.newDeployCommand(globals),
+		r.newOpsCommand(globals),
 		r.newDoctorCommand(globals),
 		r.newStartCommand(globals),
 		r.newSetupCommand(globals),
@@ -105,6 +109,7 @@ func (r *Root) newRootCommand() *cobra.Command {
 		r.newSecretCommand(globals),
 		r.newConfigCommand(globals),
 		r.newPlanCommand(globals),
+		r.newPlaybookCommand(globals),
 		r.newApplyCommand(globals),
 		r.newUninstallCommand(globals),
 		r.newHiddenCompleteCommand(),
@@ -930,6 +935,189 @@ func (r *Root) newApplyCommand(globals *globalFlags) *cobra.Command {
 	return applyCmd
 }
 
+func (r *Root) newPlaybookCommand(globals *globalFlags) *cobra.Command {
+	var runPlanFile string
+	var runPlaybookName string
+	var runPlaybookFile string
+	var addPlaybookFile string
+
+	playbookCmd := &cobra.Command{
+		Use:   string(domain.CommandPlaybook),
+		Short: "Run and manage custom user playbooks",
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			return r.executor.Execute(domain.Request{Command: domain.CommandHelp, HelpTarget: string(domain.CommandPlaybook)})
+		},
+	}
+
+	runCmd := &cobra.Command{
+		Use:   domain.PlaybookActionRun + " [plan-name]",
+		Short: "Run a custom playbook against an existing generated plan context",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			req := domain.Request{
+				Command:        domain.CommandPlaybook,
+				PlaybookAction: domain.PlaybookActionRun,
+				PlanInputFile:  runPlanFile,
+				PlaybookName:   runPlaybookName,
+				PlaybookFile:   runPlaybookFile,
+				Provided: domain.ProvidedFlags{
+					PlanInputFile: cmd.Flags().Changed("plan-file"),
+					PlaybookName:  cmd.Flags().Changed("name"),
+					PlaybookFile:  cmd.Flags().Changed("file"),
+				},
+			}
+			if len(args) == 1 {
+				req.PlanName = args[0]
+			}
+			req = r.withGlobalFlags(cmd, globals, req)
+			return r.executor.Execute(req)
+		},
+	}
+	runCmd.Flags().StringVar(&runPlanFile, "plan-file", "", "Existing plan file override used by playbook run")
+	runCmd.Flags().StringVar(&runPlaybookName, "name", "", "Managed playbook name stored under ~/.civa/playbooks")
+	runCmd.Flags().StringVar(&runPlaybookFile, "file", "", "Local custom playbook file path (.yml/.yaml)")
+
+	addCmd := &cobra.Command{
+		Use:   domain.PlaybookActionAdd + " <name>",
+		Short: "Add or update a managed custom playbook",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			req := domain.Request{
+				Command:        domain.CommandPlaybook,
+				PlaybookAction: domain.PlaybookActionAdd,
+				PlaybookName:   args[0],
+				PlaybookFile:   addPlaybookFile,
+				Provided: domain.ProvidedFlags{
+					PlaybookName: true,
+					PlaybookFile: cmd.Flags().Changed("file"),
+				},
+			}
+			req = r.withGlobalFlags(cmd, globals, req)
+			return r.executor.Execute(req)
+		},
+	}
+	addCmd.Flags().StringVar(&addPlaybookFile, "file", "", "Local custom playbook file path to register (.yml/.yaml)")
+
+	listCmd := &cobra.Command{
+		Use:   domain.PlaybookActionList,
+		Short: "List managed custom playbooks",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			req := r.withGlobalFlags(cmd, globals, domain.Request{Command: domain.CommandPlaybook, PlaybookAction: domain.PlaybookActionList})
+			return r.executor.Execute(req)
+		},
+	}
+
+	removeCmd := &cobra.Command{
+		Use:   domain.PlaybookActionRemove + " [name]",
+		Short: "Remove a managed custom playbook",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			req := domain.Request{Command: domain.CommandPlaybook, PlaybookAction: domain.PlaybookActionRemove}
+			if len(args) == 1 {
+				req.PlaybookName = args[0]
+				req.Provided.PlaybookName = true
+			}
+			req = r.withGlobalFlags(cmd, globals, req)
+			return r.executor.Execute(req)
+		},
+	}
+
+	playbookCmd.AddCommand(runCmd, addCmd, listCmd, removeCmd)
+	return playbookCmd
+}
+
+func (r *Root) newBootstrapCommand(globals *globalFlags) *cobra.Command {
+	bootstrapCmd := &cobra.Command{
+		Use:   string(domain.CommandBootstrap),
+		Short: "Simplified onboarding: setup, doctor, and config",
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			return r.executor.Execute(domain.Request{Command: domain.CommandHelp, HelpTarget: string(domain.CommandBootstrap)})
+		},
+	}
+
+	bootstrapCmd.AddCommand(
+		r.newSetupCommand(globals),
+		r.newDoctorCommand(globals),
+		r.newConfigCommand(globals),
+	)
+
+	return bootstrapCmd
+}
+
+func (r *Root) newDeployCommand(globals *globalFlags) *cobra.Command {
+	var runPlanFile string
+	var runPlaybookName string
+	var runPlaybookFile string
+
+	deployCmd := &cobra.Command{
+		Use:   string(domain.CommandDeploy),
+		Short: "Simplified delivery flow: plan, apply, and custom playbook run",
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			return r.executor.Execute(domain.Request{Command: domain.CommandHelp, HelpTarget: string(domain.CommandDeploy)})
+		},
+	}
+
+	runCmd := &cobra.Command{
+		Use:   "run [plan-name]",
+		Short: "Run a managed/local custom playbook with existing plan artifacts",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			req := domain.Request{
+				Command:        domain.CommandPlaybook,
+				PlaybookAction: domain.PlaybookActionRun,
+				PlanInputFile:  runPlanFile,
+				PlaybookName:   runPlaybookName,
+				PlaybookFile:   runPlaybookFile,
+				Provided: domain.ProvidedFlags{
+					PlanInputFile: cmd.Flags().Changed("plan-file"),
+					PlaybookName:  cmd.Flags().Changed("name"),
+					PlaybookFile:  cmd.Flags().Changed("file"),
+				},
+			}
+			if len(args) == 1 {
+				req.PlanName = args[0]
+			}
+			req = r.withGlobalFlags(cmd, globals, req)
+			return r.executor.Execute(req)
+		},
+	}
+	runCmd.Flags().StringVar(&runPlanFile, "plan-file", "", "Existing plan file override used by deploy run")
+	runCmd.Flags().StringVar(&runPlaybookName, "name", "", "Managed playbook name stored under ~/.civa/playbooks")
+	runCmd.Flags().StringVar(&runPlaybookFile, "file", "", "Local custom playbook file path (.yml/.yaml)")
+
+	deployCmd.AddCommand(
+		r.newPlanCommand(globals),
+		r.newApplyCommand(globals),
+		runCmd,
+	)
+
+	return deployCmd
+}
+
+func (r *Root) newOpsCommand(globals *globalFlags) *cobra.Command {
+	opsCmd := &cobra.Command{
+		Use:   string(domain.CommandOps),
+		Short: "Operational tools: playbooks, secrets, auth profiles, and provider tools",
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			return r.executor.Execute(domain.Request{Command: domain.CommandHelp, HelpTarget: string(domain.CommandOps)})
+		},
+	}
+
+	opsCmd.AddCommand(
+		r.newPlaybookCommand(globals),
+		r.newSecretCommand(globals),
+		r.newAuthCommand(globals),
+		r.newToolsCommand(globals),
+	)
+
+	return opsCmd
+}
+
 func (r *Root) newUninstallCommand(globals *globalFlags) *cobra.Command {
 	return &cobra.Command{
 		Use:   string(domain.CommandUninstall),
@@ -1172,6 +1360,17 @@ func normalizeHelpTargetCommand(cmd *cobra.Command) string {
 		case string(domain.CommandApply):
 			if name == domain.ApplyActionReview || name == domain.ApplyActionDrift || name == domain.ApplyActionRollback {
 				return string(domain.CommandApply)
+			}
+		case string(domain.CommandBootstrap):
+			// Keep subcommand help specific under bootstrap wrappers.
+			// Example: `civa bootstrap setup --help` should show setup help.
+		case string(domain.CommandDeploy):
+			if name == "run" {
+				return helpTargetDeployRun
+			}
+		case string(domain.CommandPlaybook):
+			if name == domain.PlaybookActionRun || name == domain.PlaybookActionAdd || name == domain.PlaybookActionList || name == domain.PlaybookActionRemove {
+				return string(domain.CommandPlaybook)
 			}
 		case string(domain.CommandPlan):
 			if name == domain.PlanActionInit || name == domain.PlanActionReview || name == domain.PlanActionEdit || name == domain.PlanActionList || name == domain.PlanActionRemove {

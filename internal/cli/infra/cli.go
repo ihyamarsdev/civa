@@ -30,11 +30,16 @@ const (
 	commandDoctor           = "doctor"
 	commandStart            = "start"
 	commandSetup            = "setup"
+	commandBootstrap        = "bootstrap"
+	commandDeploy           = "deploy"
+	commandDeployRunHelp    = "deploy-run"
+	commandOps              = "ops"
 	commandAuth             = "auth"
 	commandAuthCloudflare   = "auth-cloudflare"
 	commandTools            = "tools"
 	commandToolsCloudflare  = "tools-cloudflare"
 	commandSecret           = "secret"
+	commandPlaybook         = "playbook"
 	commandConfig           = "config"
 	commandConfigNginxHelp  = "config-nginx"
 	commandConfigCaddyHelp  = "config-caddy"
@@ -71,6 +76,10 @@ const (
 	applyActionReview         = "review"
 	applyActionDrift          = "drift"
 	applyActionRollback       = "rollback"
+	playbookActionRun         = "run"
+	playbookActionAdd         = "add"
+	playbookActionList        = "list"
+	playbookActionRemove      = "remove"
 	secretActionSet           = "set"
 	secretActionList          = "list"
 	secretActionRemove        = "remove"
@@ -152,6 +161,8 @@ type providedFlags struct {
 	CloudflareZoneName bool
 	CloudflareZoneType bool
 	CloudflarePaused   bool
+	PlaybookName       bool
+	PlaybookFile       bool
 }
 
 type config struct {
@@ -159,6 +170,7 @@ type config struct {
 	PlanAction                string
 	ConfigAction              string
 	ApplyAction               string
+	PlaybookAction            string
 	SecretAction              string
 	AuthProvider              string
 	AuthAction                string
@@ -199,6 +211,8 @@ type config struct {
 	CloudflareZoneType        string
 	CloudflareZonePaused      bool
 	CloudflareZonePausedInput string
+	PlaybookName              string
+	PlaybookFile              string
 	WebServerSites            []webServerSiteSpec
 	WebServerTargetHosts      []string
 	NginxCertbotEmail         string
@@ -224,6 +238,11 @@ type helpMenuOption struct {
 	Value       string
 	Label       string
 	Description string
+}
+
+type managedPlaybookEntry struct {
+	Name string
+	Path string
 }
 
 var interactiveHelpPromptFn = promptInteractiveHelpSelection
@@ -253,6 +272,7 @@ func defaultConfig(command string) config {
 		PlanAction:         planActionInit,
 		ConfigAction:       configActionInit,
 		ApplyAction:        applyActionExecute,
+		PlaybookAction:     playbookActionList,
 		SecretAction:       secretActionList,
 		DoctorAction:       doctorActionCheck,
 		SSHUser:            defaultSSHUser,
@@ -279,6 +299,381 @@ func runPlanRemoveFlow(cfg *config) error {
 		return fmt.Errorf("plan remove requires a generated plan name")
 	}
 	return removePlan(cfg)
+}
+
+func runPlaybookFlow(cfg *config) error {
+	action := strings.ToLower(strings.TrimSpace(cfg.PlaybookAction))
+	if action == "" {
+		action = playbookActionList
+	}
+
+	switch action {
+	case playbookActionRun:
+		return runPlaybookRunFlow(cfg)
+	case playbookActionAdd:
+		return runPlaybookAddFlow(cfg)
+	case playbookActionList:
+		return runPlaybookListFlow()
+	case playbookActionRemove:
+		return runPlaybookRemoveFlow(cfg)
+	default:
+		return fmt.Errorf("unknown playbook action: %s", cfg.PlaybookAction)
+	}
+}
+
+func runPlaybookRunFlow(cfg *config) error {
+	if err := validateExistingPlanCommandFlags(*cfg); err != nil {
+		return err
+	}
+
+	planPath, err := resolvePlaybookRunPlanPath(cfg)
+	if err != nil {
+		return err
+	}
+
+	customPlaybookPath, sourceSummary, err := resolvePlaybookRunSource(cfg)
+	if err != nil {
+		if errors.Is(err, errUserCancelled) {
+			return nil
+		}
+		return err
+	}
+
+	loadedCfg, state, err := loadPlannedRun(planPath)
+	if err != nil {
+		return err
+	}
+
+	if !cfg.AssumeYes {
+		if !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())) {
+			return fmt.Errorf("non-interactive playbook run requires --yes when executing against an existing plan")
+		}
+
+		confirmed, err := promptApplyExistingPlanConfirmation(planPath)
+		if err != nil {
+			if errors.Is(err, errUserCancelled) {
+				return nil
+			}
+			return err
+		}
+		if !confirmed {
+			fmt.Fprintln(os.Stderr, "🛑 civa playbook run was cancelled by the user before ansible-playbook started.")
+			return nil
+		}
+	}
+
+	loadedCfg.Command = commandPlaybook
+	loadedCfg.PlaybookAction = playbookActionRun
+	loadedCfg.Components = []string{}
+	state.PlaybookFile = customPlaybookPath
+	state.ProgressCurrent = 0
+	state.ProgressTotal = 1
+	state.CompletedPhases = nil
+
+	printSection("🚀 Run Custom Playbook")
+	for _, line := range applyArtifactLines(planPath, state) {
+		fmt.Fprintln(os.Stderr, line)
+	}
+	fmt.Fprintf(os.Stderr, "📚  Custom source: %s\n", sourceSummary)
+
+	state.progressStep("⚙️ Running custom ansible-playbook from existing plan context")
+	if err := runAnsible(loadedCfg, state); err != nil {
+		return err
+	}
+	state.appendCompletedPhase("✅ custom ansible-playbook execution")
+	showExecutionSummary(loadedCfg, state)
+	return nil
+}
+
+func runPlaybookAddFlow(cfg *config) error {
+	playbookName, err := normalizeManagedPlaybookName(cfg.PlaybookName)
+	if err != nil {
+		return err
+	}
+
+	if strings.TrimSpace(cfg.PlaybookFile) == "" && shouldPrompt(cfg) {
+		playbookPath, err := promptNonEmptyString("Custom playbook file path (.yml/.yaml)", "")
+		if err != nil {
+			if errors.Is(err, errUserCancelled) {
+				return nil
+			}
+			return err
+		}
+		cfg.PlaybookFile = playbookPath
+		cfg.Provided.PlaybookFile = true
+	}
+
+	if strings.TrimSpace(cfg.PlaybookFile) == "" {
+		return fmt.Errorf("playbook add requires --file <path>")
+	}
+
+	sourcePath, err := resolveCustomPlaybookFilePath(cfg.PlaybookFile)
+	if err != nil {
+		return err
+	}
+
+	if err := os.MkdirAll(customPlaybookDirectoryPath(), 0o755); err != nil {
+		return fmt.Errorf("create custom playbook directory: %w", err)
+	}
+
+	content, err := os.ReadFile(sourcePath)
+	if err != nil {
+		return fmt.Errorf("read custom playbook source %q: %w", sourcePath, err)
+	}
+
+	destinationPath := customPlaybookPathForName(playbookName)
+	if err := os.WriteFile(destinationPath, content, 0o644); err != nil {
+		return fmt.Errorf("write managed custom playbook %q: %w", destinationPath, err)
+	}
+
+	fmt.Fprintf(os.Stderr, "✅ Managed playbook %q saved at %s\n", playbookName, destinationPath)
+	return nil
+}
+
+func runPlaybookListFlow() error {
+	entries, err := managedCustomPlaybookEntries()
+	if err != nil {
+		return err
+	}
+
+	if len(entries) == 0 {
+		fmt.Fprintln(os.Stderr, "No managed custom playbooks yet. Use `civa playbook add <name> --file <path>`.")
+		return nil
+	}
+
+	printSection("Managed Custom Playbooks")
+	for _, entry := range entries {
+		fmt.Fprintf(os.Stderr, "- %-20s %s\n", entry.Name, entry.Path)
+	}
+
+	return nil
+}
+
+func runPlaybookRemoveFlow(cfg *config) error {
+	playbookName := strings.TrimSpace(cfg.PlaybookName)
+	if playbookName == "" && shouldPrompt(cfg) {
+		entries, err := managedCustomPlaybookEntries()
+		if err != nil {
+			return err
+		}
+		if len(entries) == 0 {
+			fmt.Fprintln(os.Stderr, "No managed custom playbooks found to remove.")
+			return nil
+		}
+
+		selection, err := promptNonEmptyString("Managed playbook name to remove", entries[0].Name)
+		if err != nil {
+			if errors.Is(err, errUserCancelled) {
+				return nil
+			}
+			return err
+		}
+		playbookName = selection
+	}
+
+	managedPath, managedName, err := resolveManagedPlaybookPath(playbookName)
+	if err != nil {
+		return err
+	}
+
+	if !cfg.AssumeYes {
+		if !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())) {
+			return fmt.Errorf("non-interactive playbook remove requires --yes")
+		}
+
+		confirmed, err := promptConfirm(fmt.Sprintf("Remove managed playbook %q?", managedName), false)
+		if err != nil {
+			if errors.Is(err, errUserCancelled) {
+				return nil
+			}
+			return err
+		}
+		if !confirmed {
+			fmt.Fprintln(os.Stderr, "🛑 civa playbook remove was cancelled by the user.")
+			return nil
+		}
+	}
+
+	if err := os.Remove(managedPath); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			fmt.Fprintf(os.Stderr, "Managed playbook %q is already absent\n", managedName)
+			return nil
+		}
+		return fmt.Errorf("remove managed playbook %q: %w", managedName, err)
+	}
+
+	fmt.Fprintf(os.Stderr, "✅ Managed playbook %q removed\n", managedName)
+	return nil
+}
+
+func resolvePlaybookRunPlanPath(cfg *config) (string, error) {
+	if strings.TrimSpace(cfg.PlanName) != "" || strings.TrimSpace(cfg.PlanInputFile) != "" {
+		return resolvePlanInputFile(cfg)
+	}
+
+	if !shouldPrompt(cfg) {
+		return resolvePlanInputFile(cfg)
+	}
+
+	defaultPlanPath := ""
+	if latestPlanPath, err := readLatestPlanPointer(); err == nil {
+		defaultPlanPath = latestPlanPath
+	}
+
+	planPath, err := promptPlanFilePath(defaultPlanPath)
+	if err != nil {
+		return "", err
+	}
+
+	cfg.PlanInputFile = strings.TrimSpace(planPath)
+	cfg.Provided.PlanInputFile = true
+	return resolvePlanInputFile(cfg)
+}
+
+func resolvePlaybookRunSource(cfg *config) (string, string, error) {
+	if cfg.Provided.PlaybookName && cfg.Provided.PlaybookFile {
+		return "", "", fmt.Errorf("playbook run accepts either --name or --file, not both")
+	}
+
+	if cfg.Provided.PlaybookName {
+		path, name, err := resolveManagedPlaybookPath(cfg.PlaybookName)
+		if err != nil {
+			return "", "", err
+		}
+		return path, fmt.Sprintf("managed:%s (%s)", name, path), nil
+	}
+
+	if cfg.Provided.PlaybookFile {
+		path, err := resolveCustomPlaybookFilePath(cfg.PlaybookFile)
+		if err != nil {
+			return "", "", err
+		}
+		return path, fmt.Sprintf("file:%s", path), nil
+	}
+
+	if !shouldPrompt(cfg) {
+		return "", "", fmt.Errorf("playbook run requires --name <managed-playbook> or --file <path>")
+	}
+
+	entries, err := managedCustomPlaybookEntries()
+	if err != nil {
+		return "", "", err
+	}
+
+	defaultInput := ""
+	if len(entries) > 0 {
+		defaultInput = entries[0].Name
+	}
+
+	input, err := promptNonEmptyString("Managed playbook name or local playbook path", defaultInput)
+	if err != nil {
+		return "", "", err
+	}
+
+	if managedPath, managedName, managedErr := resolveManagedPlaybookPath(input); managedErr == nil {
+		return managedPath, fmt.Sprintf("managed:%s (%s)", managedName, managedPath), nil
+	}
+
+	path, err := resolveCustomPlaybookFilePath(input)
+	if err == nil {
+		return path, fmt.Sprintf("file:%s", path), nil
+	}
+
+	return "", "", fmt.Errorf("custom playbook %q not found in managed registry and is not a readable YAML file path", strings.TrimSpace(input))
+}
+
+func managedCustomPlaybookEntries() ([]managedPlaybookEntry, error) {
+	entries, err := os.ReadDir(customPlaybookDirectoryPath())
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return []managedPlaybookEntry{}, nil
+		}
+		return nil, fmt.Errorf("list managed custom playbooks: %w", err)
+	}
+
+	playbooks := make([]managedPlaybookEntry, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+
+		name := strings.TrimSpace(entry.Name())
+		ext := strings.ToLower(filepath.Ext(name))
+		if ext != ".yml" && ext != ".yaml" {
+			continue
+		}
+
+		playbooks = append(playbooks, managedPlaybookEntry{
+			Name: strings.TrimSuffix(name, ext),
+			Path: filepath.Join(customPlaybookDirectoryPath(), name),
+		})
+	}
+
+	slices.SortFunc(playbooks, func(a, b managedPlaybookEntry) int {
+		return strings.Compare(a.Name, b.Name)
+	})
+
+	return playbooks, nil
+}
+
+func normalizeManagedPlaybookName(raw string) (string, error) {
+	name := sanitizePlanName(raw)
+	if name == "" {
+		return "", fmt.Errorf("managed playbook name must contain letters or numbers")
+	}
+	return name, nil
+}
+
+func resolveManagedPlaybookPath(rawName string) (string, string, error) {
+	name, err := normalizeManagedPlaybookName(rawName)
+	if err != nil {
+		return "", "", err
+	}
+
+	candidates := []string{
+		customPlaybookPathForName(name),
+		filepath.Join(customPlaybookDirectoryPath(), name+".yaml"),
+	}
+
+	for _, candidate := range candidates {
+		if stat, statErr := os.Stat(candidate); statErr == nil && !stat.IsDir() {
+			return candidate, name, nil
+		}
+	}
+
+	return "", "", fmt.Errorf("managed playbook %q not found. Use `civa playbook list` to inspect available names", name)
+}
+
+func resolveCustomPlaybookFilePath(rawPath string) (string, error) {
+	path := strings.TrimSpace(rawPath)
+	if path == "" {
+		return "", fmt.Errorf("custom playbook path must not be empty")
+	}
+
+	expandedPath, err := expandHomePath(path)
+	if err != nil {
+		return "", fmt.Errorf("expand custom playbook path: %w", err)
+	}
+
+	resolvedPath := filepath.Clean(expandedPath)
+	if !isYAMLPlaybookPath(resolvedPath) {
+		return "", fmt.Errorf("custom playbook path %q must end with .yml or .yaml", resolvedPath)
+	}
+
+	stat, err := os.Stat(resolvedPath)
+	if err != nil {
+		return "", fmt.Errorf("read custom playbook path %q: %w", resolvedPath, err)
+	}
+	if stat.IsDir() {
+		return "", fmt.Errorf("custom playbook path %q must reference a file", resolvedPath)
+	}
+
+	return resolvedPath, nil
+}
+
+func isYAMLPlaybookPath(path string) bool {
+	ext := strings.ToLower(filepath.Ext(strings.TrimSpace(path)))
+	return ext == ".yml" || ext == ".yaml"
 }
 
 func runSetupFlow(cfg *config) error {
@@ -1863,10 +2258,17 @@ func printUsage(nonInteractive bool) {
 	blocks := []outputBlock{
 		{Title: "Usage", Lines: []string{"civa <command> [options]"}},
 		{Title: "Commands", Lines: []string{
+			"bootstrap                 Simplified onboarding: setup, doctor, and config",
+			"deploy                    Simplified delivery flow: plan, apply, and custom run",
+			"ops                       Operational tools: playbook, secret, auth, and provider tools",
 			"auth cloudflare           Manage Cloudflare auth profiles",
 			"start                      Run beginner wizard (setup or plan init)",
 			"tools                     Run interactive external provider tools",
 			"tools cloudflare zones    Manage Cloudflare zones (list/create/update/delete)",
+			"playbook add <name>        Register a managed custom playbook",
+			"playbook list              List managed custom playbooks",
+			"playbook remove [name]     Remove a managed custom playbook",
+			"playbook run [plan-name]   Run managed/local custom playbook on existing plan artifacts",
 			"config <provider> init     Initialize or update persisted config profile (provider: nginx or caddy)",
 			"config <provider> list     List persisted config profile (provider: nginx, caddy, or all)",
 			"config <provider> remove   Remove persisted config profile (provider: nginx or caddy, requires <plan-name>)",
@@ -1908,6 +2310,8 @@ func printUsage(nonInteractive bool) {
 			"--traefik-challenge <type> Traefik challenge type: http or dns",
 			"--traefik-dns-provider <id> DNS provider name used when challenge type is dns",
 			"--output <path>            Extra exported Markdown copy for plan init",
+			"--name <value>             Managed custom playbook name for `civa playbook run`",
+			"--file <path>              Local custom playbook file for `civa playbook add/run`",
 			"--value-file <path>        Path to secret value file for `civa secret set`",
 			"--profile <name>           Cloudflare auth profile for `civa tools cloudflare zones`",
 			"--name <domain>            Cloudflare zone name for create action",
@@ -1919,6 +2323,15 @@ func printUsage(nonInteractive bool) {
 			"--help                     Show this help message",
 		}},
 		{Title: "Examples", Lines: []string{
+			"civa bootstrap setup --server 203.0.113.10 --ssh-user root --ssh-public-key ~/.ssh/id_ed25519.pub",
+			"civa bootstrap doctor fix",
+			"civa deploy plan init --non-interactive --server 203.0.113.10,web-01 --components 1,2,3",
+			"civa deploy apply web-01 --yes",
+			"civa deploy run web-01 --name hardening --yes",
+			"civa ops playbook list",
+			"civa ops secret list",
+			"civa ops auth cloudflare list",
+			"civa ops tools cloudflare zones list --profile default",
 			"civa start",
 			"civa auth cloudflare set default --token $CLOUDFLARE_API_TOKEN",
 			"civa auth cloudflare list",
@@ -1927,6 +2340,10 @@ func printUsage(nonInteractive bool) {
 			"civa tools cloudflare zones create --profile default --name example.com --account-id <account-id>",
 			"civa tools cloudflare zones update --profile default --zone-id <zone-id> --paused true",
 			"civa tools cloudflare zones delete --profile default --zone-id <zone-id>",
+			"civa playbook add hardening --file ./playbooks/hardening.yml",
+			"civa playbook list",
+			"civa playbook run web-01 --name hardening --yes",
+			"civa playbook run --plan-file ~/.civa/runs/web-01/plan.md --file ./playbooks/audit.yml --yes",
 			"civa config nginx init web-01-v2",
 			"civa config nginx list",
 			"civa config all list",
@@ -2033,6 +2450,41 @@ func printCommandUsage(command string, nonInteractive bool) {
 			{Title: "Usage", Lines: []string{"civa apply <plan-name> [--yes]", "civa apply review <plan-name>", "civa apply drift <plan-name>", "civa apply rollback [plan-name] [--yes]", "civa apply --plan-file <path> [--yes]", "civa apply review --plan-file <path>", "civa apply drift --plan-file <path>", "civa apply rollback --plan-file <path> [--yes]"}},
 			{Title: "Examples", Lines: []string{"civa apply web-01 --yes", "civa apply review web-01", "civa apply drift web-01", "civa apply rollback --yes", "civa apply --plan-file ~/.civa/runs/web-01/plan.md --yes"}},
 		}, styled))
+	case commandPlaybook:
+		fmt.Println(renderSectionTitle("civa playbook", styled))
+		fmt.Println(renderOutputBlocks([]outputBlock{
+			{Title: "Usage", Lines: []string{"civa playbook add <name> --file <path>", "civa playbook list", "civa playbook remove [name] [--yes]", "civa playbook run [plan-name] [--name <managed-name>|--file <path>] [--yes]", "civa playbook run --plan-file <path> [--name <managed-name>|--file <path>] [--yes]"}},
+			{Title: "What it does", Lines: []string{"Stores reusable custom playbooks under ~/.civa/playbooks", "Runs custom playbooks using inventory/vars/auth from an existing generated plan"}},
+			{Title: "Examples", Lines: []string{"civa playbook add hardening --file ./playbooks/hardening.yml", "civa playbook list", "civa playbook remove hardening --yes", "civa playbook run web-01 --name hardening --yes", "civa playbook run --plan-file ~/.civa/runs/web-01/plan.md --file ./playbooks/audit.yml --yes"}},
+		}, styled))
+	case commandBootstrap:
+		fmt.Println(renderSectionTitle("civa bootstrap", styled))
+		fmt.Println(renderOutputBlocks([]outputBlock{
+			{Title: "Usage", Lines: []string{"civa bootstrap setup [setup-options]", "civa bootstrap doctor [fix]", "civa bootstrap config <nginx|caddy|all> <init|list|remove> [plan-name]"}},
+			{Title: "What it groups", Lines: []string{"setup                     Install SSH key access on target hosts", "doctor [fix]              Check/install local dependencies", "config ...                Manage persisted nginx/caddy profile"}},
+			{Title: "Examples", Lines: []string{"civa bootstrap setup --server 203.0.113.10 --ssh-user root --ssh-public-key ~/.ssh/id_ed25519.pub", "civa bootstrap doctor fix", "civa bootstrap config nginx init web-01-v2"}},
+		}, styled))
+	case commandDeploy:
+		fmt.Println(renderSectionTitle("civa deploy", styled))
+		fmt.Println(renderOutputBlocks([]outputBlock{
+			{Title: "Usage", Lines: []string{"civa deploy plan <init|review|edit|list|remove> [plan-name]", "civa deploy apply [plan-name] [--yes]", "civa deploy apply <review|drift|rollback> [plan-name]", "civa deploy run [plan-name] [--name <managed-name>|--file <path>] [--yes]", "civa deploy run --plan-file <path> [--name <managed-name>|--file <path>] [--yes]"}},
+			{Title: "What it groups", Lines: []string{"plan ...                  Plan generation and review lifecycle", "apply ...                 Execute/review/drift/rollback existing plan", "run ...                   Run custom playbook against existing plan artifacts"}},
+			{Title: "Examples", Lines: []string{"civa deploy plan init --non-interactive --server 203.0.113.10,web-01 --components all", "civa deploy apply web-01 --yes", "civa deploy run web-01 --name hardening --yes", "civa deploy run --plan-file ~/.civa/runs/web-01/plan.md --file ./playbooks/audit.yml --yes"}},
+		}, styled))
+	case commandDeployRunHelp:
+		fmt.Println(renderSectionTitle("civa deploy run", styled))
+		fmt.Println(renderOutputBlocks([]outputBlock{
+			{Title: "Usage", Lines: []string{"civa deploy run [plan-name] [--name <managed-name>|--file <path>] [--yes]", "civa deploy run --plan-file <path> [--name <managed-name>|--file <path>] [--yes]"}},
+			{Title: "What it does", Lines: []string{"Alias for `civa playbook run` with the same behavior and safety rules", "Reuses inventory/vars/auth artifacts from an existing generated plan"}},
+			{Title: "Examples", Lines: []string{"civa deploy run web-01 --name hardening --yes", "civa deploy run --plan-file ~/.civa/runs/web-01/plan.md --file ./playbooks/audit.yml --yes"}},
+		}, styled))
+	case commandOps:
+		fmt.Println(renderSectionTitle("civa ops", styled))
+		fmt.Println(renderOutputBlocks([]outputBlock{
+			{Title: "Usage", Lines: []string{"civa ops playbook <add|list|remove|run> ...", "civa ops secret <set|list|remove> ...", "civa ops auth cloudflare <set|get|list|remove> ...", "civa ops tools cloudflare zones <list|create|update|delete> ..."}},
+			{Title: "What it groups", Lines: []string{"playbook ...              Managed custom playbook lifecycle", "secret ...                Encrypted secret storage", "auth ...                  Provider credential profiles", "tools ...                 Provider operational utilities"}},
+			{Title: "Examples", Lines: []string{"civa ops playbook list", "civa ops secret set vps-password --value-file ~/.secrets/vps-password.txt", "civa ops auth cloudflare set default --token $CLOUDFLARE_API_TOKEN", "civa ops tools cloudflare zones list --profile default"}},
+		}, styled))
 	case commandSecret:
 		fmt.Println(renderSectionTitle("civa secret", styled))
 		fmt.Println(renderOutputBlocks([]outputBlock{
@@ -2097,9 +2549,13 @@ func runInteractiveUsage() bool {
 
 func interactiveHelpOptions() []helpMenuOption {
 	return []helpMenuOption{
+		{Value: commandBootstrap, Label: "bootstrap", Description: "Grouped onboarding: setup, doctor, and config"},
+		{Value: commandDeploy, Label: "deploy", Description: "Grouped delivery: plan, apply, and custom playbook run"},
+		{Value: commandOps, Label: "ops", Description: "Grouped operations: playbook, secret, auth, and tools"},
 		{Value: commandStart, Label: "start", Description: "Beginner wizard for setup or planning"},
 		{Value: commandSetup, Label: "setup", Description: "Install SSH key access on a server"},
 		{Value: commandPlan, Label: "plan", Description: "Generate, review, edit, list, or remove plans"},
+		{Value: commandPlaybook, Label: "playbook", Description: "Manage and run custom playbooks on existing plans"},
 		{Value: commandApply, Label: "apply", Description: "Run, review, detect drift, or roll back a plan"},
 		{Value: commandConfig, Label: "config", Description: "Manage persisted nginx or caddy profiles"},
 		{Value: commandSecret, Label: "secret", Description: "Store, list, or remove encrypted secrets"},
@@ -2195,7 +2651,7 @@ func hasHTTPSWebServerSites(sites []webServerSiteSpec) bool {
 
 func validateExistingPlanCommandFlags(cfg config) error {
 	if cfg.Provided.SSHUser || cfg.Provided.SSHPort || cfg.Provided.SSHAuthMethod || cfg.Provided.SSHPassword || cfg.Provided.SSHPasswordSecret || cfg.Provided.WebServer || cfg.Provided.SSHPrivateKey || cfg.Provided.SSHPublicKey || cfg.Provided.DeployUser || cfg.Provided.Timezone || cfg.Provided.Components || cfg.Provided.PlanFile || cfg.Provided.TraefikEmail || cfg.Provided.TraefikChallenge || cfg.Provided.TraefikDNSProvider || cfg.Provided.Servers || cfg.Provided.SecretValue || cfg.Provided.SecretValueFile {
-		return fmt.Errorf("plan review/edit and apply only accept --plan-file, --yes, --non-interactive, and --help")
+		return fmt.Errorf("plan review/edit, apply, and playbook run only accept --plan-file, --yes, --non-interactive, --name, --file, and --help")
 	}
 	return nil
 }

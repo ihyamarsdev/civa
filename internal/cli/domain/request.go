@@ -15,7 +15,11 @@ const (
 	CommandUninstall        Command = "uninstall"
 	CommandPlan             Command = "plan"
 	CommandApply            Command = "apply"
+	CommandPlaybook         Command = "playbook"
 	CommandSecret           Command = "secret"
+	CommandBootstrap        Command = "bootstrap"
+	CommandDeploy           Command = "deploy"
+	CommandOps              Command = "ops"
 )
 
 const (
@@ -67,6 +71,13 @@ const (
 )
 
 const (
+	PlaybookActionRun    = "run"
+	PlaybookActionAdd    = "add"
+	PlaybookActionList   = "list"
+	PlaybookActionRemove = "remove"
+)
+
+const (
 	SecretActionSet    = "set"
 	SecretActionList   = "list"
 	SecretActionRemove = "remove"
@@ -106,6 +117,8 @@ type ProvidedFlags struct {
 	CloudflareZoneName bool
 	CloudflareZoneType bool
 	CloudflarePaused   bool
+	PlaybookName       bool
+	PlaybookFile       bool
 }
 
 type Request struct {
@@ -115,6 +128,7 @@ type Request struct {
 	PlanAction     string
 	ConfigAction   string
 	ApplyAction    string
+	PlaybookAction string
 	DoctorAction   string
 	SecretAction   string
 	AuthAction     string
@@ -155,6 +169,8 @@ type Request struct {
 	CloudflareZoneType        string
 	CloudflareZonePaused      bool
 	CloudflareZonePausedInput string
+	PlaybookName              string
+	PlaybookFile              string
 	SSHPasswordSecret         string
 	Servers                   []string
 

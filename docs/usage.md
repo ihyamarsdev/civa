@@ -2,6 +2,9 @@
 
 ## Commands
 
+- `civa bootstrap setup|doctor|config ...`
+- `civa deploy plan|apply|run ...`
+- `civa ops playbook|secret|auth|tools ...`
 - `civa plan init`
 - `civa start`
 - `civa config <nginx|caddy> init [plan-name]`
@@ -11,6 +14,11 @@
 - `civa plan remove <nama-plan>`
 - `civa plan review <nama-plan>`
 - `civa plan edit <nama-plan>`
+- `civa playbook add <name> --file <path>`
+- `civa playbook list`
+- `civa playbook remove [name]`
+- `civa playbook run [nama-plan] --name <managed-name>`
+- `civa playbook run --plan-file <path> --file <path>`
 - `civa apply <nama-plan>`
 - `civa apply review <nama-plan>`
 - `civa apply drift <nama-plan>`
@@ -58,6 +66,14 @@ When you run `civa plan init` without all required flags, `civa` asks for:
 `civa plan review <nama-plan>` shows an existing `plan.md` rendered with Glow-style terminal formatting when stdout is a TTY. When redirected or piped, it falls back to plain non-TTY formatting. `civa plan edit <nama-plan>` opens the same plan file in your configured editor (`$VISUAL`, `$EDITOR`, fallback `vi`). `civa apply <nama-plan>` only executes an existing plan and asks for a final confirmation unless you pass `--yes`. `civa apply review <nama-plan>` runs the same plan artifacts in Ansible check mode (`--check --diff`) to verify post-installation convergence.
 
 `civa apply drift <nama-plan>` performs drift detection in two ways: (1) check-mode execution recap (`changed>0`) and (2) comparison against the last local drift snapshot for the same plan artifacts. `civa apply rollback [nama-plan]` runs a rollback preflight in check mode first, then executes rollback apply and records rollback metadata under `~/.civa/rollback/state.json`.
+
+Use `civa playbook add <name> --file <path>` to register custom playbooks under `~/.civa/playbooks/`. Then run `civa playbook run [nama-plan] --name <managed-name>` (or `--file <path>`) to execute a custom playbook while reusing inventory/vars/auth artifacts from an existing generated plan.
+
+If you prefer a simpler command surface, use grouped wrappers:
+
+- `civa bootstrap ...` wraps onboarding commands: `setup`, `doctor`, and `config`.
+- `civa deploy ...` wraps deployment commands: `plan`, `apply`, and custom playbook `run`.
+- `civa ops ...` wraps day-2 operations: `playbook`, `secret`, `auth`, and `tools`.
 
 Generated plan names now use your primary hostname as the base (for example `web-01`). If you generate again with the same hostname, civa automatically creates versioned names such as `web-01-v2`, `web-01-v3`, and so on. Use `civa plan list web-01` (or `civa plan web-01 list`) to see all versions.
 
@@ -200,6 +216,20 @@ Edit an existing plan:
 
 ```bash
 ./bin/civa plan edit web-01
+```
+
+Register and run a managed custom playbook:
+
+```bash
+./bin/civa playbook add hardening --file ./playbooks/hardening.yml
+./bin/civa playbook list
+./bin/civa playbook run web-01 --name hardening --yes
+```
+
+Run a local custom playbook file against an explicit plan file:
+
+```bash
+./bin/civa playbook run --plan-file ~/.civa/runs/web-01/plan.md --file ./playbooks/audit.yml --yes
 ```
 
 Apply an existing plan to a Rocky or AlmaLinux target:

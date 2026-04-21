@@ -18,7 +18,7 @@
 ## Current Support
 
 - Target families: Debian/Ubuntu and RHEL-compatible distributions such as RHEL, Rocky, AlmaLinux, CentOS, and Oracle Linux
-- Commands: `start`, `setup`, `auth cloudflare set|get|list|remove`, `tools cloudflare zones`, `secret set|list|remove`, `config`, `plan init|review|edit|list|remove`, `apply <nama-plan>`, `apply review <nama-plan>`, `apply drift <nama-plan>`, `apply rollback [nama-plan]`, `completion <shell>`, `doctor`, `uninstall`, `version`, `help`
+- Commands: `bootstrap ...`, `deploy ...`, `ops ...`, `start`, `setup`, `auth cloudflare set|get|list|remove`, `tools cloudflare zones`, `secret set|list|remove`, `config`, `plan init|review|edit|list|remove`, `playbook add|list|remove|run`, `apply <nama-plan>`, `apply review <nama-plan>`, `apply drift <nama-plan>`, `apply rollback [nama-plan]`, `completion <shell>`, `doctor`, `uninstall`, `version`, `help`
 - Runtime artifacts: `~/.civa/runs/<timestamp>/inventory.yml`, `vars.yml`, `plan.md`, and staged embedded Ansible assets
 
 ## Quick Start
@@ -84,6 +84,12 @@ Check local prerequisites:
 
 ## Commands
 
+### Simplified grouped commands (recommended)
+
+- `civa bootstrap setup|doctor|config ...` — onboarding bundle (setup, environment check, and persisted web server config)
+- `civa deploy plan|apply|run ...` — deployment bundle (plan lifecycle, apply lifecycle, and custom playbook run)
+- `civa ops playbook|secret|auth|tools ...` — operations bundle (playbook management, secrets, provider auth, provider tools)
+
 - `civa start` — open beginner wizard that guides to `setup` or `plan init`
 - `civa setup` — install your local public key onto a fresh server with ssh-copy-id, optionally supplying the password via `sshpass`
 - `civa tools` — run interactive external provider tools
@@ -97,6 +103,11 @@ Check local prerequisites:
 - `civa plan remove <nama-plan>` — delete a generated plan and its artifacts
 - `civa plan review <nama-plan>` — display an existing generated `plan.md`
 - `civa plan edit <nama-plan>` — edit an existing generated `plan.md` with your editor
+- `civa playbook add <name> --file <path>` — register or update a managed custom playbook under `~/.civa/playbooks/`
+- `civa playbook list` — list managed custom playbooks
+- `civa playbook remove [name]` — remove a managed custom playbook (interactive name prompt when omitted)
+- `civa playbook run [nama-plan] --name <managed-name>` — run a managed custom playbook against inventory/vars/auth from an existing generated plan
+- `civa playbook run --plan-file <path> --file <path>` — run a local custom playbook file against an explicit plan file context
 - `civa apply <nama-plan>` — execute the artifacts referenced by an existing generated plan
 - `civa apply review <nama-plan>` — verify an applied plan with Ansible check mode (`--check --diff`)
 - `civa apply drift <nama-plan>` — run drift detection with check-mode output and local artifact snapshot comparison

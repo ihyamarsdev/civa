@@ -73,3 +73,11 @@ func RollbackDirectoryPath() string {
 func RollbackStateFilePath() string {
 	return filepath.Join(RollbackDirectoryPath(), "state.json")
 }
+
+func CustomPlaybookDirectoryPath() string {
+	return filepath.Join(CivaHomeDirectory(), "playbooks")
+}
+
+func CustomPlaybookPathForName(name string) string {
+	return filepath.Join(CustomPlaybookDirectoryPath(), name+".yml")
+}

@@ -668,8 +668,24 @@ func TestRenderOutputBlocksPlainFallback(t *testing.T) {
 
 func TestCompletionSuggestionsTopLevelAndValues(t *testing.T) {
 	root := completionSuggestions(nil)
-	if !contains(root, commandPlan) || !contains(root, commandStart) || !contains(root, commandCompletion) || !contains(root, commandSecret) || !contains(root, commandTools) {
+	if !contains(root, commandBootstrap) || !contains(root, commandDeploy) || !contains(root, commandOps) || !contains(root, commandPlan) || !contains(root, commandPlaybook) || !contains(root, commandStart) || !contains(root, commandCompletion) || !contains(root, commandSecret) || !contains(root, commandTools) {
 		t.Fatalf("unexpected root completion set: %v", root)
+	}
+
+	if !contains(completionSuggestions([]string{"bootstrap", "s"}), commandSetup) {
+		t.Fatalf("expected bootstrap to suggest setup, got %v", completionSuggestions([]string{"bootstrap", "s"}))
+	}
+
+	if !contains(completionSuggestions([]string{"deploy", "r"}), playbookActionRun) {
+		t.Fatalf("expected deploy to suggest run, got %v", completionSuggestions([]string{"deploy", "r"}))
+	}
+
+	if !contains(completionSuggestions([]string{"deploy", "run", "--n"}), "--name") {
+		t.Fatalf("expected deploy run to suggest --name, got %v", completionSuggestions([]string{"deploy", "run", "--n"}))
+	}
+
+	if !contains(completionSuggestions([]string{"ops", "se"}), commandSecret) {
+		t.Fatalf("expected ops to suggest secret, got %v", completionSuggestions([]string{"ops", "se"}))
 	}
 
 	webServerValues := completionSuggestions([]string{"plan", "init", "--web-server", "c"})
@@ -692,6 +708,13 @@ func TestCompletionSuggestionsTopLevelAndValues(t *testing.T) {
 	}
 	if !contains(completionSuggestions([]string{"apply", "ro"}), applyActionRollback) {
 		t.Fatalf("expected apply rollback suggestion, got %v", completionSuggestions([]string{"apply", "ro"}))
+	}
+
+	if !contains(completionSuggestions([]string{"playbook", "r"}), playbookActionRun) {
+		t.Fatalf("expected playbook run suggestion, got %v", completionSuggestions([]string{"playbook", "r"}))
+	}
+	if !contains(completionSuggestions([]string{"playbook", "run", "--n"}), "--name") {
+		t.Fatalf("expected playbook run to suggest --name, got %v", completionSuggestions([]string{"playbook", "run", "--n"}))
 	}
 
 	secretSetSuggestions := completionSuggestions([]string{"secret", "set", "db-password", "--v"})
@@ -760,6 +783,39 @@ func TestCompletionSuggestionsIncludeGeneratedPlanNames(t *testing.T) {
 	suggestions := completionSuggestions([]string{commandPlan, planActionReview, "20260101-010101"})
 	if !contains(suggestions, "20260101-010101-000000001") {
 		t.Fatalf("expected generated plan name suggestion, got %v", suggestions)
+	}
+}
+
+func TestCompletionSuggestionsIncludeManagedPlaybookNames(t *testing.T) {
+	workingDir := t.TempDir()
+	t.Setenv("HOME", workingDir)
+	originalDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working dir: %v", err)
+	}
+	defer func() { _ = os.Chdir(originalDir) }()
+	if err := os.Chdir(workingDir); err != nil {
+		t.Fatalf("failed to chdir: %v", err)
+	}
+
+	if err := os.MkdirAll(customPlaybookDirectoryPath(), 0o755); err != nil {
+		t.Fatalf("failed to create custom playbook dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(customPlaybookDirectoryPath(), "hardening.yml"), []byte("---\n- hosts: all\n"), 0o644); err != nil {
+		t.Fatalf("failed to write managed playbook: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(customPlaybookDirectoryPath(), "audit.yaml"), []byte("---\n- hosts: all\n"), 0o644); err != nil {
+		t.Fatalf("failed to write managed playbook yaml: %v", err)
+	}
+
+	runByNameSuggestions := completionSuggestions([]string{commandPlaybook, playbookActionRun, "--name", "ha"})
+	if !contains(runByNameSuggestions, "hardening") {
+		t.Fatalf("expected managed playbook name suggestion, got %v", runByNameSuggestions)
+	}
+
+	removeSuggestions := completionSuggestions([]string{commandPlaybook, playbookActionRemove, "au"})
+	if !contains(removeSuggestions, "audit") {
+		t.Fatalf("expected remove suggestions to include managed name, got %v", removeSuggestions)
 	}
 }
 
@@ -897,6 +953,56 @@ func TestValidateExistingPlanCommandFlagsRejectsPlanGenerationFlags(t *testing.T
 	}
 }
 
+func TestResolveCustomPlaybookFilePathRequiresYAMLFile(t *testing.T) {
+	tempDir := t.TempDir()
+	validPath := filepath.Join(tempDir, "custom.yml")
+	if err := os.WriteFile(validPath, []byte("---\n- hosts: all\n"), 0o644); err != nil {
+		t.Fatalf("failed to write test playbook: %v", err)
+	}
+
+	resolvedPath, err := resolveCustomPlaybookFilePath(validPath)
+	if err != nil {
+		t.Fatalf("expected yaml path to resolve, got %v", err)
+	}
+	if resolvedPath != validPath {
+		t.Fatalf("expected resolved path %q, got %q", validPath, resolvedPath)
+	}
+
+	invalidPath := filepath.Join(tempDir, "not-a-playbook.txt")
+	if err := os.WriteFile(invalidPath, []byte("hello"), 0o644); err != nil {
+		t.Fatalf("failed to write invalid test file: %v", err)
+	}
+	if _, err := resolveCustomPlaybookFilePath(invalidPath); err == nil {
+		t.Fatal("expected non-yaml playbook path to fail validation")
+	}
+}
+
+func TestManagedCustomPlaybookEntriesIgnoreNonYAMLFiles(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	if err := os.MkdirAll(customPlaybookDirectoryPath(), 0o755); err != nil {
+		t.Fatalf("failed to create custom playbook dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(customPlaybookDirectoryPath(), "hardening.yml"), []byte("---\n"), 0o644); err != nil {
+		t.Fatalf("failed to write yaml playbook: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(customPlaybookDirectoryPath(), "README.md"), []byte("docs"), 0o644); err != nil {
+		t.Fatalf("failed to write non-yaml file: %v", err)
+	}
+
+	entries, err := managedCustomPlaybookEntries()
+	if err != nil {
+		t.Fatalf("managedCustomPlaybookEntries returned error: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected exactly one managed playbook entry, got %d (%v)", len(entries), entries)
+	}
+	if entries[0].Name != "hardening" {
+		t.Fatalf("expected managed playbook name hardening, got %#v", entries[0])
+	}
+}
+
 func TestUniqueInventoryAliasAvoidsCollisions(t *testing.T) {
 	used := map[string]int{}
 	first := uniqueInventoryAlias(serverSpec{Hostname: "Web 01"}, 1, used)
@@ -957,6 +1063,25 @@ func TestBuildAnsibleCommandIncludesCheckModeForApplyReview(t *testing.T) {
 	command := buildAnsibleCommand(cfg, state)
 	if !strings.Contains(command, "--check --diff") {
 		t.Fatalf("expected check mode flags in apply review command, got %s", command)
+	}
+}
+
+func TestBuildAnsibleCommandForPlaybookRunDoesNotInjectPlanTags(t *testing.T) {
+	cfg := &config{
+		Command:        commandPlaybook,
+		PlaybookAction: playbookActionRun,
+		Components:     []string{"system_update", "web_server"},
+		WebServer:      webServerNginx,
+	}
+	state := &runtimeState{
+		InventoryFile: "/tmp/inventory.yml",
+		PlaybookFile:  "/tmp/custom.yml",
+		VarsFile:      "/tmp/vars.yml",
+	}
+
+	command := buildAnsibleCommand(cfg, state)
+	if strings.Contains(command, "--tags") {
+		t.Fatalf("expected playbook run command to avoid plan-derived tags, got %s", command)
 	}
 }
 

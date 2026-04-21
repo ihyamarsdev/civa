@@ -455,6 +455,127 @@ func TestRootRunRoutesApplyRollbackSubcommand(t *testing.T) {
 	}
 }
 
+func TestRootRunRoutesPlaybookRunManagedName(t *testing.T) {
+	executor := &stubExecutor{}
+	root := NewRoot(executor)
+
+	err := root.Run([]string{"playbook", "run", "web-01", "--name", "hardening", "--yes"})
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if len(executor.requests) != 1 {
+		t.Fatalf("expected one request, got %d", len(executor.requests))
+	}
+
+	req := executor.requests[0]
+	if req.Command != domain.CommandPlaybook || req.PlaybookAction != domain.PlaybookActionRun || req.PlanName != "web-01" {
+		t.Fatalf("unexpected playbook run request: %#v", req)
+	}
+	if req.PlaybookName != "hardening" {
+		t.Fatalf("expected playbook name hardening, got %#v", req)
+	}
+	if !req.Provided.PlaybookName || req.Provided.PlaybookFile {
+		t.Fatalf("expected playbook name provided flag only, got %#v", req.Provided)
+	}
+	if !req.AssumeYes {
+		t.Fatalf("expected --yes to be mapped, got %#v", req)
+	}
+}
+
+func TestRootRunRoutesPlaybookAddListAndRemove(t *testing.T) {
+	executor := &stubExecutor{}
+	root := NewRoot(executor)
+
+	if err := root.Run([]string{"playbook", "add", "hardening", "--file", "./playbooks/hardening.yml"}); err != nil {
+		t.Fatalf("expected nil error for playbook add, got %v", err)
+	}
+	if err := root.Run([]string{"playbook", "list"}); err != nil {
+		t.Fatalf("expected nil error for playbook list, got %v", err)
+	}
+	if err := root.Run([]string{"playbook", "remove", "hardening", "--yes"}); err != nil {
+		t.Fatalf("expected nil error for playbook remove, got %v", err)
+	}
+
+	if len(executor.requests) != 3 {
+		t.Fatalf("expected three requests, got %d", len(executor.requests))
+	}
+
+	addReq := executor.requests[0]
+	if addReq.Command != domain.CommandPlaybook || addReq.PlaybookAction != domain.PlaybookActionAdd || addReq.PlaybookName != "hardening" || addReq.PlaybookFile != "./playbooks/hardening.yml" {
+		t.Fatalf("unexpected playbook add request: %#v", addReq)
+	}
+	if !addReq.Provided.PlaybookName || !addReq.Provided.PlaybookFile {
+		t.Fatalf("expected add provided flags for name and file, got %#v", addReq.Provided)
+	}
+
+	listReq := executor.requests[1]
+	if listReq.Command != domain.CommandPlaybook || listReq.PlaybookAction != domain.PlaybookActionList {
+		t.Fatalf("unexpected playbook list request: %#v", listReq)
+	}
+
+	removeReq := executor.requests[2]
+	if removeReq.Command != domain.CommandPlaybook || removeReq.PlaybookAction != domain.PlaybookActionRemove || removeReq.PlaybookName != "hardening" || !removeReq.AssumeYes {
+		t.Fatalf("unexpected playbook remove request: %#v", removeReq)
+	}
+	if !removeReq.Provided.PlaybookName {
+		t.Fatalf("expected remove to mark provided playbook name, got %#v", removeReq.Provided)
+	}
+}
+
+func TestRootRunRoutesBootstrapSetupCommand(t *testing.T) {
+	executor := &stubExecutor{}
+	root := NewRoot(executor)
+
+	err := root.Run([]string{"bootstrap", "setup", "--server", "203.0.113.10", "--ssh-user", "root", "--ssh-public-key", "~/.ssh/id_ed25519.pub"})
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if len(executor.requests) != 1 {
+		t.Fatalf("expected one request, got %d", len(executor.requests))
+	}
+	req := executor.requests[0]
+	if req.Command != domain.CommandSetup || len(req.Servers) != 1 || req.Servers[0] != "203.0.113.10" {
+		t.Fatalf("unexpected bootstrap setup request: %#v", req)
+	}
+}
+
+func TestRootRunRoutesDeployRunManagedName(t *testing.T) {
+	executor := &stubExecutor{}
+	root := NewRoot(executor)
+
+	err := root.Run([]string{"deploy", "run", "web-01", "--name", "hardening", "--yes"})
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if len(executor.requests) != 1 {
+		t.Fatalf("expected one request, got %d", len(executor.requests))
+	}
+	req := executor.requests[0]
+	if req.Command != domain.CommandPlaybook || req.PlaybookAction != domain.PlaybookActionRun || req.PlanName != "web-01" || req.PlaybookName != "hardening" {
+		t.Fatalf("unexpected deploy run request: %#v", req)
+	}
+	if !req.AssumeYes || !req.Provided.PlaybookName {
+		t.Fatalf("expected deploy run to map flags, got %#v", req)
+	}
+}
+
+func TestRootRunRoutesOpsSecretList(t *testing.T) {
+	executor := &stubExecutor{}
+	root := NewRoot(executor)
+
+	err := root.Run([]string{"ops", "secret", "list"})
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if len(executor.requests) != 1 {
+		t.Fatalf("expected one request, got %d", len(executor.requests))
+	}
+	req := executor.requests[0]
+	if req.Command != domain.CommandSecret || req.SecretAction != domain.SecretActionList {
+		t.Fatalf("unexpected ops secret list request: %#v", req)
+	}
+}
+
 func TestRootRunRoutesSecretSet(t *testing.T) {
 	executor := &stubExecutor{}
 	root := NewRoot(executor)
@@ -674,5 +795,65 @@ func TestRootRunHelpRoutesToolsCloudflareSubcommandsToProviderHelp(t *testing.T)
 		if req.Command != domain.CommandHelp || req.HelpTarget != helpTargetToolsCF {
 			t.Fatalf("unexpected tools help request at %d: %#v", idx, req)
 		}
+	}
+}
+
+func TestRootRunHelpRoutesPlaybookSubcommandsToPlaybookHelp(t *testing.T) {
+	executor := &stubExecutor{}
+	root := NewRoot(executor)
+
+	if err := root.Run([]string{"playbook", "run", "--help"}); err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if err := root.Run([]string{"playbook", "add", "--help"}); err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+
+	if len(executor.requests) != 2 {
+		t.Fatalf("expected two help requests, got %d", len(executor.requests))
+	}
+	for idx, req := range executor.requests {
+		if req.Command != domain.CommandHelp || req.HelpTarget != string(domain.CommandPlaybook) {
+			t.Fatalf("unexpected playbook help request at %d: %#v", idx, req)
+		}
+	}
+}
+
+func TestRootRunHelpKeepsBootstrapSubcommandTargetsSpecific(t *testing.T) {
+	executor := &stubExecutor{}
+	root := NewRoot(executor)
+
+	if err := root.Run([]string{"bootstrap", "setup", "--help"}); err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if err := root.Run([]string{"bootstrap", "doctor", "--help"}); err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+
+	if len(executor.requests) != 2 {
+		t.Fatalf("expected two help requests, got %d", len(executor.requests))
+	}
+	if req := executor.requests[0]; req.Command != domain.CommandHelp || req.HelpTarget != string(domain.CommandSetup) {
+		t.Fatalf("unexpected bootstrap setup help request: %#v", req)
+	}
+	if req := executor.requests[1]; req.Command != domain.CommandHelp || req.HelpTarget != string(domain.CommandDoctor) {
+		t.Fatalf("unexpected bootstrap doctor help request: %#v", req)
+	}
+}
+
+func TestRootRunHelpRoutesDeployRunToDeployHelp(t *testing.T) {
+	executor := &stubExecutor{}
+	root := NewRoot(executor)
+
+	if err := root.Run([]string{"deploy", "run", "--help"}); err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+
+	if len(executor.requests) != 1 {
+		t.Fatalf("expected one help request, got %d", len(executor.requests))
+	}
+	req := executor.requests[0]
+	if req.Command != domain.CommandHelp || req.HelpTarget != helpTargetDeployRun {
+		t.Fatalf("unexpected deploy help request: %#v", req)
 	}
 }
