@@ -24,6 +24,7 @@ var (
 	promptCloudflareZoneUpdateFieldFn  = promptCloudflareZoneUpdateField
 	promptCloudflareTunnelsOperationFn = promptCloudflareTunnelsOperation
 	promptCloudflareTunnelSelectionFn  = promptCloudflareTunnelSelection
+	promptCloudflareAccountSelectionFn = promptCloudflareAccountSelection
 )
 
 const (
@@ -1150,4 +1151,30 @@ func normalizePromptError(err error) error {
 		return errUserCancelled
 	}
 	return err
+}
+
+func promptCloudflareAccountSelection(title string, availableAccounts []cloudflareAccount, defaultValue string) (string, error) {
+	if len(availableAccounts) == 0 {
+		return "", fmt.Errorf("no Cloudflare accounts available")
+	}
+
+	value := defaultValue
+	options := make([]huh.Option[string], 0, len(availableAccounts))
+	for _, acc := range availableAccounts {
+		label := fmt.Sprintf("%s (%s)", acc.Name, acc.ID)
+		if acc.Name == "" || acc.Name == acc.ID {
+			label = acc.ID
+		}
+		options = append(options, huh.NewOption(label, acc.ID))
+	}
+
+	field := huh.NewSelect[string]().
+		Title(title).
+		Description("Select Cloudflare Account for this operation.").
+		Options(options...).
+		Value(&value)
+	if err := field.Run(); err != nil {
+		return "", normalizePromptError(err)
+	}
+	return strings.TrimSpace(value), nil
 }

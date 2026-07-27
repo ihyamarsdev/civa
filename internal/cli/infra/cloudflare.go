@@ -19,6 +19,7 @@ import (
 	"time"
 
 	cloudflare "github.com/cloudflare/cloudflare-go/v6"
+	accounts "github.com/cloudflare/cloudflare-go/v6/accounts"
 	"github.com/cloudflare/cloudflare-go/v6/dns"
 	"github.com/cloudflare/cloudflare-go/v6/option"
 	"github.com/cloudflare/cloudflare-go/v6/zero_trust"
@@ -42,7 +43,8 @@ type cloudflareZone struct {
 	Paused  bool   `json:"paused"`
 	Status  string `json:"status"`
 	Account struct {
-		ID string `json:"id"`
+		ID   string `json:"id"`
+		Name string `json:"name"`
 	} `json:"account"`
 }
 
@@ -391,15 +393,15 @@ func runCloudflareZonesListFlow(cfg *config) error {
 }
 
 func runCloudflareZonesCreateFlow(cfg *config) error {
-	if err := ensureCloudflareZoneCreateInputs(cfg); err != nil {
-		return err
-	}
 	token, _, err := resolveCloudflareAuthTokenForTools(cfg)
 	if err != nil {
 		return err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), cloudflareRequestTimeout)
 	defer cancel()
+	if err := ensureCloudflareZoneCreateInputs(ctx, cfg, token); err != nil {
+		return err
+	}
 	zoneType, err := normalizeCloudflareZoneType(cfg.CloudflareZoneType)
 	if err != nil {
 		return err
@@ -422,9 +424,8 @@ func runCloudflareZonesCreateFlow(cfg *config) error {
 	return nil
 }
 
-func ensureCloudflareZoneCreateInputs(cfg *config) error {
+func ensureCloudflareZoneCreateInputs(ctx context.Context, cfg *config, apiToken string) error {
 	cfg.CloudflareZoneName = strings.TrimSpace(cfg.CloudflareZoneName)
-	cfg.CloudflareAccountID = strings.TrimSpace(cfg.CloudflareAccountID)
 	if cfg.CloudflareZoneName == "" {
 		if !shouldPrompt(cfg) {
 			return fmt.Errorf("zone create requires --name")
@@ -435,17 +436,8 @@ func ensureCloudflareZoneCreateInputs(cfg *config) error {
 		}
 		cfg.CloudflareZoneName = value
 	}
-	if cfg.CloudflareAccountID == "" {
-		if !shouldPrompt(cfg) {
-			return fmt.Errorf("zone create requires --account-id")
-		}
-		value, err := promptNonEmptyString("Cloudflare account ID", "")
-		if err != nil {
-			return err
-		}
-		cfg.CloudflareAccountID = value
-	}
-	return nil
+	_, err := resolveCloudflareAccountID(ctx, cfg, apiToken)
+	return err
 }
 
 func runCloudflareZonesUpdateFlow(cfg *config) error {
@@ -725,6 +717,7 @@ func cloudflareZoneFromSDK(zone zones.Zone) cloudflareZone {
 		Status: string(zone.Status),
 	}
 	result.Account.ID = zone.Account.ID
+	result.Account.Name = zone.Account.Name
 	return result
 }
 
@@ -803,15 +796,15 @@ func resolveCloudflareTunnelsOperation(cfg *config) (string, error) {
 }
 
 func runCloudflareTunnelsListFlow(cfg *config) error {
-	if err := ensureCloudflareTunnelAccountInput(cfg); err != nil {
-		return err
-	}
 	token, profile, err := resolveCloudflareAuthTokenForTools(cfg)
 	if err != nil {
 		return err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), cloudflareRequestTimeout)
 	defer cancel()
+	if err := ensureCloudflareTunnelAccountInput(ctx, cfg, token); err != nil {
+		return err
+	}
 	tunnels, err := cloudflareTunnelsClient.ListTunnels(ctx, token, cfg.CloudflareAccountID)
 	if err != nil {
 		return fmt.Errorf("list cloudflare tunnels: %w", err)
@@ -833,15 +826,15 @@ func runCloudflareTunnelsListFlow(cfg *config) error {
 }
 
 func runCloudflareTunnelsCreateFlow(cfg *config) error {
-	if err := ensureCloudflareTunnelCreateInputs(cfg); err != nil {
-		return err
-	}
 	token, _, err := resolveCloudflareAuthTokenForTools(cfg)
 	if err != nil {
 		return err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), cloudflareRequestTimeout)
 	defer cancel()
+	if err := ensureCloudflareTunnelCreateInputs(ctx, cfg, token); err != nil {
+		return err
+	}
 	tunnel, err := cloudflareTunnelsClient.CreateTunnel(ctx, token, cfg.CloudflareAccountID, cfg.CloudflareTunnelName)
 	if err != nil {
 		return fmt.Errorf("create cloudflare tunnel: %w", err)
@@ -852,15 +845,15 @@ func runCloudflareTunnelsCreateFlow(cfg *config) error {
 }
 
 func runCloudflareTunnelsGetFlow(cfg *config) error {
-	if err := ensureCloudflareTunnelAccountInput(cfg); err != nil {
-		return err
-	}
 	token, profile, err := resolveCloudflareAuthTokenForTools(cfg)
 	if err != nil {
 		return err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), cloudflareRequestTimeout)
 	defer cancel()
+	if err := ensureCloudflareTunnelAccountInput(ctx, cfg, token); err != nil {
+		return err
+	}
 	if err := ensureCloudflareTunnelGetInputs(ctx, cfg, token); err != nil {
 		return err
 	}
@@ -879,15 +872,15 @@ func runCloudflareTunnelsGetFlow(cfg *config) error {
 }
 
 func runCloudflareTunnelsDeleteFlow(cfg *config) error {
-	if err := ensureCloudflareTunnelAccountInput(cfg); err != nil {
-		return err
-	}
 	token, _, err := resolveCloudflareAuthTokenForTools(cfg)
 	if err != nil {
 		return err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), cloudflareRequestTimeout)
 	defer cancel()
+	if err := ensureCloudflareTunnelAccountInput(ctx, cfg, token); err != nil {
+		return err
+	}
 	if err := ensureCloudflareTunnelDeleteInputs(ctx, cfg, token); err != nil {
 		return err
 	}
@@ -900,15 +893,15 @@ func runCloudflareTunnelsDeleteFlow(cfg *config) error {
 }
 
 func runCloudflareTunnelsRouteFlow(cfg *config) error {
-	if err := ensureCloudflareTunnelAccountInput(cfg); err != nil {
-		return err
-	}
 	token, _, err := resolveCloudflareAuthTokenForTools(cfg)
 	if err != nil {
 		return err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), cloudflareRequestTimeout)
 	defer cancel()
+	if err := ensureCloudflareTunnelAccountInput(ctx, cfg, token); err != nil {
+		return err
+	}
 	if err := ensureCloudflareTunnelRouteInputs(ctx, cfg, token); err != nil {
 		return err
 	}
@@ -921,23 +914,101 @@ func runCloudflareTunnelsRouteFlow(cfg *config) error {
 	return nil
 }
 
-func ensureCloudflareTunnelAccountInput(cfg *config) error {
-	cfg.CloudflareAccountID = strings.TrimSpace(cfg.CloudflareAccountID)
-	if cfg.CloudflareAccountID == "" {
-		if !shouldPrompt(cfg) {
-			return fmt.Errorf("tunnels operation requires --account-id")
-		}
-		value, err := promptNonEmptyString("Cloudflare account ID", "")
-		if err != nil {
-			return err
-		}
-		cfg.CloudflareAccountID = value
-	}
-	return nil
+type cloudflareAccount struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
 }
 
-func ensureCloudflareTunnelCreateInputs(cfg *config) error {
-	if err := ensureCloudflareTunnelAccountInput(cfg); err != nil {
+func fetchCloudflareAccounts(ctx context.Context, apiToken string) ([]cloudflareAccount, error) {
+	client := newCloudflareClient(apiToken)
+	accs := make([]cloudflareAccount, 0)
+	seen := make(map[string]bool)
+
+	// Attempt 1: Fetch accounts directly via Accounts API
+	iter := client.Accounts.ListAutoPaging(ctx, accounts.AccountListParams{})
+	for iter.Next() {
+		acc := iter.Current()
+		if acc.ID != "" && !seen[acc.ID] {
+			seen[acc.ID] = true
+			accs = append(accs, cloudflareAccount{
+				ID:   acc.ID,
+				Name: acc.Name,
+			})
+		}
+	}
+
+	if len(accs) > 0 {
+		return accs, nil
+	}
+
+	// Attempt 2: Fallback to Zones API to discover Account IDs from existing zones
+	zonesList, err := cloudflareZonesClient.ListZones(ctx, apiToken)
+	if err == nil {
+		for _, z := range zonesList {
+			if z.Account.ID != "" && !seen[z.Account.ID] {
+				seen[z.Account.ID] = true
+				name := z.Account.Name
+				if name == "" {
+					name = z.Account.ID
+				}
+				accs = append(accs, cloudflareAccount{
+					ID:   z.Account.ID,
+					Name: name,
+				})
+			}
+		}
+	}
+
+	return accs, nil
+}
+
+func resolveCloudflareAccountID(ctx context.Context, cfg *config, apiToken string) (string, error) {
+	cfg.CloudflareAccountID = strings.TrimSpace(cfg.CloudflareAccountID)
+	if cfg.CloudflareAccountID != "" {
+		return cfg.CloudflareAccountID, nil
+	}
+
+	accs, err := fetchCloudflareAccounts(ctx, apiToken)
+	if err == nil && len(accs) > 0 {
+		if len(accs) == 1 {
+			cfg.CloudflareAccountID = accs[0].ID
+			if accs[0].Name != "" && accs[0].Name != accs[0].ID {
+				fmt.Fprintf(os.Stderr, "ℹ️ Auto-selected Cloudflare Account: %s (%s)\n", accs[0].Name, accs[0].ID)
+			} else {
+				fmt.Fprintf(os.Stderr, "ℹ️ Auto-selected Cloudflare Account ID: %s\n", accs[0].ID)
+			}
+			return cfg.CloudflareAccountID, nil
+		}
+
+		if shouldPrompt(cfg) {
+			selectedID, err := promptCloudflareAccountSelectionFn("Select Cloudflare Account", accs, accs[0].ID)
+			if err != nil {
+				return "", err
+			}
+			cfg.CloudflareAccountID = selectedID
+			return cfg.CloudflareAccountID, nil
+		}
+	}
+
+	if !shouldPrompt(cfg) {
+		return "", fmt.Errorf("Cloudflare operation requires --account-id")
+	}
+
+	value, err := promptNonEmptyString("Cloudflare account ID", "")
+	if err != nil {
+		return "", err
+	}
+	cfg.CloudflareAccountID = value
+	return cfg.CloudflareAccountID, nil
+}
+
+func ensureCloudflareTunnelAccountInput(ctx context.Context, cfg *config, apiToken string) error {
+	_, err := resolveCloudflareAccountID(ctx, cfg, apiToken)
+	return err
+}
+
+func ensureCloudflareTunnelCreateInputs(ctx context.Context, cfg *config, apiToken string) error {
+	if err := ensureCloudflareTunnelAccountInput(ctx, cfg, apiToken); err != nil {
 		return err
 	}
 	cfg.CloudflareTunnelName = strings.TrimSpace(cfg.CloudflareTunnelName)
