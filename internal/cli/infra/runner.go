@@ -271,8 +271,20 @@ func ensureSecretKey() ([]byte, error) {
 	if _, err := rand.Read(key); err != nil {
 		return nil, fmt.Errorf("generate secret key: %w", err)
 	}
-	if err := os.WriteFile(path, key, 0o600); err != nil {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("open secret key for writing: %w", err)
+	}
+	if _, err := f.Write(key); err != nil {
+		f.Close()
 		return nil, fmt.Errorf("write secret key: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("sync secret key: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return nil, fmt.Errorf("close secret key: %w", err)
 	}
 	return key, nil
 }
@@ -319,8 +331,21 @@ func saveSecretStore(store encryptedSecretStore) error {
 		return fmt.Errorf("marshal secret store: %w", err)
 	}
 	content = append(content, '\n')
-	if err := os.WriteFile(secretsStoreFilePath(), content, 0o600); err != nil {
+	path := secretsStoreFilePath()
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return fmt.Errorf("open secret store for writing: %w", err)
+	}
+	if _, err := f.Write(content); err != nil {
+		f.Close()
 		return fmt.Errorf("write secret store: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return fmt.Errorf("sync secret store: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("close secret store: %w", err)
 	}
 	return nil
 }

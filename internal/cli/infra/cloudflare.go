@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -1255,110 +1256,136 @@ func runCloudflareAuthLoginFlow(cfg *config) error {
 	h := sha256.Sum256([]byte(verifier))
 	challenge := base64.RawURLEncoding.EncodeToString(h[:])
 
-	authURL := fmt.Sprintf("https://dash.cloudflare.com/oauth2/auth?client_id=%s&response_type=code&redirect_uri=%s&scope=zone:read,zone:edit,account:read,account:edit,offline_access&code_challenge=%s&code_challenge_method=S256", clientID, redirectURI, challenge)
+	authURL := fmt.Sprintf(
+		"https://dash.cloudflare.com/oauth2/auth?client_id=%s&response_type=code&redirect_uri=%s&scope=%s&code_challenge=%s&code_challenge_method=S256",
+		clientID, redirectURI, "zone:read,zone:edit,account:read,account:edit,offline_access", challenge,
+	)
 
 	fmt.Printf("\nOpening browser to:\n%s\n\n", authURL)
-	
 	openBrowser(authURL)
 	fmt.Println("Waiting for authorization...")
 
-	var tokenResponse struct {
-		AccessToken string `json:"access_token"`
+	type tokenResult struct {
+		accessToken string
+		err         error
 	}
 
-	errCh := make(chan error, 1)
-	srv := &http.Server{Addr: ":8976"}
+	resultCh := make(chan tokenResult, 1)
 
-	http.HandleFunc("/oauth/callback", func(w http.ResponseWriter, r *http.Request) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/oauth/callback", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/oauth/callback" {
+			http.NotFound(w, r)
+			return
+		}
+
+		if errParam := r.URL.Query().Get("error"); errParam != "" {
+			errDesc := r.URL.Query().Get("error_description")
+			errMsg := fmt.Sprintf("OAuth error: %s (%s)", errParam, errDesc)
+			fmt.Fprintf(w, "<html><body><h2>Authorization Failed</h2><p>%s</p></body></html>", errMsg)
+			resultCh <- tokenResult{err: errors.New(errMsg)}
+			return
+		}
+
 		code := r.URL.Query().Get("code")
 		if code == "" {
+			fmt.Fprintf(w, "<html><body><h2>Authorization Failed</h2><p>Missing authorization code parameter.</p></body></html>")
+			resultCh <- tokenResult{err: fmt.Errorf("authorization failed: missing code parameter in callback")}
+			return
+		}
+
+		// Exchange code for token synchronously inside the handler.
+		data := url.Values{}
+		data.Set("client_id", clientID)
+		data.Set("grant_type", "authorization_code")
+		data.Set("code", code)
+		data.Set("redirect_uri", redirectURI)
+		data.Set("code_verifier", verifier)
+
+		tokenReq, reqErr := http.NewRequest("POST", "https://dash.cloudflare.com/oauth2/token", strings.NewReader(data.Encode()))
+		if reqErr != nil {
+			resultCh <- tokenResult{err: fmt.Errorf("failed to build token request: %w", reqErr)}
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		tokenReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+		resp, doErr := http.DefaultClient.Do(tokenReq)
+		if doErr != nil {
+			resultCh <- tokenResult{err: fmt.Errorf("failed to exchange token: %w", doErr)}
+			http.Error(w, "token exchange failed", http.StatusBadGateway)
+			return
+		}
+		defer resp.Body.Close()
+
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != http.StatusOK {
+			resultCh <- tokenResult{err: fmt.Errorf("token exchange failed (status %d): %s", resp.StatusCode, string(bodyBytes))}
+			http.Error(w, "token exchange failed", http.StatusBadGateway)
+			return
+		}
+
+		var tokenResp struct {
+			AccessToken string `json:"access_token"`
+		}
+		if jsonErr := json.Unmarshal(bodyBytes, &tokenResp); jsonErr != nil {
+			resultCh <- tokenResult{err: fmt.Errorf("failed to decode token response: %w", jsonErr)}
+			http.Error(w, "invalid token response", http.StatusInternalServerError)
+			return
+		}
+		if tokenResp.AccessToken == "" {
+			resultCh <- tokenResult{err: fmt.Errorf("cloudflare returned empty access token")}
+			http.Error(w, "empty token", http.StatusInternalServerError)
 			return
 		}
 
 		fmt.Fprintf(w, "<html><body><h2>Authorization successful!</h2><p>You can close this window and return to your terminal.</p><script>window.close()</script></body></html>")
-
-		go func() {
-			data := url.Values{}
-			data.Set("client_id", clientID)
-			data.Set("grant_type", "authorization_code")
-			data.Set("code", code)
-			data.Set("redirect_uri", redirectURI)
-			data.Set("code_verifier", verifier)
-
-			req, _ := http.NewRequest("POST", "https://dash.cloudflare.com/oauth2/token", strings.NewReader(data.Encode()))
-			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-			resp, err := http.DefaultClient.Do(req)
-			if err != nil {
-				errCh <- fmt.Errorf("failed to exchange token: %w", err)
-				return
-			}
-			defer resp.Body.Close()
-
-			if resp.StatusCode != http.StatusOK {
-				errCh <- fmt.Errorf("failed to exchange token: status %d", resp.StatusCode)
-				return
-			}
-
-			if err := json.NewDecoder(resp.Body).Decode(&tokenResponse); err != nil {
-				errCh <- fmt.Errorf("failed to decode token response: %w", err)
-				return
-			}
-			
-			if tokenResponse.AccessToken == "" {
-				errCh <- fmt.Errorf("received empty access token")
-				return
-			}
-
-			errCh <- nil
-		}()
+		resultCh <- tokenResult{accessToken: tokenResp.AccessToken}
 	})
 
+	srv := &http.Server{Addr: ":8976", Handler: mux}
+
 	go func() {
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			errCh <- fmt.Errorf("local server failed: %w", err)
+		if listenErr := srv.ListenAndServe(); listenErr != nil && listenErr != http.ErrServerClosed {
+			resultCh <- tokenResult{err: fmt.Errorf("local server failed: %w", listenErr)}
 		}
 	}()
 
-	err = <-errCh
+	// Wait for the callback result with a 5-minute timeout.
+	var result tokenResult
+	select {
+	case result = <-resultCh:
+	case <-time.After(5 * time.Minute):
+		result = tokenResult{err: fmt.Errorf("login timed out after 5 minutes")}
+	}
+
 	_ = srv.Shutdown(context.Background())
 
-	if err != nil {
-		return err
+	if result.err != nil {
+		return result.err
 	}
 
 	secretName := cloudflareAuthSecretName(profile)
-	if err := writeSecretValue(secretName, tokenResponse.AccessToken); err != nil {
+	if err := writeSecretValue(secretName, result.accessToken); err != nil {
 		return fmt.Errorf("failed to save token: %w", err)
 	}
 
-	fmt.Printf("\nSuccess! Token saved to profile '%s'.\n", profile)
+	fmt.Printf("\n✅ Token saved to profile %q\n", profile)
 	return nil
 }
 
-func openBrowser(url string) {
-	var cmd string
-	var args []string
-	
-	switch {
-	case os.Getenv("BROWSER") != "":
-		cmd = os.Getenv("BROWSER")
-		args = []string{url}
-	default:
-		// Attempt to guess based on OS (very naive, usually standard in CLI tools)
-		// For a fully cross-platform approach, runtime.GOOS is used.
-		// Since we can't import runtime easily in this snippet without knowing if it's there:
-		cmd = "xdg-open"
-		args = []string{url}
-		
-		// Fallbacks:
-		if _, err := exec.LookPath("xdg-open"); err != nil {
-			if _, err := exec.LookPath("open"); err == nil {
-				cmd = "open"
-			} else if _, err := exec.LookPath("rundll32"); err == nil {
-				cmd = "rundll32"
-				args = []string{"url.dll,FileProtocolHandler", url}
-			}
+func openBrowser(rawURL string) {
+	cmd := "xdg-open"
+	args := []string{rawURL}
+
+	if env := os.Getenv("BROWSER"); env != "" {
+		cmd = env
+	} else if _, err := exec.LookPath("xdg-open"); err != nil {
+		if _, err := exec.LookPath("open"); err == nil {
+			cmd = "open"
+		} else if _, err := exec.LookPath("rundll32"); err == nil {
+			cmd = "rundll32"
+			args = []string{"url.dll,FileProtocolHandler", rawURL}
 		}
 	}
 	_ = exec.Command(cmd, args...).Start()
