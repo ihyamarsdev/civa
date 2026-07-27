@@ -30,6 +30,7 @@
 - `civa auth cloudflare remove <profile>`
 - `civa tools`
 - `civa tools cloudflare zones`
+- `civa tools cloudflare tunnels`
 - `civa secret set <name> --value-file <path>`
 - `civa secret list`
 - `civa secret remove <name>`
@@ -182,14 +183,15 @@ Install your public key using secret-backed password input (repeat `--server` to
   --ssh-public-key ~/.ssh/id_rsa.pub
 ```
 
-Run interactive tools menu and list Cloudflare zones:
+Run interactive tools menu and list Cloudflare zones/tunnels:
 
 ```bash
 ./bin/civa auth cloudflare set default --token "$CLOUDFLARE_API_TOKEN"
 ./bin/civa auth cloudflare list
 ./bin/civa tools
-./bin/civa tools cloudflare zones
 ./bin/civa tools cloudflare zones list --profile default
+./bin/civa tools cloudflare tunnels list --account-id <account-id>
+./bin/civa tools cloudflare tunnels route --account-id <account-id> --tunnel-id <tunnel-id> --hostname app.example.com --service http://localhost:8080
 ```
 
 List generated plans:

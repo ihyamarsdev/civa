@@ -343,11 +343,17 @@ func completeTools(words []string) []string {
 	providers := []string{toolsProviderCloudflare, commandHelp}
 	commonFlags := []string{"--help", "--non-interactive"}
 	profileFlags := []string{"--profile", "--help", "--non-interactive"}
-	cloudflareActions := []string{toolsActionCloudflareZone, commandHelp}
+	cloudflareActions := []string{toolsActionCloudflareZone, toolsActionCloudflareTunnel, commandHelp}
 	zoneOperations := []string{toolsOperationList, toolsOperationCreate, toolsOperationUpdate, toolsOperationDelete, commandHelp}
+	tunnelOperations := []string{toolsOperationList, toolsOperationCreate, toolsOperationGet, toolsOperationDelete, toolsOperationRoute, commandHelp}
 	createFlags := []string{"--profile", "--name", "--account-id", "--type", "--help", "--non-interactive"}
 	updateFlags := []string{"--profile", "--zone-id", "--paused", "--type", "--help", "--non-interactive"}
 	deleteFlags := []string{"--profile", "--zone-id", "--help", "--non-interactive"}
+	tunnelListFlags := []string{"--profile", "--account-id", "--help", "--non-interactive"}
+	tunnelCreateFlags := []string{"--profile", "--account-id", "--name", "--help", "--non-interactive"}
+	tunnelGetFlags := []string{"--profile", "--account-id", "--tunnel-id", "--help", "--non-interactive"}
+	tunnelDeleteFlags := []string{"--profile", "--account-id", "--tunnel-id", "--help", "--non-interactive"}
+	tunnelRouteFlags := []string{"--profile", "--account-id", "--tunnel-id", "--hostname", "--service", "--zone-id", "--help", "--non-interactive"}
 
 	if len(words) == 1 {
 		return append(providers, commonFlags...)
@@ -401,6 +407,40 @@ func completeTools(words []string) []string {
 			return filterByPrefix(flagsByOperation, current)
 		}
 
+		if words[2] == toolsActionCloudflareTunnel {
+			if len(words) == 3 {
+				suggestions := append([]string{}, tunnelOperations...)
+				suggestions = append(suggestions, profileFlags...)
+				return filterByPrefix(suggestions, current)
+			}
+			if len(words) == 4 && !contains(tunnelOperations, words[3]) && !strings.HasPrefix(words[3], "-") {
+				return filterByPrefix(tunnelOperations, current)
+			}
+
+			operation := words[3]
+			flagsByOperation := profileFlags
+			switch operation {
+			case toolsOperationList:
+				flagsByOperation = tunnelListFlags
+			case toolsOperationCreate:
+				flagsByOperation = tunnelCreateFlags
+			case toolsOperationGet:
+				flagsByOperation = tunnelGetFlags
+			case toolsOperationDelete:
+				flagsByOperation = tunnelDeleteFlags
+			case toolsOperationRoute:
+				flagsByOperation = tunnelRouteFlags
+			}
+
+			if strings.HasPrefix(current, "-") || previousWordExpectsValue(words) {
+				return filterByPrefix(flagsByOperation, current)
+			}
+			if len(words) == 4 {
+				return filterByPrefix(tunnelOperations, current)
+			}
+			return filterByPrefix(flagsByOperation, current)
+		}
+
 		if strings.HasPrefix(current, "-") || previousWordExpectsValue(words) {
 			return filterByPrefix(profileFlags, current)
 		}
@@ -417,7 +457,7 @@ func completeAuth(words []string) []string {
 	current := words[len(words)-1]
 	providers := []string{authProviderCloudflare, commandHelp}
 	commonFlags := []string{"--help", "--non-interactive"}
-	actions := []string{authActionSet, authActionGet, authActionList, authActionRemove, commandHelp}
+	actions := []string{authActionLogin, authActionSet, authActionGet, authActionList, authActionRemove, commandHelp}
 	setFlags := []string{"--token", "--help", "--non-interactive"}
 
 	if len(words) == 1 {

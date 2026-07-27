@@ -18,6 +18,7 @@ const (
 	helpTargetConfigAll   = "config-all"
 	helpTargetAuthCF      = "auth-cloudflare"
 	helpTargetToolsCF     = "tools-cloudflare"
+	helpTargetToolsCFTunnels = "tools-cloudflare-tunnels"
 	helpTargetDeployRun   = "deploy-run"
 	wizardActionSetup     = "setup"
 	wizardActionPlanInit  = "plan-init"
@@ -206,18 +207,45 @@ func (r *Root) newAuthCommand(globals *globalFlags) *cobra.Command {
 		},
 	}
 
-	cloudflareCmd.AddCommand(setCmd, getCmd, listCmd, removeCmd)
+	loginCmd := &cobra.Command{
+		Use:   domain.AuthActionLogin + " [profile]",
+		Short: "Login to Cloudflare via browser and save as a profile",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			profile := "default"
+			if len(args) > 0 {
+				profile = args[0]
+			}
+			req := domain.Request{
+				Command:      domain.CommandAuth,
+				AuthProvider: domain.AuthProviderCloudflare,
+				AuthAction:   domain.AuthActionLogin,
+				AuthProfile:  profile,
+				Provided: domain.ProvidedFlags{
+					AuthProfile: true,
+				},
+			}
+			req = r.withGlobalFlags(cmd, globals, req)
+			return r.executor.Execute(req)
+		},
+	}
+
+	cloudflareCmd.AddCommand(loginCmd, setCmd, getCmd, listCmd, removeCmd)
 	authCmd.AddCommand(cloudflareCmd)
 	return authCmd
 }
 
 func (r *Root) newToolsCommand(globals *globalFlags) *cobra.Command {
 	var authProfile string
+	var zoneID string
 	var zoneName string
 	var zoneAccountID string
-	var zoneID string
 	var zoneType string
 	var zonePaused string
+	var tunnelID string
+	var tunnelName string
+	var hostname string
+	var serviceURL string
 
 	toolsCmd := &cobra.Command{
 		Use:   string(domain.CommandTools),
@@ -358,6 +386,149 @@ func (r *Root) newToolsCommand(globals *globalFlags) *cobra.Command {
 		},
 	}
 
+	tunnelsCmd := &cobra.Command{
+		Use:   domain.ToolsActionCloudflareTunnels,
+		Short: "Manage Cloudflare Zero Trust tunnels (list/create/get/delete/route)",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			req := domain.Request{
+				Command:       domain.CommandTools,
+				ToolsProvider: domain.ToolsProviderCloudflare,
+				ToolsAction:   domain.ToolsActionCloudflareTunnels,
+				AuthProfile:   authProfile,
+				Provided: domain.ProvidedFlags{
+					AuthProfile: cmd.Flags().Changed("profile"),
+				},
+			}
+			req = r.withGlobalFlags(cmd, globals, req)
+			return r.executor.Execute(req)
+		},
+	}
+
+	tunnelListCmd := &cobra.Command{
+		Use:   domain.ToolsOperationList,
+		Short: "List Cloudflare Zero Trust tunnels",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			req := domain.Request{
+				Command:             domain.CommandTools,
+				ToolsProvider:       domain.ToolsProviderCloudflare,
+				ToolsAction:         domain.ToolsActionCloudflareTunnels,
+				ToolsOperation:      domain.ToolsOperationList,
+				AuthProfile:         authProfile,
+				CloudflareAccountID: zoneAccountID,
+				Provided: domain.ProvidedFlags{
+					AuthProfile:       cmd.Flags().Changed("profile"),
+					CloudflareAccount: cmd.Flags().Changed("account-id"),
+				},
+			}
+			req = r.withGlobalFlags(cmd, globals, req)
+			return r.executor.Execute(req)
+		},
+	}
+
+	tunnelCreateCmd := &cobra.Command{
+		Use:   domain.ToolsOperationCreate,
+		Short: "Create a Cloudflare Zero Trust tunnel",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			req := domain.Request{
+				Command:              domain.CommandTools,
+				ToolsProvider:        domain.ToolsProviderCloudflare,
+				ToolsAction:          domain.ToolsActionCloudflareTunnels,
+				ToolsOperation:       domain.ToolsOperationCreate,
+				AuthProfile:          authProfile,
+				CloudflareAccountID:  zoneAccountID,
+				CloudflareTunnelName: tunnelName,
+				Provided: domain.ProvidedFlags{
+					AuthProfile:          cmd.Flags().Changed("profile"),
+					CloudflareAccount:    cmd.Flags().Changed("account-id"),
+					CloudflareTunnelName: cmd.Flags().Changed("name"),
+				},
+			}
+			req = r.withGlobalFlags(cmd, globals, req)
+			return r.executor.Execute(req)
+		},
+	}
+
+	tunnelGetCmd := &cobra.Command{
+		Use:   domain.ToolsOperationGet,
+		Short: "Get details for a Cloudflare Zero Trust tunnel",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			req := domain.Request{
+				Command:             domain.CommandTools,
+				ToolsProvider:       domain.ToolsProviderCloudflare,
+				ToolsAction:         domain.ToolsActionCloudflareTunnels,
+				ToolsOperation:      domain.ToolsOperationGet,
+				AuthProfile:         authProfile,
+				CloudflareAccountID: zoneAccountID,
+				CloudflareTunnelID:  tunnelID,
+				Provided: domain.ProvidedFlags{
+					AuthProfile:        cmd.Flags().Changed("profile"),
+					CloudflareAccount:  cmd.Flags().Changed("account-id"),
+					CloudflareTunnelID: cmd.Flags().Changed("tunnel-id"),
+				},
+			}
+			req = r.withGlobalFlags(cmd, globals, req)
+			return r.executor.Execute(req)
+		},
+	}
+
+	tunnelDeleteCmd := &cobra.Command{
+		Use:   domain.ToolsOperationDelete,
+		Short: "Delete a Cloudflare Zero Trust tunnel",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			req := domain.Request{
+				Command:             domain.CommandTools,
+				ToolsProvider:       domain.ToolsProviderCloudflare,
+				ToolsAction:         domain.ToolsActionCloudflareTunnels,
+				ToolsOperation:      domain.ToolsOperationDelete,
+				AuthProfile:         authProfile,
+				CloudflareAccountID: zoneAccountID,
+				CloudflareTunnelID:  tunnelID,
+				Provided: domain.ProvidedFlags{
+					AuthProfile:        cmd.Flags().Changed("profile"),
+					CloudflareAccount:  cmd.Flags().Changed("account-id"),
+					CloudflareTunnelID: cmd.Flags().Changed("tunnel-id"),
+				},
+			}
+			req = r.withGlobalFlags(cmd, globals, req)
+			return r.executor.Execute(req)
+		},
+	}
+
+	tunnelRouteCmd := &cobra.Command{
+		Use:   domain.ToolsOperationRoute,
+		Short: "Route a domain/subdomain to a Cloudflare Zero Trust tunnel (updates ingress & creates DNS CNAME)",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			req := domain.Request{
+				Command:             domain.CommandTools,
+				ToolsProvider:       domain.ToolsProviderCloudflare,
+				ToolsAction:         domain.ToolsActionCloudflareTunnels,
+				ToolsOperation:      domain.ToolsOperationRoute,
+				AuthProfile:         authProfile,
+				CloudflareAccountID: zoneAccountID,
+				CloudflareTunnelID:  tunnelID,
+				CloudflareHostname:  hostname,
+				CloudflareService:   serviceURL,
+				CloudflareZoneID:    zoneID,
+				Provided: domain.ProvidedFlags{
+					AuthProfile:        cmd.Flags().Changed("profile"),
+					CloudflareAccount:  cmd.Flags().Changed("account-id"),
+					CloudflareTunnelID: cmd.Flags().Changed("tunnel-id"),
+					CloudflareHostname: cmd.Flags().Changed("hostname"),
+					CloudflareService:  cmd.Flags().Changed("service"),
+					CloudflareZoneID:   cmd.Flags().Changed("zone-id"),
+				},
+			}
+			req = r.withGlobalFlags(cmd, globals, req)
+			return r.executor.Execute(req)
+		},
+	}
+
 	cloudflareCmd.PersistentFlags().StringVar(&authProfile, "profile", "", "Cloudflare auth profile name managed by civa auth cloudflare")
 	zoneCreateCmd.Flags().StringVar(&zoneName, "name", "", "Cloudflare zone name (example.com)")
 	zoneCreateCmd.Flags().StringVar(&zoneAccountID, "account-id", "", "Cloudflare account ID for zone creation")
@@ -367,9 +538,24 @@ func (r *Root) newToolsCommand(globals *globalFlags) *cobra.Command {
 	zoneUpdateCmd.Flags().StringVar(&zonePaused, "paused", "", "Pause state to set: true or false")
 	zoneDeleteCmd.Flags().StringVar(&zoneID, "zone-id", "", "Cloudflare zone ID to delete")
 
-	zonesCmd.AddCommand(zoneListCmd, zoneCreateCmd, zoneUpdateCmd, zoneDeleteCmd)
+	tunnelListCmd.Flags().StringVar(&zoneAccountID, "account-id", "", "Cloudflare account ID")
+	tunnelCreateCmd.Flags().StringVar(&zoneAccountID, "account-id", "", "Cloudflare account ID")
+	tunnelCreateCmd.Flags().StringVar(&tunnelName, "name", "", "Cloudflare tunnel name")
+	tunnelGetCmd.Flags().StringVar(&zoneAccountID, "account-id", "", "Cloudflare account ID")
+	tunnelGetCmd.Flags().StringVar(&tunnelID, "tunnel-id", "", "Cloudflare tunnel ID")
+	tunnelDeleteCmd.Flags().StringVar(&zoneAccountID, "account-id", "", "Cloudflare account ID")
+	tunnelDeleteCmd.Flags().StringVar(&tunnelID, "tunnel-id", "", "Cloudflare tunnel ID")
 
-	cloudflareCmd.AddCommand(zonesCmd)
+	tunnelRouteCmd.Flags().StringVar(&zoneAccountID, "account-id", "", "Cloudflare account ID")
+	tunnelRouteCmd.Flags().StringVar(&tunnelID, "tunnel-id", "", "Cloudflare tunnel ID")
+	tunnelRouteCmd.Flags().StringVar(&hostname, "hostname", "", "Public hostname for the route (e.g. app.example.com)")
+	tunnelRouteCmd.Flags().StringVar(&serviceURL, "service", "", "Target origin service URL (e.g. http://localhost:8080)")
+	tunnelRouteCmd.Flags().StringVar(&zoneID, "zone-id", "", "Cloudflare zone ID (optional, auto-detected from hostname if omitted)")
+
+	zonesCmd.AddCommand(zoneListCmd, zoneCreateCmd, zoneUpdateCmd, zoneDeleteCmd)
+	tunnelsCmd.AddCommand(tunnelListCmd, tunnelCreateCmd, tunnelGetCmd, tunnelDeleteCmd, tunnelRouteCmd)
+
+	cloudflareCmd.AddCommand(zonesCmd, tunnelsCmd)
 	toolsCmd.AddCommand(cloudflareCmd)
 	return toolsCmd
 }
@@ -1317,13 +1503,16 @@ func normalizeHelpTargetCommand(cmd *cobra.Command) string {
 		}
 		if parentName == domain.AuthProviderCloudflare {
 			if grandParent := parent.Parent(); grandParent != nil && grandParent.Name() == string(domain.CommandAuth) {
-				if name == domain.AuthActionSet || name == domain.AuthActionGet || name == domain.AuthActionList || name == domain.AuthActionRemove || name == string(domain.CommandHelp) {
+				if name == domain.AuthActionLogin || name == domain.AuthActionSet || name == domain.AuthActionGet || name == domain.AuthActionList || name == domain.AuthActionRemove || name == string(domain.CommandHelp) {
 					return helpTargetAuthCF
 				}
 			}
 		}
 		if parentName == domain.ToolsProviderCloudflare {
 			if grandParent := parent.Parent(); grandParent != nil && grandParent.Name() == string(domain.CommandTools) {
+				if name == domain.ToolsActionCloudflareTunnels {
+					return helpTargetToolsCFTunnels
+				}
 				if name == domain.ToolsActionCloudflareZones || name == string(domain.CommandHelp) {
 					return helpTargetToolsCF
 				}
@@ -1334,6 +1523,15 @@ func normalizeHelpTargetCommand(cmd *cobra.Command) string {
 				if greatGrandParent := grandParent.Parent(); greatGrandParent != nil && greatGrandParent.Name() == string(domain.CommandTools) {
 					if name == domain.ToolsOperationList || name == domain.ToolsOperationCreate || name == domain.ToolsOperationUpdate || name == domain.ToolsOperationDelete || name == string(domain.CommandHelp) {
 						return helpTargetToolsCF
+					}
+				}
+			}
+		}
+		if parentName == domain.ToolsActionCloudflareTunnels {
+			if grandParent := parent.Parent(); grandParent != nil && grandParent.Name() == domain.ToolsProviderCloudflare {
+				if greatGrandParent := grandParent.Parent(); greatGrandParent != nil && greatGrandParent.Name() == string(domain.CommandTools) {
+					if name == domain.ToolsOperationList || name == domain.ToolsOperationCreate || name == domain.ToolsOperationGet || name == domain.ToolsOperationDelete || name == domain.ToolsOperationRoute || name == string(domain.CommandHelp) {
+						return helpTargetToolsCFTunnels
 					}
 				}
 			}

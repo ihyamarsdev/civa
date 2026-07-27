@@ -36,8 +36,9 @@ const (
 	commandOps              = "ops"
 	commandAuth             = "auth"
 	commandAuthCloudflare   = "auth-cloudflare"
-	commandTools            = "tools"
-	commandToolsCloudflare  = "tools-cloudflare"
+	commandTools                  = "tools"
+	commandToolsCloudflare        = "tools-cloudflare"
+	commandToolsCloudflareTunnels = "tools-cloudflare-tunnels"
 	commandSecret           = "secret"
 	commandPlaybook         = "playbook"
 	commandConfig           = "config"
@@ -88,12 +89,16 @@ const (
 	authActionGet             = "get"
 	authActionList            = "list"
 	authActionRemove          = "remove"
-	toolsProviderCloudflare   = "cloudflare"
-	toolsActionCloudflareZone = "zones"
-	toolsOperationList        = "list"
-	toolsOperationCreate      = "create"
-	toolsOperationUpdate      = "update"
-	toolsOperationDelete      = "delete"
+	authActionLogin           = "login"
+	toolsProviderCloudflare     = "cloudflare"
+	toolsActionCloudflareZone   = "zones"
+	toolsActionCloudflareTunnel = "tunnels"
+	toolsOperationList          = "list"
+	toolsOperationCreate        = "create"
+	toolsOperationUpdate        = "update"
+	toolsOperationDelete        = "delete"
+	toolsOperationGet           = "get"
+	toolsOperationRoute         = "route"
 	doctorActionCheck         = "check"
 	doctorActionFix           = "fix"
 )
@@ -160,9 +165,13 @@ type providedFlags struct {
 	CloudflareZoneID   bool
 	CloudflareZoneName bool
 	CloudflareZoneType bool
-	CloudflarePaused   bool
-	PlaybookName       bool
-	PlaybookFile       bool
+	CloudflarePaused     bool
+	CloudflareTunnelID   bool
+	CloudflareTunnelName bool
+	CloudflareHostname   bool
+	CloudflareService    bool
+	PlaybookName         bool
+	PlaybookFile         bool
 }
 
 type config struct {
@@ -211,6 +220,10 @@ type config struct {
 	CloudflareZoneType        string
 	CloudflareZonePaused      bool
 	CloudflareZonePausedInput string
+	CloudflareTunnelID        string
+	CloudflareTunnelName      string
+	CloudflareHostname        string
+	CloudflareService         string
 	PlaybookName              string
 	PlaybookFile              string
 	WebServerSites            []webServerSiteSpec
@@ -2378,31 +2391,55 @@ func printCommandUsage(command string, nonInteractive bool) {
 	case commandAuth:
 		fmt.Println(renderSectionTitle("civa auth", styled))
 		fmt.Println(renderOutputBlocks([]outputBlock{
-			{Title: "Usage", Lines: []string{"civa auth", "civa auth cloudflare", "civa auth cloudflare set <profile> [--token <value>]", "civa auth cloudflare get <profile>", "civa auth cloudflare list", "civa auth cloudflare remove <profile>"}},
+			{Title: "Usage", Lines: []string{"civa auth", "civa auth cloudflare", "civa auth cloudflare login [profile]", "civa auth cloudflare set <profile> [--token <value>]", "civa auth cloudflare get <profile>", "civa auth cloudflare list", "civa auth cloudflare remove <profile>"}},
 			{Title: "Providers", Lines: []string{"cloudflare                Manage Cloudflare API token profiles"}},
-			{Title: "Examples", Lines: []string{"civa auth cloudflare set default --token $CLOUDFLARE_API_TOKEN", "civa auth cloudflare list", "civa auth cloudflare get default", "civa auth cloudflare remove default"}},
+			{Title: "Examples", Lines: []string{"civa auth cloudflare login default", "civa auth cloudflare set default --token $CLOUDFLARE_API_TOKEN", "civa auth cloudflare list", "civa auth cloudflare get default", "civa auth cloudflare remove default"}},
 		}, styled))
 	case commandAuthCloudflare:
 		fmt.Println(renderSectionTitle("civa auth cloudflare", styled))
 		fmt.Println(renderOutputBlocks([]outputBlock{
-			{Title: "Usage", Lines: []string{"civa auth cloudflare set <profile> [--token <value>]", "civa auth cloudflare get <profile>", "civa auth cloudflare list", "civa auth cloudflare remove <profile>"}},
+			{Title: "Usage", Lines: []string{"civa auth cloudflare login [profile]", "civa auth cloudflare set <profile> [--token <value>]", "civa auth cloudflare get <profile>", "civa auth cloudflare list", "civa auth cloudflare remove <profile>"}},
 			{Title: "Notes", Lines: []string{"Token values are encrypted at rest using civa secret store", "If --token is omitted in interactive mode, civa prompts hidden token input"}},
 			{Title: "Examples", Lines: []string{"civa auth cloudflare set default --token $CLOUDFLARE_API_TOKEN", "civa auth cloudflare get default", "civa auth cloudflare list", "civa auth cloudflare remove default"}},
 		}, styled))
 	case commandTools:
 		fmt.Println(renderSectionTitle("civa tools", styled))
 		fmt.Println(renderOutputBlocks([]outputBlock{
-			{Title: "Usage", Lines: []string{"civa tools", "civa tools cloudflare", "civa tools cloudflare zones", "civa tools cloudflare zones <list|create|update|delete> [flags]"}},
-			{Title: "Providers", Lines: []string{"cloudflare                Cloudflare DNS/account helper utilities"}},
-			{Title: "Examples", Lines: []string{"civa tools", "civa tools cloudflare", "civa tools cloudflare zones list", "civa tools cloudflare zones create --profile default --name example.com --account-id <account-id>", "civa tools cloudflare zones update --profile default --zone-id <zone-id> --paused true", "civa tools cloudflare zones delete --profile default --zone-id <zone-id>"}},
+			{Title: "Usage", Lines: []string{"civa tools", "civa tools cloudflare", "civa tools cloudflare zones <list|create|update|delete> [flags]", "civa tools cloudflare tunnels <list|create|get|delete|route> [flags]"}},
+			{Title: "Providers", Lines: []string{"cloudflare                Cloudflare DNS/account/tunnel helper utilities"}},
+			{Title: "Examples", Lines: []string{"civa tools", "civa tools cloudflare", "civa tools cloudflare zones list", "civa tools cloudflare tunnels list --account-id <account-id>", "civa tools cloudflare tunnels route --account-id <account-id> --tunnel-id <tunnel-id> --hostname app.example.com --service http://localhost:8080"}},
 		}, styled))
 	case commandToolsCloudflare:
 		fmt.Println(renderSectionTitle("civa tools cloudflare", styled))
 		fmt.Println(renderOutputBlocks([]outputBlock{
-			{Title: "Usage", Lines: []string{"civa tools cloudflare", "civa tools cloudflare zones", "civa tools cloudflare zones list [--profile <name>]", "civa tools cloudflare zones create [--profile <name>] [--name <domain>] [--account-id <id>] [--type <value>]", "civa tools cloudflare zones update [--profile <name>] [--zone-id <id>] [--paused <bool>|--type <value>]", "civa tools cloudflare zones delete [--profile <name>] [--zone-id <id>]"}},
-			{Title: "Actions", Lines: []string{"zones list                List zones from Cloudflare", "zones create              Create a new zone", "zones update              Update one zone property (paused or type)", "zones delete              Delete an existing zone"}},
+			{Title: "Usage", Lines: []string{"civa tools cloudflare", "civa tools cloudflare zones <list|create|update|delete> [flags]", "civa tools cloudflare tunnels <list|create|get|delete|route> [flags]"}},
+			{Title: "Actions", Lines: []string{"zones                     Manage Cloudflare zones (list/create/update/delete)", "tunnels                   Manage Cloudflare Zero Trust tunnels (list/create/get/delete/route)"}},
 			{Title: "Credential Source", Lines: []string{"Tools read token from `civa auth cloudflare` profiles only", "Default profile is `default` unless --profile is provided"}},
-			{Title: "Examples", Lines: []string{"civa tools cloudflare zones list", "civa tools cloudflare zones create --profile default --name example.com --account-id <account-id>", "civa tools cloudflare zones update --profile default --zone-id <zone-id> --paused true", "civa tools cloudflare zones delete --profile default --zone-id <zone-id>"}},
+			{Title: "Examples", Lines: []string{"civa tools cloudflare zones list", "civa tools cloudflare tunnels list --account-id <account-id>", "civa tools cloudflare tunnels route --account-id <account-id> --tunnel-id <tunnel-id> --hostname app.example.com --service http://localhost:8080"}},
+		}, styled))
+	case commandToolsCloudflareTunnels:
+		fmt.Println(renderSectionTitle("civa tools cloudflare tunnels", styled))
+		fmt.Println(renderOutputBlocks([]outputBlock{
+			{Title: "Usage", Lines: []string{
+				"civa tools cloudflare tunnels list [--profile <name>] --account-id <id>",
+				"civa tools cloudflare tunnels create [--profile <name>] --account-id <id> --name <tunnel-name>",
+				"civa tools cloudflare tunnels get [--profile <name>] --account-id <id> --tunnel-id <id>",
+				"civa tools cloudflare tunnels delete [--profile <name>] --account-id <id> --tunnel-id <id>",
+				"civa tools cloudflare tunnels route [--profile <name>] --account-id <id> --tunnel-id <id> --hostname <domain> --service <url> [--zone-id <id>]",
+			}},
+			{Title: "Operations", Lines: []string{
+				"tunnels list              List Zero Trust tunnels in account",
+				"tunnels create            Create a new Zero Trust tunnel",
+				"tunnels get               Get Zero Trust tunnel details",
+				"tunnels delete            Delete a Zero Trust tunnel",
+				"tunnels route             Route domain/subdomain to tunnel (updates ingress & creates DNS CNAME)",
+			}},
+			{Title: "Credential Source", Lines: []string{"Tools read token from `civa auth cloudflare` profiles only", "Default profile is `default` unless --profile is provided"}},
+			{Title: "Examples", Lines: []string{
+				"civa tools cloudflare tunnels list --account-id <account-id>",
+				"civa tools cloudflare tunnels create --account-id <account-id> --name my-tunnel",
+				"civa tools cloudflare tunnels route --account-id <account-id> --tunnel-id <tunnel-id> --hostname app.example.com --service http://localhost:8080",
+			}},
 		}, styled))
 	case commandStart:
 		fmt.Println(renderSectionTitle("civa start", styled))

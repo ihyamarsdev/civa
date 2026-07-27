@@ -19,9 +19,11 @@ var (
 	promptSecretValueFn               = promptSecretValue
 	promptCloudflareAuthProfileFn     = promptCloudflareAuthProfile
 	promptCloudflareZoneSelectionFn   = promptCloudflareZoneSelection
-	promptCloudflareZoneTypeFn        = promptCloudflareZoneType
-	promptCloudflareZonePausedFn      = promptCloudflareZonePaused
-	promptCloudflareZoneUpdateFieldFn = promptCloudflareZoneUpdateField
+	promptCloudflareZoneTypeFn         = promptCloudflareZoneType
+	promptCloudflareZonePausedFn       = promptCloudflareZonePaused
+	promptCloudflareZoneUpdateFieldFn  = promptCloudflareZoneUpdateField
+	promptCloudflareTunnelsOperationFn = promptCloudflareTunnelsOperation
+	promptCloudflareTunnelSelectionFn  = promptCloudflareTunnelSelection
 )
 
 const (
@@ -958,6 +960,7 @@ func promptCloudflareToolsAction(defaultValue string) (string, error) {
 		Title("Cloudflare action").
 		Options(
 			huh.NewOption("Manage zones", toolsActionCloudflareZone),
+			huh.NewOption("Manage Zero Trust tunnels", toolsActionCloudflareTunnel),
 		).
 		Value(&value)
 	if err := field.Run(); err != nil {
@@ -981,6 +984,50 @@ func promptCloudflareZonesOperation(defaultValue string) (string, error) {
 		return "", normalizePromptError(err)
 	}
 	return value, nil
+}
+
+func promptCloudflareTunnelsOperation(defaultValue string) (string, error) {
+	value := defaultValue
+	field := huh.NewSelect[string]().
+		Title("Cloudflare Zero Trust tunnels operation").
+		Options(
+			huh.NewOption("List tunnels", toolsOperationList),
+			huh.NewOption("Create tunnel", toolsOperationCreate),
+			huh.NewOption("Get tunnel details", toolsOperationGet),
+			huh.NewOption("Delete tunnel", toolsOperationDelete),
+			huh.NewOption("Route domain to tunnel (ingress & DNS)", toolsOperationRoute),
+		).
+		Value(&value)
+	if err := field.Run(); err != nil {
+		return "", normalizePromptError(err)
+	}
+	return value, nil
+}
+
+func promptCloudflareTunnelSelection(title string, availableTunnels []cloudflareTunnel, defaultValue string) (string, error) {
+	if len(availableTunnels) == 0 {
+		return "", fmt.Errorf("no Cloudflare Zero Trust tunnels available")
+	}
+
+	value := defaultValue
+	options := make([]huh.Option[string], 0, len(availableTunnels))
+	for _, tunnel := range availableTunnels {
+		label := fmt.Sprintf("%s (%s)", tunnel.Name, tunnel.ID)
+		if tunnel.Status != "" {
+			label = fmt.Sprintf("%s — status=%s", label, tunnel.Status)
+		}
+		options = append(options, huh.NewOption(label, tunnel.ID))
+	}
+
+	field := huh.NewSelect[string]().
+		Title(title).
+		Description("Pick a Zero Trust tunnel from the authenticated Cloudflare account.").
+		Options(options...).
+		Value(&value)
+	if err := field.Run(); err != nil {
+		return "", normalizePromptError(err)
+	}
+	return strings.TrimSpace(value), nil
 }
 
 func promptCloudflareAuthProfile(defaultValue string, profiles []string) (string, error) {

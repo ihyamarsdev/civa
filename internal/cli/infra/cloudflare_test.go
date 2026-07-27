@@ -22,6 +22,8 @@ func setCloudflarePromptOverrides(t *testing.T) {
 	originalZoneType := promptCloudflareZoneTypeFn
 	originalZonePaused := promptCloudflareZonePausedFn
 	originalUpdateField := promptCloudflareZoneUpdateFieldFn
+	originalTunnelOp := promptCloudflareTunnelsOperationFn
+	originalTunnelSel := promptCloudflareTunnelSelectionFn
 	t.Cleanup(func() {
 		promptSecretValueFn = originalSecret
 		promptCloudflareAuthProfileFn = originalProfile
@@ -29,6 +31,8 @@ func setCloudflarePromptOverrides(t *testing.T) {
 		promptCloudflareZoneTypeFn = originalZoneType
 		promptCloudflareZonePausedFn = originalZonePaused
 		promptCloudflareZoneUpdateFieldFn = originalUpdateField
+		promptCloudflareTunnelsOperationFn = originalTunnelOp
+		promptCloudflareTunnelSelectionFn = originalTunnelSel
 	})
 }
 
@@ -380,5 +384,142 @@ func TestEnsureCloudflareZoneUpdateInputsPromptsZoneAndPaused(t *testing.T) {
 	}
 	if cfg.CloudflareZoneType != "" {
 		t.Fatalf("expected empty zone type, got %q", cfg.CloudflareZoneType)
+	}
+}
+
+type stubCloudflareTunnelsService struct {
+	listFn   func(ctx context.Context, apiToken string, accountID string) ([]cloudflareTunnel, error)
+	createFn func(ctx context.Context, apiToken string, accountID string, name string) (cloudflareTunnel, error)
+	getFn    func(ctx context.Context, apiToken string, accountID string, tunnelID string) (cloudflareTunnel, error)
+	deleteFn func(ctx context.Context, apiToken string, accountID string, tunnelID string) error
+	routeFn  func(ctx context.Context, apiToken string, accountID string, tunnelID string, hostname string, serviceURL string, zoneID string) error
+}
+
+func (s *stubCloudflareTunnelsService) ListTunnels(ctx context.Context, apiToken string, accountID string) ([]cloudflareTunnel, error) {
+	if s == nil || s.listFn == nil {
+		return nil, nil
+	}
+	return s.listFn(ctx, apiToken, accountID)
+}
+
+func (s *stubCloudflareTunnelsService) CreateTunnel(ctx context.Context, apiToken string, accountID string, name string) (cloudflareTunnel, error) {
+	if s == nil || s.createFn == nil {
+		return cloudflareTunnel{}, nil
+	}
+	return s.createFn(ctx, apiToken, accountID, name)
+}
+
+func (s *stubCloudflareTunnelsService) GetTunnel(ctx context.Context, apiToken string, accountID string, tunnelID string) (cloudflareTunnel, error) {
+	if s == nil || s.getFn == nil {
+		return cloudflareTunnel{}, nil
+	}
+	return s.getFn(ctx, apiToken, accountID, tunnelID)
+}
+
+func (s *stubCloudflareTunnelsService) DeleteTunnel(ctx context.Context, apiToken string, accountID string, tunnelID string) error {
+	if s == nil || s.deleteFn == nil {
+		return nil
+	}
+	return s.deleteFn(ctx, apiToken, accountID, tunnelID)
+}
+
+func (s *stubCloudflareTunnelsService) RouteTunnel(ctx context.Context, apiToken string, accountID string, tunnelID string, hostname string, serviceURL string, zoneID string) error {
+	if s == nil || s.routeFn == nil {
+		return nil
+	}
+	return s.routeFn(ctx, apiToken, accountID, tunnelID, hostname, serviceURL, zoneID)
+}
+
+func TestRunCloudflareTunnelsFlows(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if err := writeSecretValue(cloudflareAuthSecretName("default"), "mock-token"); err != nil {
+		t.Fatalf("write secret: %v", err)
+	}
+
+	var createdName, deletedID, routedHost, routedService string
+	orig := cloudflareTunnelsClient
+	cloudflareTunnelsClient = &stubCloudflareTunnelsService{
+		listFn: func(ctx context.Context, apiToken string, accountID string) ([]cloudflareTunnel, error) {
+			return []cloudflareTunnel{
+				{ID: "t-1", Name: "my-tunnel", Status: "healthy"},
+			}, nil
+		},
+		createFn: func(ctx context.Context, apiToken string, accountID string, name string) (cloudflareTunnel, error) {
+			createdName = name
+			return cloudflareTunnel{ID: "t-2", Name: name, Status: "healthy"}, nil
+		},
+		getFn: func(ctx context.Context, apiToken string, accountID string, tunnelID string) (cloudflareTunnel, error) {
+			return cloudflareTunnel{ID: tunnelID, Name: "my-tunnel", Status: "healthy"}, nil
+		},
+		deleteFn: func(ctx context.Context, apiToken string, accountID string, tunnelID string) error {
+			deletedID = tunnelID
+			return nil
+		},
+		routeFn: func(ctx context.Context, apiToken string, accountID string, tunnelID string, hostname string, serviceURL string, zoneID string) error {
+			routedHost = hostname
+			routedService = serviceURL
+			return nil
+		},
+	}
+	t.Cleanup(func() { cloudflareTunnelsClient = orig })
+
+	cfgList := defaultConfig(commandTools)
+	cfgList.ToolsProvider = toolsProviderCloudflare
+	cfgList.ToolsAction = toolsActionCloudflareTunnel
+	cfgList.ToolsOperation = toolsOperationList
+	cfgList.CloudflareAccountID = "acc-123"
+	if err := runToolsFlow(&cfgList); err != nil {
+		t.Fatalf("tunnels list flow error: %v", err)
+	}
+
+	cfgCreate := defaultConfig(commandTools)
+	cfgCreate.ToolsProvider = toolsProviderCloudflare
+	cfgCreate.ToolsAction = toolsActionCloudflareTunnel
+	cfgCreate.ToolsOperation = toolsOperationCreate
+	cfgCreate.CloudflareAccountID = "acc-123"
+	cfgCreate.CloudflareTunnelName = "new-tunnel"
+	if err := runToolsFlow(&cfgCreate); err != nil {
+		t.Fatalf("tunnels create flow error: %v", err)
+	}
+	if createdName != "new-tunnel" {
+		t.Fatalf("expected created name new-tunnel, got %q", createdName)
+	}
+
+	cfgGet := defaultConfig(commandTools)
+	cfgGet.ToolsProvider = toolsProviderCloudflare
+	cfgGet.ToolsAction = toolsActionCloudflareTunnel
+	cfgGet.ToolsOperation = toolsOperationGet
+	cfgGet.CloudflareAccountID = "acc-123"
+	cfgGet.CloudflareTunnelID = "t-1"
+	if err := runToolsFlow(&cfgGet); err != nil {
+		t.Fatalf("tunnels get flow error: %v", err)
+	}
+
+	cfgDelete := defaultConfig(commandTools)
+	cfgDelete.ToolsProvider = toolsProviderCloudflare
+	cfgDelete.ToolsAction = toolsActionCloudflareTunnel
+	cfgDelete.ToolsOperation = toolsOperationDelete
+	cfgDelete.CloudflareAccountID = "acc-123"
+	cfgDelete.CloudflareTunnelID = "t-1"
+	if err := runToolsFlow(&cfgDelete); err != nil {
+		t.Fatalf("tunnels delete flow error: %v", err)
+	}
+	if deletedID != "t-1" {
+		t.Fatalf("expected deleted id t-1, got %q", deletedID)
+	}
+
+	cfgRoute := defaultConfig(commandTools)
+	cfgRoute.ToolsProvider = toolsProviderCloudflare
+	cfgRoute.ToolsAction = toolsActionCloudflareTunnel
+	cfgRoute.ToolsOperation = toolsOperationRoute
+	cfgRoute.CloudflareAccountID = "acc-123"
+	cfgRoute.CloudflareTunnelID = "t-1"
+	cfgRoute.CloudflareHostname = "app.example.com"
+	cfgRoute.CloudflareService = "http://localhost:8080"
+	if err := runToolsFlow(&cfgRoute); err != nil {
+		t.Fatalf("tunnels route flow error: %v", err)
+	}
+	if routedHost != "app.example.com" || routedService != "http://localhost:8080" {
+		t.Fatalf("unexpected route params: host=%q service=%q", routedHost, routedService)
 	}
 }

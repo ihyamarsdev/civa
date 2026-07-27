@@ -31,6 +31,7 @@ const (
 	AuthActionGet    = "get"
 	AuthActionList   = "list"
 	AuthActionRemove = "remove"
+	AuthActionLogin  = "login"
 )
 
 const (
@@ -38,7 +39,8 @@ const (
 )
 
 const (
-	ToolsActionCloudflareZones = "zones"
+	ToolsActionCloudflareZones   = "zones"
+	ToolsActionCloudflareTunnels = "tunnels"
 )
 
 const (
@@ -46,6 +48,8 @@ const (
 	ToolsOperationCreate = "create"
 	ToolsOperationUpdate = "update"
 	ToolsOperationDelete = "delete"
+	ToolsOperationGet    = "get"
+	ToolsOperationRoute  = "route"
 )
 
 const (
@@ -116,9 +120,13 @@ type ProvidedFlags struct {
 	CloudflareZoneID   bool
 	CloudflareZoneName bool
 	CloudflareZoneType bool
-	CloudflarePaused   bool
-	PlaybookName       bool
-	PlaybookFile       bool
+	CloudflarePaused     bool
+	CloudflareTunnelID   bool
+	CloudflareTunnelName bool
+	CloudflareHostname   bool
+	CloudflareService    bool
+	PlaybookName         bool
+	PlaybookFile         bool
 }
 
 type Request struct {
@@ -169,6 +177,10 @@ type Request struct {
 	CloudflareZoneType        string
 	CloudflareZonePaused      bool
 	CloudflareZonePausedInput string
+	CloudflareTunnelID        string
+	CloudflareTunnelName      string
+	CloudflareHostname        string
+	CloudflareService         string
 	PlaybookName              string
 	PlaybookFile              string
 	SSHPasswordSecret         string

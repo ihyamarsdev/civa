@@ -82,11 +82,9 @@ Check local prerequisites:
 ./bin/civa doctor fix
 ```
 
-## Commands
+## Commands Overview
 
-### Simplified grouped commands (recommended)
-
-- `civa bootstrap setup|doctor|config ...` — onboarding bundle (setup, environment check, and persisted web server config)
+- `civa bootstrap setup|doctor|config ...` — bootstrap workflow (setup server, check requirements, and configure web server)
 - `civa deploy plan|apply|run ...` — deployment bundle (plan lifecycle, apply lifecycle, and custom playbook run)
 - `civa ops playbook|secret|auth|tools ...` — operations bundle (playbook management, secrets, provider auth, provider tools)
 
@@ -95,6 +93,7 @@ Check local prerequisites:
 - `civa tools` — run interactive external provider tools
 - `civa auth cloudflare set|get|list|remove` — manage stored Cloudflare auth profiles
 - `civa tools cloudflare zones` — manage Cloudflare zones using token from auth profile (`--profile`, default: `default`)
+- `civa tools cloudflare tunnels` — manage Cloudflare Zero Trust tunnels (list/create/get/delete/route)
 - `civa config <nginx|caddy> init [plan-name]` — initialize or update persistent web server profile (nginx/caddy), choose target hostname(s), and run separate config playbook using inventory from generated plan (latest by default)
 - `civa config <nginx|caddy|all> list` — list persisted web server config profiles by provider (or all)
 - `civa config <nginx|caddy> remove <plan-name>` — remove persisted web server config profile for one provider in a specific plan context

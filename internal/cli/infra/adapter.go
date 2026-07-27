@@ -68,6 +68,10 @@ func (LegacyRunner) ExecuteRequest(req domain.Request) error {
 		cfg.CloudflareZoneName = req.CloudflareZoneName
 		cfg.CloudflareZoneType = req.CloudflareZoneType
 		cfg.CloudflareZonePausedInput = req.CloudflareZonePausedInput
+		cfg.CloudflareTunnelID = req.CloudflareTunnelID
+		cfg.CloudflareTunnelName = req.CloudflareTunnelName
+		cfg.CloudflareHostname = req.CloudflareHostname
+		cfg.CloudflareService = req.CloudflareService
 		cfg.Provided.AuthProfile = req.Provided.AuthProfile
 		cfg.Provided.ToolsOperation = req.Provided.ToolsOperation
 		cfg.Provided.CloudflareAccount = req.Provided.CloudflareAccount
@@ -75,6 +79,10 @@ func (LegacyRunner) ExecuteRequest(req domain.Request) error {
 		cfg.Provided.CloudflareZoneName = req.Provided.CloudflareZoneName
 		cfg.Provided.CloudflareZoneType = req.Provided.CloudflareZoneType
 		cfg.Provided.CloudflarePaused = req.Provided.CloudflarePaused
+		cfg.Provided.CloudflareTunnelID = req.Provided.CloudflareTunnelID
+		cfg.Provided.CloudflareTunnelName = req.Provided.CloudflareTunnelName
+		cfg.Provided.CloudflareHostname = req.Provided.CloudflareHostname
+		cfg.Provided.CloudflareService = req.Provided.CloudflareService
 		return runToolsFlow(&cfg)
 	case domain.CommandConfig:
 		cfg := defaultConfig(commandConfig)

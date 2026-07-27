@@ -2,16 +2,25 @@ package infra
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/url"
 	"os"
+	"os/exec"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	cloudflare "github.com/cloudflare/cloudflare-go/v6"
+	"github.com/cloudflare/cloudflare-go/v6/dns"
 	"github.com/cloudflare/cloudflare-go/v6/option"
+	"github.com/cloudflare/cloudflare-go/v6/zero_trust"
 	"github.com/cloudflare/cloudflare-go/v6/zones"
 )
 
@@ -20,8 +29,9 @@ const (
 )
 
 var (
-	cloudflareZonesClient    cloudflareZonesService = &cloudflareSDKClient{}
-	cloudflareRequestTimeout                        = 20 * time.Second
+	cloudflareZonesClient    cloudflareZonesService   = &cloudflareSDKClient{}
+	cloudflareTunnelsClient  cloudflareTunnelsService = &cloudflareSDKClient{}
+	cloudflareRequestTimeout                          = 20 * time.Second
 )
 
 type cloudflareZone struct {
@@ -57,6 +67,21 @@ type cloudflareZonesService interface {
 	DeleteZone(ctx context.Context, apiToken string, zoneID string) (cloudflareZone, error)
 }
 
+type cloudflareTunnel struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	Status    string    `json:"status"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type cloudflareTunnelsService interface {
+	ListTunnels(ctx context.Context, apiToken string, accountID string) ([]cloudflareTunnel, error)
+	CreateTunnel(ctx context.Context, apiToken string, accountID string, name string) (cloudflareTunnel, error)
+	GetTunnel(ctx context.Context, apiToken string, accountID string, tunnelID string) (cloudflareTunnel, error)
+	DeleteTunnel(ctx context.Context, apiToken string, accountID string, tunnelID string) error
+	RouteTunnel(ctx context.Context, apiToken string, accountID string, tunnelID string, hostname string, serviceURL string, zoneID string) error
+}
+
 type cloudflareSDKClient struct{}
 
 func runAuthFlow(cfg *config) error {
@@ -85,6 +110,8 @@ func runCloudflareAuthFlow(cfg *config) error {
 	}
 
 	switch action {
+	case authActionLogin:
+		return runCloudflareAuthLoginFlow(cfg)
 	case authActionSet:
 		return runCloudflareAuthSetFlow(cfg)
 	case authActionGet:
@@ -271,6 +298,8 @@ func runCloudflareToolsFlow(cfg *config) error {
 	switch action {
 	case toolsActionCloudflareZone:
 		return runCloudflareZonesFlow(cfg)
+	case toolsActionCloudflareTunnel:
+		return runCloudflareTunnelsFlow(cfg)
 	default:
 		return fmt.Errorf("unknown cloudflare tools action: %s", action)
 	}
@@ -282,7 +311,7 @@ func resolveCloudflareToolsAction(cfg *config) (string, error) {
 		return action, nil
 	}
 	if !shouldPrompt(cfg) {
-		return "", fmt.Errorf("civa tools cloudflare requires an action (available: zones)")
+		return "", fmt.Errorf("civa tools cloudflare requires an action (available: zones, tunnels)")
 	}
 	value, err := promptCloudflareToolsAction(toolsActionCloudflareZone)
 	if err != nil {
@@ -728,4 +757,609 @@ func sdkEditZoneType(raw string) (zones.ZoneEditParamsType, error) {
 	default:
 		return "", fmt.Errorf("unsupported zone type: %s", raw)
 	}
+}
+
+func runCloudflareTunnelsFlow(cfg *config) error {
+	operation, err := resolveCloudflareTunnelsOperation(cfg)
+	if err != nil {
+		return err
+	}
+	if operation == "" {
+		return nil
+	}
+	switch operation {
+	case toolsOperationList:
+		return runCloudflareTunnelsListFlow(cfg)
+	case toolsOperationCreate:
+		return runCloudflareTunnelsCreateFlow(cfg)
+	case toolsOperationGet:
+		return runCloudflareTunnelsGetFlow(cfg)
+	case toolsOperationDelete:
+		return runCloudflareTunnelsDeleteFlow(cfg)
+	case toolsOperationRoute:
+		return runCloudflareTunnelsRouteFlow(cfg)
+	default:
+		return fmt.Errorf("unknown cloudflare tunnels operation: %s", operation)
+	}
+}
+
+func resolveCloudflareTunnelsOperation(cfg *config) (string, error) {
+	operation := strings.ToLower(strings.TrimSpace(cfg.ToolsOperation))
+	if operation != "" {
+		return operation, nil
+	}
+	if !shouldPrompt(cfg) {
+		return "", fmt.Errorf("civa tools cloudflare tunnels requires an operation (list|create|get|delete|route)")
+	}
+	value, err := promptCloudflareTunnelsOperationFn(toolsOperationList)
+	if err != nil {
+		if errors.Is(err, errUserCancelled) {
+			return "", nil
+		}
+		return "", err
+	}
+	return strings.ToLower(strings.TrimSpace(value)), nil
+}
+
+func runCloudflareTunnelsListFlow(cfg *config) error {
+	if err := ensureCloudflareTunnelAccountInput(cfg); err != nil {
+		return err
+	}
+	token, profile, err := resolveCloudflareAuthTokenForTools(cfg)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), cloudflareRequestTimeout)
+	defer cancel()
+	tunnels, err := cloudflareTunnelsClient.ListTunnels(ctx, token, cfg.CloudflareAccountID)
+	if err != nil {
+		return fmt.Errorf("list cloudflare tunnels: %w", err)
+	}
+	sort.Slice(tunnels, func(i, j int) bool {
+		return tunnels[i].Name < tunnels[j].Name
+	})
+	printSection("Cloudflare Tunnels")
+	fmt.Fprintf(os.Stderr, "Auth profile: %s\n", profile)
+	fmt.Fprintf(os.Stderr, "Account ID:   %s\n", cfg.CloudflareAccountID)
+	if len(tunnels) == 0 {
+		fmt.Fprintln(os.Stderr, "No Zero Trust tunnels found for this account.")
+		return nil
+	}
+	for _, t := range tunnels {
+		fmt.Fprintf(os.Stderr, "- %s (ID: %s, Status: %s)\n", t.Name, t.ID, t.Status)
+	}
+	return nil
+}
+
+func runCloudflareTunnelsCreateFlow(cfg *config) error {
+	if err := ensureCloudflareTunnelCreateInputs(cfg); err != nil {
+		return err
+	}
+	token, _, err := resolveCloudflareAuthTokenForTools(cfg)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), cloudflareRequestTimeout)
+	defer cancel()
+	tunnel, err := cloudflareTunnelsClient.CreateTunnel(ctx, token, cfg.CloudflareAccountID, cfg.CloudflareTunnelName)
+	if err != nil {
+		return fmt.Errorf("create cloudflare tunnel: %w", err)
+	}
+	printSection("Cloudflare Tunnels")
+	fmt.Fprintf(os.Stderr, "✅ Created Zero Trust tunnel %s (ID: %s, Status: %s)\n", tunnel.Name, tunnel.ID, tunnel.Status)
+	return nil
+}
+
+func runCloudflareTunnelsGetFlow(cfg *config) error {
+	if err := ensureCloudflareTunnelAccountInput(cfg); err != nil {
+		return err
+	}
+	token, profile, err := resolveCloudflareAuthTokenForTools(cfg)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), cloudflareRequestTimeout)
+	defer cancel()
+	if err := ensureCloudflareTunnelGetInputs(ctx, cfg, token); err != nil {
+		return err
+	}
+	tunnel, err := cloudflareTunnelsClient.GetTunnel(ctx, token, cfg.CloudflareAccountID, cfg.CloudflareTunnelID)
+	if err != nil {
+		return fmt.Errorf("get cloudflare tunnel: %w", err)
+	}
+	printSection("Cloudflare Tunnel Details")
+	fmt.Fprintf(os.Stderr, "Auth profile: %s\n", profile)
+	fmt.Fprintf(os.Stderr, "Account ID:   %s\n", cfg.CloudflareAccountID)
+	fmt.Fprintf(os.Stderr, "Name:         %s\n", tunnel.Name)
+	fmt.Fprintf(os.Stderr, "ID:           %s\n", tunnel.ID)
+	fmt.Fprintf(os.Stderr, "Status:       %s\n", tunnel.Status)
+	fmt.Fprintf(os.Stderr, "CNAME Target: %s.cfargotunnel.com\n", tunnel.ID)
+	return nil
+}
+
+func runCloudflareTunnelsDeleteFlow(cfg *config) error {
+	if err := ensureCloudflareTunnelAccountInput(cfg); err != nil {
+		return err
+	}
+	token, _, err := resolveCloudflareAuthTokenForTools(cfg)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), cloudflareRequestTimeout)
+	defer cancel()
+	if err := ensureCloudflareTunnelDeleteInputs(ctx, cfg, token); err != nil {
+		return err
+	}
+	if err := cloudflareTunnelsClient.DeleteTunnel(ctx, token, cfg.CloudflareAccountID, cfg.CloudflareTunnelID); err != nil {
+		return fmt.Errorf("delete cloudflare tunnel: %w", err)
+	}
+	printSection("Cloudflare Tunnels")
+	fmt.Fprintf(os.Stderr, "✅ Deleted Zero Trust tunnel %s\n", cfg.CloudflareTunnelID)
+	return nil
+}
+
+func runCloudflareTunnelsRouteFlow(cfg *config) error {
+	if err := ensureCloudflareTunnelAccountInput(cfg); err != nil {
+		return err
+	}
+	token, _, err := resolveCloudflareAuthTokenForTools(cfg)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), cloudflareRequestTimeout)
+	defer cancel()
+	if err := ensureCloudflareTunnelRouteInputs(ctx, cfg, token); err != nil {
+		return err
+	}
+	if err := cloudflareTunnelsClient.RouteTunnel(ctx, token, cfg.CloudflareAccountID, cfg.CloudflareTunnelID, cfg.CloudflareHostname, cfg.CloudflareService, cfg.CloudflareZoneID); err != nil {
+		return fmt.Errorf("route cloudflare tunnel: %w", err)
+	}
+	printSection("Cloudflare Tunnel Route Configured")
+	fmt.Fprintf(os.Stderr, "✅ Hostname %s routed to %s via Tunnel %s\n", cfg.CloudflareHostname, cfg.CloudflareService, cfg.CloudflareTunnelID)
+	fmt.Fprintf(os.Stderr, "✅ DNS CNAME record created/updated (%s.cfargotunnel.com, proxied)\n", cfg.CloudflareTunnelID)
+	return nil
+}
+
+func ensureCloudflareTunnelAccountInput(cfg *config) error {
+	cfg.CloudflareAccountID = strings.TrimSpace(cfg.CloudflareAccountID)
+	if cfg.CloudflareAccountID == "" {
+		if !shouldPrompt(cfg) {
+			return fmt.Errorf("tunnels operation requires --account-id")
+		}
+		value, err := promptNonEmptyString("Cloudflare account ID", "")
+		if err != nil {
+			return err
+		}
+		cfg.CloudflareAccountID = value
+	}
+	return nil
+}
+
+func ensureCloudflareTunnelCreateInputs(cfg *config) error {
+	if err := ensureCloudflareTunnelAccountInput(cfg); err != nil {
+		return err
+	}
+	cfg.CloudflareTunnelName = strings.TrimSpace(cfg.CloudflareTunnelName)
+	if cfg.CloudflareTunnelName == "" {
+		if !shouldPrompt(cfg) {
+			return fmt.Errorf("tunnel create requires --name")
+		}
+		value, err := promptNonEmptyString("Cloudflare tunnel name", "")
+		if err != nil {
+			return err
+		}
+		cfg.CloudflareTunnelName = value
+	}
+	return nil
+}
+
+func ensureCloudflareTunnelGetInputs(ctx context.Context, cfg *config, apiToken string) error {
+	cfg.CloudflareTunnelID = strings.TrimSpace(cfg.CloudflareTunnelID)
+	if cfg.CloudflareTunnelID != "" {
+		return nil
+	}
+	if !shouldPrompt(cfg) {
+		return fmt.Errorf("tunnel get requires --tunnel-id")
+	}
+	value, err := promptCloudflareTunnelIDForOperation(ctx, apiToken, cfg.CloudflareAccountID, "Cloudflare Zero Trust tunnel details")
+	if err != nil {
+		return err
+	}
+	cfg.CloudflareTunnelID = value
+	return nil
+}
+
+func ensureCloudflareTunnelDeleteInputs(ctx context.Context, cfg *config, apiToken string) error {
+	cfg.CloudflareTunnelID = strings.TrimSpace(cfg.CloudflareTunnelID)
+	if cfg.CloudflareTunnelID != "" {
+		return nil
+	}
+	if !shouldPrompt(cfg) {
+		return fmt.Errorf("tunnel delete requires --tunnel-id")
+	}
+	value, err := promptCloudflareTunnelIDForOperation(ctx, apiToken, cfg.CloudflareAccountID, "Cloudflare Zero Trust tunnel to delete")
+	if err != nil {
+		return err
+	}
+	cfg.CloudflareTunnelID = value
+	return nil
+}
+
+func ensureCloudflareTunnelRouteInputs(ctx context.Context, cfg *config, apiToken string) error {
+	cfg.CloudflareTunnelID = strings.TrimSpace(cfg.CloudflareTunnelID)
+	if cfg.CloudflareTunnelID == "" {
+		if !shouldPrompt(cfg) {
+			return fmt.Errorf("tunnel route requires --tunnel-id")
+		}
+		value, err := promptCloudflareTunnelIDForOperation(ctx, apiToken, cfg.CloudflareAccountID, "Cloudflare Zero Trust tunnel to route domain to")
+		if err != nil {
+			return err
+		}
+		cfg.CloudflareTunnelID = value
+	}
+	cfg.CloudflareHostname = strings.TrimSpace(cfg.CloudflareHostname)
+	if cfg.CloudflareHostname == "" {
+		if !shouldPrompt(cfg) {
+			return fmt.Errorf("tunnel route requires --hostname")
+		}
+		value, err := promptNonEmptyString("Public hostname (e.g. app.example.com)", "")
+		if err != nil {
+			return err
+		}
+		cfg.CloudflareHostname = value
+	}
+	cfg.CloudflareService = strings.TrimSpace(cfg.CloudflareService)
+	if cfg.CloudflareService == "" {
+		if !shouldPrompt(cfg) {
+			return fmt.Errorf("tunnel route requires --service")
+		}
+		value, err := promptNonEmptyString("Target service URL (e.g. http://localhost:8080)", "http://localhost:8080")
+		if err != nil {
+			return err
+		}
+		cfg.CloudflareService = value
+	}
+	return nil
+}
+
+func promptCloudflareTunnelIDForOperation(ctx context.Context, apiToken string, accountID string, title string) (string, error) {
+	tunnels, err := cloudflareTunnelsClient.ListTunnels(ctx, apiToken, accountID)
+	if err != nil {
+		return "", fmt.Errorf("load cloudflare tunnels for selection: %w", err)
+	}
+	if len(tunnels) == 0 {
+		return "", fmt.Errorf("no cloudflare zero trust tunnels found for this account")
+	}
+	sort.Slice(tunnels, func(i, j int) bool {
+		return tunnels[i].Name < tunnels[j].Name
+	})
+	return promptCloudflareTunnelSelectionFn(title, tunnels, tunnels[0].ID)
+}
+
+func (c *cloudflareSDKClient) ListTunnels(ctx context.Context, apiToken string, accountID string) ([]cloudflareTunnel, error) {
+	client := newCloudflareClient(apiToken)
+	iter := client.ZeroTrust.Tunnels.Cloudflared.ListAutoPaging(ctx, zero_trust.TunnelCloudflaredListParams{
+		AccountID: cloudflare.F(accountID),
+	})
+	var result []cloudflareTunnel
+	for iter.Next() {
+		t := iter.Current()
+		var createdAt time.Time
+		createdAt = t.CreatedAt
+		result = append(result, cloudflareTunnel{
+			ID:        t.ID,
+			Name:      t.Name,
+			Status:    string(t.Status),
+			CreatedAt: createdAt,
+		})
+	}
+	if err := iter.Err(); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func (c *cloudflareSDKClient) CreateTunnel(ctx context.Context, apiToken string, accountID string, name string) (cloudflareTunnel, error) {
+	client := newCloudflareClient(apiToken)
+	t, err := client.ZeroTrust.Tunnels.Cloudflared.New(ctx, zero_trust.TunnelCloudflaredNewParams{
+		AccountID: cloudflare.F(accountID),
+		Name:      cloudflare.F(name),
+	})
+	if err != nil {
+		return cloudflareTunnel{}, err
+	}
+	var createdAt time.Time
+	createdAt = t.CreatedAt
+	return cloudflareTunnel{
+		ID:        t.ID,
+		Name:      t.Name,
+		Status:    string(t.Status),
+		CreatedAt: createdAt,
+	}, nil
+}
+
+func (c *cloudflareSDKClient) GetTunnel(ctx context.Context, apiToken string, accountID string, tunnelID string) (cloudflareTunnel, error) {
+	client := newCloudflareClient(apiToken)
+	t, err := client.ZeroTrust.Tunnels.Cloudflared.Get(ctx, tunnelID, zero_trust.TunnelCloudflaredGetParams{
+		AccountID: cloudflare.F(accountID),
+	})
+	if err != nil {
+		return cloudflareTunnel{}, err
+	}
+	var createdAt time.Time
+	createdAt = t.CreatedAt
+	return cloudflareTunnel{
+		ID:        t.ID,
+		Name:      t.Name,
+		Status:    string(t.Status),
+		CreatedAt: createdAt,
+	}, nil
+}
+
+func (c *cloudflareSDKClient) DeleteTunnel(ctx context.Context, apiToken string, accountID string, tunnelID string) error {
+	client := newCloudflareClient(apiToken)
+	_, err := client.ZeroTrust.Tunnels.Cloudflared.Delete(ctx, tunnelID, zero_trust.TunnelCloudflaredDeleteParams{
+		AccountID: cloudflare.F(accountID),
+	})
+	return err
+}
+
+func (c *cloudflareSDKClient) RouteTunnel(ctx context.Context, apiToken string, accountID string, tunnelID string, hostname string, serviceURL string, zoneID string) error {
+	client := newCloudflareClient(apiToken)
+
+	existingConfig, err := client.ZeroTrust.Tunnels.Cloudflared.Configurations.Get(ctx, tunnelID, zero_trust.TunnelCloudflaredConfigurationGetParams{
+		AccountID: cloudflare.F(accountID),
+	})
+	if err != nil {
+		return fmt.Errorf("get tunnel configuration: %w", err)
+	}
+
+	var newIngress []zero_trust.TunnelCloudflaredConfigurationUpdateParamsConfigIngress
+	updatedExisting := false
+
+	if existingConfig != nil {
+		for _, rule := range existingConfig.Config.Ingress {
+			if rule.Hostname == hostname {
+				newIngress = append(newIngress, zero_trust.TunnelCloudflaredConfigurationUpdateParamsConfigIngress{
+					Hostname: cloudflare.F(hostname),
+					Service:  cloudflare.F(serviceURL),
+				})
+				updatedExisting = true
+			} else {
+				ing := zero_trust.TunnelCloudflaredConfigurationUpdateParamsConfigIngress{
+					Service: cloudflare.F(rule.Service),
+				}
+				if rule.Hostname != "" {
+					ing.Hostname = cloudflare.F(rule.Hostname)
+				}
+				if rule.Path != "" {
+					ing.Path = cloudflare.F(rule.Path)
+				}
+				newIngress = append(newIngress, ing)
+			}
+		}
+	}
+
+	if !updatedExisting {
+		newRule := zero_trust.TunnelCloudflaredConfigurationUpdateParamsConfigIngress{
+			Hostname: cloudflare.F(hostname),
+			Service:  cloudflare.F(serviceURL),
+		}
+		if len(newIngress) > 0 && newIngress[len(newIngress)-1].Hostname.Value == "" {
+			last := newIngress[len(newIngress)-1]
+			newIngress[len(newIngress)-1] = newRule
+			newIngress = append(newIngress, last)
+		} else {
+			newIngress = append(newIngress, newRule)
+			newIngress = append(newIngress, zero_trust.TunnelCloudflaredConfigurationUpdateParamsConfigIngress{
+				Service: cloudflare.F("http_status:404"),
+			})
+		}
+	}
+
+	_, err = client.ZeroTrust.Tunnels.Cloudflared.Configurations.Update(ctx, tunnelID, zero_trust.TunnelCloudflaredConfigurationUpdateParams{
+		AccountID: cloudflare.F(accountID),
+		Config: cloudflare.F(zero_trust.TunnelCloudflaredConfigurationUpdateParamsConfig{
+			Ingress: cloudflare.F(newIngress),
+		}),
+	})
+	if err != nil {
+		return fmt.Errorf("update tunnel configuration: %w", err)
+	}
+
+	if zoneID == "" {
+		zonesList, err := c.ListZones(ctx, apiToken)
+		if err != nil {
+			return fmt.Errorf("list zones for hostname matching: %w", err)
+		}
+		var bestMatch string
+		for _, z := range zonesList {
+			if strings.HasSuffix(hostname, z.Name) || hostname == z.Name {
+				if len(z.Name) > len(bestMatch) {
+					bestMatch = z.Name
+					zoneID = z.ID
+				}
+			}
+		}
+		if zoneID == "" {
+			return fmt.Errorf("could not auto-detect zone ID for hostname %q; please specify --zone-id", hostname)
+		}
+	}
+
+	cnameTarget := fmt.Sprintf("%s.cfargotunnel.com", tunnelID)
+	recordsIter := client.DNS.Records.ListAutoPaging(ctx, dns.RecordListParams{
+		ZoneID: cloudflare.F(zoneID),
+		Name: cloudflare.F(dns.RecordListParamsName{
+			Exact: cloudflare.F(hostname),
+		}),
+	})
+
+	var existingRecordID string
+	for recordsIter.Next() {
+		rec := recordsIter.Current()
+		if rec.Name == hostname {
+			existingRecordID = rec.ID
+			break
+		}
+	}
+	if err := recordsIter.Err(); err != nil {
+		return fmt.Errorf("search dns records: %w", err)
+	}
+
+	cnameParam := dns.CNAMERecordParam{
+		Name:    cloudflare.F(hostname),
+		Type:    cloudflare.F(dns.CNAMERecordTypeCNAME),
+		Content: cloudflare.F(cnameTarget),
+		TTL:     cloudflare.F(dns.TTL1),
+		Proxied: cloudflare.F(true),
+	}
+
+	if existingRecordID != "" {
+		_, err = client.DNS.Records.Update(ctx, existingRecordID, dns.RecordUpdateParams{
+			ZoneID: cloudflare.F(zoneID),
+			Body:   cnameParam,
+		})
+		if err != nil {
+			return fmt.Errorf("update dns record: %w", err)
+		}
+	} else {
+		_, err = client.DNS.Records.New(ctx, dns.RecordNewParams{
+			ZoneID: cloudflare.F(zoneID),
+			Body:   cnameParam,
+		})
+		if err != nil {
+			return fmt.Errorf("create dns record: %w", err)
+		}
+	}
+
+	return nil
+}
+
+func runCloudflareAuthLoginFlow(cfg *config) error {
+	profile, err := normalizeCloudflareAuthProfile(cfg.AuthProfile)
+	if err != nil {
+		return err
+	}
+
+	fmt.Println(renderSectionTitle(fmt.Sprintf("Cloudflare Login (Profile: %s)", profile), canStyleStdout()))
+	fmt.Println("This will open your browser to authorize civa via Cloudflare.")
+
+	clientID := "54d11594-84e4-41aa-b438-e81b8fa78ee7" // Wrangler Client ID
+	redirectURI := "http://localhost:8976/oauth/callback"
+
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Errorf("failed to generate pkce: %w", err)
+	}
+	verifier := base64.RawURLEncoding.EncodeToString(b)
+	h := sha256.Sum256([]byte(verifier))
+	challenge := base64.RawURLEncoding.EncodeToString(h[:])
+
+	authURL := fmt.Sprintf("https://dash.cloudflare.com/oauth2/auth?client_id=%s&response_type=code&redirect_uri=%s&scope=zone:read,zone:edit,account:read,account:edit,offline_access&code_challenge=%s&code_challenge_method=S256", clientID, redirectURI, challenge)
+
+	fmt.Printf("\nOpening browser to:\n%s\n\n", authURL)
+	
+	openBrowser(authURL)
+	fmt.Println("Waiting for authorization...")
+
+	var tokenResponse struct {
+		AccessToken string `json:"access_token"`
+	}
+
+	errCh := make(chan error, 1)
+	srv := &http.Server{Addr: ":8976"}
+
+	http.HandleFunc("/oauth/callback", func(w http.ResponseWriter, r *http.Request) {
+		code := r.URL.Query().Get("code")
+		if code == "" {
+			return
+		}
+
+		fmt.Fprintf(w, "<html><body><h2>Authorization successful!</h2><p>You can close this window and return to your terminal.</p><script>window.close()</script></body></html>")
+
+		go func() {
+			data := url.Values{}
+			data.Set("client_id", clientID)
+			data.Set("grant_type", "authorization_code")
+			data.Set("code", code)
+			data.Set("redirect_uri", redirectURI)
+			data.Set("code_verifier", verifier)
+
+			req, _ := http.NewRequest("POST", "https://dash.cloudflare.com/oauth2/token", strings.NewReader(data.Encode()))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				errCh <- fmt.Errorf("failed to exchange token: %w", err)
+				return
+			}
+			defer resp.Body.Close()
+
+			if resp.StatusCode != http.StatusOK {
+				errCh <- fmt.Errorf("failed to exchange token: status %d", resp.StatusCode)
+				return
+			}
+
+			if err := json.NewDecoder(resp.Body).Decode(&tokenResponse); err != nil {
+				errCh <- fmt.Errorf("failed to decode token response: %w", err)
+				return
+			}
+			
+			if tokenResponse.AccessToken == "" {
+				errCh <- fmt.Errorf("received empty access token")
+				return
+			}
+
+			errCh <- nil
+		}()
+	})
+
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			errCh <- fmt.Errorf("local server failed: %w", err)
+		}
+	}()
+
+	err = <-errCh
+	_ = srv.Shutdown(context.Background())
+
+	if err != nil {
+		return err
+	}
+
+	secretName := cloudflareAuthSecretName(profile)
+	if err := writeSecretValue(secretName, tokenResponse.AccessToken); err != nil {
+		return fmt.Errorf("failed to save token: %w", err)
+	}
+
+	fmt.Printf("\nSuccess! Token saved to profile '%s'.\n", profile)
+	return nil
+}
+
+func openBrowser(url string) {
+	var cmd string
+	var args []string
+	
+	switch {
+	case os.Getenv("BROWSER") != "":
+		cmd = os.Getenv("BROWSER")
+		args = []string{url}
+	default:
+		// Attempt to guess based on OS (very naive, usually standard in CLI tools)
+		// For a fully cross-platform approach, runtime.GOOS is used.
+		// Since we can't import runtime easily in this snippet without knowing if it's there:
+		cmd = "xdg-open"
+		args = []string{url}
+		
+		// Fallbacks:
+		if _, err := exec.LookPath("xdg-open"); err != nil {
+			if _, err := exec.LookPath("open"); err == nil {
+				cmd = "open"
+			} else if _, err := exec.LookPath("rundll32"); err == nil {
+				cmd = "rundll32"
+				args = []string{"url.dll,FileProtocolHandler", url}
+			}
+		}
+	}
+	_ = exec.Command(cmd, args...).Start()
 }

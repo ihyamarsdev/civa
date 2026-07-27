@@ -384,6 +384,27 @@ func TestRootRunRoutesToolsCloudflareZones(t *testing.T) {
 	}
 }
 
+func TestRootRunRoutesToolsCloudflareTunnelsRoute(t *testing.T) {
+	executor := &stubExecutor{}
+	root := NewRoot(executor)
+
+	err := root.Run([]string{"tools", "cloudflare", "tunnels", "route", "--profile", "default", "--account-id", "acc-1", "--tunnel-id", "tun-1", "--hostname", "app.example.com", "--service", "http://localhost:8080"})
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+
+	if len(executor.requests) != 1 {
+		t.Fatalf("expected one request, got %d", len(executor.requests))
+	}
+	req := executor.requests[0]
+	if req.Command != domain.CommandTools || req.ToolsProvider != domain.ToolsProviderCloudflare || req.ToolsAction != domain.ToolsActionCloudflareTunnels || req.ToolsOperation != domain.ToolsOperationRoute {
+		t.Fatalf("unexpected tools cloudflare tunnels request: %#v", req)
+	}
+	if req.CloudflareAccountID != "acc-1" || req.CloudflareTunnelID != "tun-1" || req.CloudflareHostname != "app.example.com" || req.CloudflareService != "http://localhost:8080" {
+		t.Fatalf("unexpected tunnel route parameters: %#v", req)
+	}
+}
+
 func TestRootRunRejectsConfigAllRemoveSubcommand(t *testing.T) {
 	executor := &stubExecutor{}
 	root := NewRoot(executor)
