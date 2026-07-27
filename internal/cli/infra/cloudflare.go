@@ -817,7 +817,26 @@ func runCloudflareTunnelsListFlow(cfg *config) error {
 	fmt.Fprintf(os.Stderr, "Auth profile: %s\n", profile)
 	fmt.Fprintf(os.Stderr, "Account ID:   %s\n", cfg.CloudflareAccountID)
 	if len(tunnels) == 0 {
-		fmt.Fprintln(os.Stderr, "No Zero Trust tunnels found for this account.")
+		allAccs, _ := fetchCloudflareAccounts(ctx, token)
+		var foundAny bool
+		for _, acc := range allAccs {
+			if acc.ID == cfg.CloudflareAccountID {
+				continue
+			}
+			accTunnels, err := cloudflareTunnelsClient.ListTunnels(ctx, token, acc.ID)
+			if err == nil && len(accTunnels) > 0 {
+				if !foundAny {
+					fmt.Fprintf(os.Stderr, "\nFound Zero Trust tunnels in account %s (%s):\n", acc.Name, acc.ID)
+					foundAny = true
+				}
+				for _, t := range accTunnels {
+					fmt.Fprintf(os.Stderr, "- %s (ID: %s, Status: %s)\n", t.Name, t.ID, t.Status)
+				}
+			}
+		}
+		if !foundAny {
+			fmt.Fprintln(os.Stderr, "No Zero Trust tunnels found for this account.")
+		}
 		return nil
 	}
 	for _, t := range tunnels {
@@ -925,7 +944,7 @@ func fetchCloudflareAccounts(ctx context.Context, apiToken string) ([]cloudflare
 	accs := make([]cloudflareAccount, 0)
 	seen := make(map[string]bool)
 
-	// Attempt 1: Fetch accounts via User Memberships API
+	// Source 1: User Memberships API
 	memIter := client.Memberships.ListAutoPaging(ctx, memberships.MembershipListParams{})
 	for memIter.Next() {
 		m := memIter.Current()
@@ -942,11 +961,7 @@ func fetchCloudflareAccounts(ctx context.Context, apiToken string) ([]cloudflare
 		}
 	}
 
-	if len(accs) > 0 {
-		return accs, nil
-	}
-
-	// Attempt 2: Fetch accounts directly via Accounts API
+	// Source 2: Direct Accounts API
 	iter := client.Accounts.ListAutoPaging(ctx, accounts.AccountListParams{})
 	for iter.Next() {
 		acc := iter.Current()
@@ -959,11 +974,7 @@ func fetchCloudflareAccounts(ctx context.Context, apiToken string) ([]cloudflare
 		}
 	}
 
-	if len(accs) > 0 {
-		return accs, nil
-	}
-
-	// Attempt 3: Fallback to Zones API to discover Account IDs from existing zones
+	// Source 3: Discover from Zones API
 	zonesList, err := cloudflareZonesClient.ListZones(ctx, apiToken)
 	if err == nil {
 		for _, z := range zonesList {
@@ -1122,6 +1133,18 @@ func promptCloudflareTunnelIDForOperation(ctx context.Context, apiToken string, 
 		return "", fmt.Errorf("load cloudflare tunnels for selection: %w", err)
 	}
 	if len(tunnels) == 0 {
+		allAccs, _ := fetchCloudflareAccounts(ctx, apiToken)
+		for _, acc := range allAccs {
+			if acc.ID == accountID {
+				continue
+			}
+			accTunnels, err := cloudflareTunnelsClient.ListTunnels(ctx, apiToken, acc.ID)
+			if err == nil && len(accTunnels) > 0 {
+				tunnels = append(tunnels, accTunnels...)
+			}
+		}
+	}
+	if len(tunnels) == 0 {
 		return "", fmt.Errorf("no cloudflare zero trust tunnels found for this account")
 	}
 	sort.Slice(tunnels, func(i, j int) bool {
@@ -1132,24 +1155,35 @@ func promptCloudflareTunnelIDForOperation(ctx context.Context, apiToken string, 
 
 func (c *cloudflareSDKClient) ListTunnels(ctx context.Context, apiToken string, accountID string) ([]cloudflareTunnel, error) {
 	client := newCloudflareClient(apiToken)
-	iter := client.ZeroTrust.Tunnels.Cloudflared.ListAutoPaging(ctx, zero_trust.TunnelCloudflaredListParams{
-		AccountID: cloudflare.F(accountID),
-	})
 	var result []cloudflareTunnel
-	for iter.Next() {
-		t := iter.Current()
-		var createdAt time.Time
-		createdAt = t.CreatedAt
-		result = append(result, cloudflareTunnel{
-			ID:        t.ID,
-			Name:      t.Name,
-			Status:    string(t.Status),
-			CreatedAt: createdAt,
-		})
+	seen := make(map[string]bool)
+
+	// Query 1: Cloudflared tunnels with IsDeleted=false
+	iter1 := client.ZeroTrust.Tunnels.Cloudflared.ListAutoPaging(ctx, zero_trust.TunnelCloudflaredListParams{
+		AccountID: cloudflare.F(accountID),
+		IsDeleted: cloudflare.F(false),
+	})
+	for iter1.Next() {
+		t := iter1.Current()
+		if t.ID != "" && !seen[t.ID] {
+			seen[t.ID] = true
+			result = append(result, cloudflareTunnel{
+				ID:        t.ID,
+				Name:      t.Name,
+				Status:    string(t.Status),
+				CreatedAt: t.CreatedAt,
+			})
+		}
 	}
-	if err := iter.Err(); err != nil {
-		return nil, err
+	if len(result) == 0 {
+		if err := iter1.Err(); err != nil {
+			if strings.Contains(err.Error(), "403") || strings.Contains(err.Error(), "10000") || strings.Contains(err.Error(), "Authentication error") {
+				return nil, fmt.Errorf("Cloudflare OAuth token does not have access to Zero Trust Tunnels (HTTP 403). Please create an API Token in Cloudflare Dashboard with 'Account -> Cloudflare Tunnel -> Read' permission and save it via `civa auth cloudflare set <profile> --token <token>`")
+			}
+			return nil, err
+		}
 	}
+
 	return result, nil
 }
 
@@ -1360,7 +1394,7 @@ func runCloudflareAuthLoginFlow(cfg *config) error {
 	q.Set("client_id", clientID)
 	q.Set("response_type", "code")
 	q.Set("redirect_uri", redirectURI)
-	q.Set("scope", "account:read user:read workers:write workers:read zone:read dns_records:read offline_access")
+	q.Set("scope", "account:read user:read workers:write workers:read zone:read dns_records:read argo:read argo:write offline_access")
 	q.Set("state", state)
 	q.Set("code_challenge", challenge)
 	q.Set("code_challenge_method", "S256")
