@@ -1256,10 +1256,16 @@ func runCloudflareAuthLoginFlow(cfg *config) error {
 	h := sha256.Sum256([]byte(verifier))
 	challenge := base64.RawURLEncoding.EncodeToString(h[:])
 
-	authURL := fmt.Sprintf(
-		"https://dash.cloudflare.com/oauth2/auth?client_id=%s&response_type=code&redirect_uri=%s&scope=%s&code_challenge=%s&code_challenge_method=S256",
-		clientID, redirectURI, "zone:read,zone:edit,account:read,account:edit,offline_access", challenge,
-	)
+	u, _ := url.Parse("https://dash.cloudflare.com/oauth2/auth")
+	q := u.Query()
+	q.Set("client_id", clientID)
+	q.Set("response_type", "code")
+	q.Set("redirect_uri", redirectURI)
+	q.Set("scope", "account:read user:read workers:write workers:read zone:read ssl:read dns_records:read offline_access")
+	q.Set("code_challenge", challenge)
+	q.Set("code_challenge_method", "S256")
+	u.RawQuery = q.Encode()
+	authURL := u.String()
 
 	fmt.Printf("\nOpening browser to:\n%s\n\n", authURL)
 	openBrowser(authURL)
