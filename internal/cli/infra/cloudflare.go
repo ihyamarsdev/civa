@@ -22,6 +22,7 @@ import (
 	accounts "github.com/cloudflare/cloudflare-go/v6/accounts"
 	"github.com/cloudflare/cloudflare-go/v6/dns"
 	"github.com/cloudflare/cloudflare-go/v6/option"
+	memberships "github.com/cloudflare/cloudflare-go/v6/memberships"
 	"github.com/cloudflare/cloudflare-go/v6/zero_trust"
 	"github.com/cloudflare/cloudflare-go/v6/zones"
 )
@@ -924,7 +925,28 @@ func fetchCloudflareAccounts(ctx context.Context, apiToken string) ([]cloudflare
 	accs := make([]cloudflareAccount, 0)
 	seen := make(map[string]bool)
 
-	// Attempt 1: Fetch accounts directly via Accounts API
+	// Attempt 1: Fetch accounts via User Memberships API
+	memIter := client.Memberships.ListAutoPaging(ctx, memberships.MembershipListParams{})
+	for memIter.Next() {
+		m := memIter.Current()
+		if m.Account.ID != "" && !seen[m.Account.ID] {
+			seen[m.Account.ID] = true
+			name := m.Account.Name
+			if name == "" {
+				name = m.Account.ID
+			}
+			accs = append(accs, cloudflareAccount{
+				ID:   m.Account.ID,
+				Name: name,
+			})
+		}
+	}
+
+	if len(accs) > 0 {
+		return accs, nil
+	}
+
+	// Attempt 2: Fetch accounts directly via Accounts API
 	iter := client.Accounts.ListAutoPaging(ctx, accounts.AccountListParams{})
 	for iter.Next() {
 		acc := iter.Current()
@@ -941,7 +963,7 @@ func fetchCloudflareAccounts(ctx context.Context, apiToken string) ([]cloudflare
 		return accs, nil
 	}
 
-	// Attempt 2: Fallback to Zones API to discover Account IDs from existing zones
+	// Attempt 3: Fallback to Zones API to discover Account IDs from existing zones
 	zonesList, err := cloudflareZonesClient.ListZones(ctx, apiToken)
 	if err == nil {
 		for _, z := range zonesList {
